@@ -15,5 +15,7 @@ path = "src/main.rs"
 yatt-core.workspace = true
 yatt-store.workspace = true
 anyhow.workspace = true
-gpui.workspace = true
+# Compile Metal shaders at launch so the build needs only the Command Line Tools,
+# not full Xcode. Release builds can switch to precompiled shaders later.
+gpui = { workspace = true, features = ["runtime_shaders"] }
 jiff.workspace = true
