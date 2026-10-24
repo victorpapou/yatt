@@ -1,13 +1,12 @@
-//! Every duration and curve the UI animates with, in one place.
+//! Every duration and curve the UI animates with, in one place. Card motion is
+//! spring-driven instead; its constants live in `physics.rs`.
 
 use objc2_app_kit::NSWorkspace;
 
-/// Cards sliding to a new place in a column or across columns.
-pub const MOVE_SECS: f64 = 0.32;
 /// New cards fading in, removed cards fading out.
 pub const APPEAR_SECS: f64 = 0.22;
-/// Neighbours moving apart to open a gap under a dragged card.
-pub const GAP_SECS: f64 = 0.18;
+/// A card turning into frosted glass and back (the clip's crossfade on drop).
+pub const GLASS_SECS: f64 = 0.15;
 /// The column under a dragged card tinting in or out.
 pub const COLUMN_TINT_SECS: f64 = 0.15;
 /// A card morphing into the task modal, and back.

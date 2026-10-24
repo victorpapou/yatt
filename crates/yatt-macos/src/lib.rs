@@ -2,7 +2,10 @@
 //! report [`UiEvent`]s back; they know nothing about the engine or storage.
 
 pub mod model;
+pub mod physics;
 
+#[cfg(target_os = "macos")]
+mod board;
 #[cfg(target_os = "macos")]
 mod classes;
 #[cfg(target_os = "macos")]
@@ -12,6 +15,8 @@ mod modal;
 #[cfg(target_os = "macos")]
 pub mod motion;
 #[cfg(target_os = "macos")]
+mod style;
+#[cfg(target_os = "macos")]
 mod window;
 
 pub use model::{
@@ -20,4 +25,4 @@ pub use model::{
 #[cfg(target_os = "macos")]
 pub use objc2::MainThreadMarker;
 #[cfg(target_os = "macos")]
-pub use window::{MainWindow, Sink};
+pub use window::{DemoPointer, MainWindow, Sink};

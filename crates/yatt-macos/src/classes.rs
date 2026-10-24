@@ -4,23 +4,22 @@
 use std::cell::{Cell, RefCell};
 
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
+use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol};
 use objc2::{
     AnyThread, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send,
     sel,
 };
 use objc2_app_kit::{
-    NSColor, NSDragOperation, NSDraggingContext, NSDraggingDestination, NSDraggingInfo,
-    NSDraggingItem, NSDraggingSession, NSDraggingSource, NSEvent, NSImage, NSPasteboardTypeString,
-    NSResponder, NSView, NSWindow, NSWindowDelegate,
+    NSColor, NSEvent, NSEventModifierFlags, NSResponder, NSTrackingArea, NSTrackingAreaOptions,
+    NSView, NSWindow, NSWindowDelegate,
 };
-use objc2_foundation::{NSArray, NSNotification, NSPoint, NSRect, NSString};
+use objc2_foundation::{NSNotification, NSPoint, NSRect, NSString};
 use objc2_web_kit::{WKScriptMessage, WKScriptMessageHandler, WKUserContentController};
 use yatt_core::TaskId;
 
 pub type KeyHandler = Box<dyn Fn(&NSEvent) -> bool>;
 pub type CardHandler = Box<dyn Fn(TaskId, CardMsg)>;
-pub type DropHandler = Box<dyn Fn(DropMsg) -> bool>;
+pub type HoverHandler = Box<dyn Fn(Option<NSPoint>)>;
 
 // ---- target/action ----
 
@@ -185,6 +184,12 @@ impl RootView {
 /// What a [`FillView`] paints.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Fill {
+    /// A card's pastel face; `tracking` adds an accent rim.
+    Card { hue: usize, tracking: bool },
+    /// The light frosting over a glass card's blur.
+    Frost,
+    /// The "N скрыто" capsule.
+    Badge,
     /// A 1 px divider line.
     Separator,
     /// The light tint over the column a card is dragged over.
@@ -196,7 +201,7 @@ pub enum Fill {
 }
 
 pub struct FillIvars {
-    pub fill: Fill,
+    pub fill: Cell<Fill>,
     pub on_click: RefCell<Option<Box<dyn Fn()>>>,
 }
 
@@ -221,14 +226,39 @@ define_class!(
         #[unsafe(method(updateLayer))]
         fn update_layer(&self) {
             let Some(layer) = self.layer() else { return };
-            let color = match self.ivars().fill {
+            let fill = self.ivars().fill.get();
+            let color = match fill {
+                Fill::Card { hue, .. } => crate::style::fill(hue),
+                Fill::Frost => NSColor::whiteColor().colorWithAlphaComponent(0.42),
+                Fill::Badge => NSColor::whiteColor().colorWithAlphaComponent(0.55),
                 Fill::Separator => NSColor::separatorColor(),
                 Fill::Tint => NSColor::labelColor().colorWithAlphaComponent(0.035),
                 Fill::Dim => NSColor::blackColor().colorWithAlphaComponent(0.28),
                 Fill::Panel => NSColor::windowBackgroundColor(),
             };
             layer.setBackgroundColor(Some(&color.CGColor()));
-            if self.ivars().fill == Fill::Panel {
+            match fill {
+                Fill::Card { tracking, .. } => {
+                    layer.setCornerRadius(crate::style::CARD_RADIUS);
+                    layer.setBorderWidth(if tracking { 2.0 } else { 1.0 });
+                    let rim = if tracking {
+                        NSColor::controlAccentColor()
+                    } else {
+                        NSColor::whiteColor().colorWithAlphaComponent(0.45)
+                    };
+                    layer.setBorderColor(Some(&rim.CGColor()));
+                }
+                Fill::Frost => {
+                    layer.setCornerRadius(crate::style::CARD_RADIUS);
+                    layer.setBorderWidth(1.0);
+                    layer.setBorderColor(Some(
+                        &NSColor::whiteColor().colorWithAlphaComponent(0.7).CGColor(),
+                    ));
+                }
+                Fill::Badge => layer.setCornerRadius(9.0),
+                _ => {}
+            }
+            if fill == Fill::Panel {
                 layer.setCornerRadius(16.0);
                 layer.setBorderWidth(0.5);
                 layer.setBorderColor(Some(&NSColor::separatorColor().CGColor()));
@@ -244,7 +274,7 @@ define_class!(
             match self.ivars().on_click.borrow().as_ref() {
                 Some(f) => f(),
                 // Panels swallow clicks so they do not reach the board below.
-                None if self.ivars().fill == Fill::Panel => {}
+                None if self.ivars().fill.get() == Fill::Panel => {}
                 None => unsafe { msg_send![super(self), mouseDown: event] },
             }
         }
@@ -252,9 +282,15 @@ define_class!(
 );
 
 impl FillView {
+    pub fn set_fill(&self, fill: Fill) {
+        if self.ivars().fill.replace(fill) != fill {
+            self.setNeedsDisplay(true);
+        }
+    }
+
     pub fn new(mtm: MainThreadMarker, fill: Fill) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(FillIvars {
-            fill,
+            fill: Cell::new(fill),
             on_click: RefCell::new(None),
         });
         let view: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
@@ -298,20 +334,17 @@ impl ScriptHandler {
     }
 }
 
-/// What a card reports to its owner.
+/// Raw mouse input on a card, in the window's coordinates. The board decides
+/// what is a click and what is a drag.
 pub enum CardMsg {
-    Click,
-    DragStarted,
-    DragEnded,
+    Down { at: NSPoint, shift: bool },
+    Dragged(NSPoint),
+    Up(NSPoint),
 }
 
 pub struct CardIvars {
     pub id: TaskId,
-    /// Accruing time: drawn with an accent border.
-    pub tracking: Cell<bool>,
     pub on_msg: RefCell<Option<CardHandler>>,
-    down_at: Cell<Option<NSPoint>>,
-    dragging: Cell<bool>,
 }
 
 define_class!(
@@ -327,81 +360,23 @@ define_class!(
             true
         }
 
-        #[unsafe(method(wantsUpdateLayer))]
-        fn wants_update_layer(&self) -> bool {
-            true
-        }
-
-        // Runs with the view's appearance current, so system colors resolve for dark or light.
-        #[unsafe(method(updateLayer))]
-        fn update_layer(&self) {
-            let Some(layer) = self.layer() else { return };
-            let tracking = self.ivars().tracking.get();
-            layer.setCornerRadius(10.0);
-            layer.setBackgroundColor(Some(&NSColor::controlBackgroundColor().CGColor()));
-            layer.setBorderWidth(if tracking { 1.5 } else { 0.5 });
-            let border = if tracking {
-                NSColor::controlAccentColor()
-            } else {
-                NSColor::separatorColor()
-            };
-            layer.setBorderColor(Some(&border.CGColor()));
-            layer.setShadowColor(Some(&NSColor::shadowColor().CGColor()));
-            layer.setShadowOpacity(0.12);
-            layer.setShadowRadius(3.0);
-            layer.setShadowOffset(objc2_foundation::NSSize::new(0.0, -1.0));
-        }
-
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
-            self.ivars().down_at.set(Some(event.locationInWindow()));
-            self.ivars().dragging.set(false);
+            let shift = event.modifierFlags().contains(NSEventModifierFlags::Shift);
+            self.send(CardMsg::Down {
+                at: event.locationInWindow(),
+                shift,
+            });
         }
 
         #[unsafe(method(mouseDragged:))]
         fn mouse_dragged(&self, event: &NSEvent) {
-            let iv = self.ivars();
-            let (Some(start), false) = (iv.down_at.get(), iv.dragging.get()) else {
-                return;
-            };
-            let p = event.locationInWindow();
-            if (p.x - start.x).hypot(p.y - start.y) < 4.0 {
-                return;
-            }
-            iv.dragging.set(true);
-            self.begin_drag(event);
+            self.send(CardMsg::Dragged(event.locationInWindow()));
         }
 
         #[unsafe(method(mouseUp:))]
-        fn mouse_up(&self, _event: &NSEvent) {
-            let iv = self.ivars();
-            if iv.down_at.take().is_some() && !iv.dragging.get() {
-                self.send(CardMsg::Click);
-            }
-        }
-    }
-
-    unsafe impl NSObjectProtocol for CardView {}
-
-    unsafe impl NSDraggingSource for CardView {
-        #[unsafe(method(draggingSession:sourceOperationMaskForDraggingContext:))]
-        fn source_operation_mask(
-            &self,
-            _session: &NSDraggingSession,
-            _context: NSDraggingContext,
-        ) -> NSDragOperation {
-            NSDragOperation::Move
-        }
-
-        #[unsafe(method(draggingSession:endedAtPoint:operation:))]
-        fn dragging_ended(
-            &self,
-            _session: &NSDraggingSession,
-            _point: NSPoint,
-            _operation: NSDragOperation,
-        ) {
-            self.ivars().dragging.set(false);
-            self.send(CardMsg::DragEnded);
+        fn mouse_up(&self, event: &NSEvent) {
+            self.send(CardMsg::Up(event.locationInWindow()));
         }
     }
 );
@@ -410,10 +385,7 @@ impl CardView {
     pub fn new(mtm: MainThreadMarker, id: TaskId, frame: NSRect) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(CardIvars {
             id,
-            tracking: Cell::new(false),
             on_msg: RefCell::new(None),
-            down_at: Cell::new(None),
-            dragging: Cell::new(false),
         });
         unsafe { msg_send![super(this), initWithFrame: frame] }
     }
@@ -423,107 +395,81 @@ impl CardView {
             f(self.ivars().id, msg);
         }
     }
-
-    /// Starts a system drag with a snapshot of the card under the cursor.
-    fn begin_drag(&self, event: &NSEvent) {
-        let bounds = self.bounds();
-        let image = NSImage::initWithSize(NSImage::alloc(), bounds.size);
-        if let Some(rep) = self.bitmapImageRepForCachingDisplayInRect(bounds) {
-            self.cacheDisplayInRect_toBitmapImageRep(bounds, &rep);
-            image.addRepresentation(&rep);
-        }
-        let id = NSString::from_str(&self.ivars().id.to_string());
-        let item = NSDraggingItem::initWithPasteboardWriter(
-            NSDraggingItem::alloc(),
-            ProtocolObject::from_ref(&*id),
-        );
-        unsafe { item.setDraggingFrame_contents(bounds, Some(&image)) };
-        self.send(CardMsg::DragStarted);
-        self.beginDraggingSessionWithItems_event_source(
-            &NSArray::from_retained_slice(&[item]),
-            event,
-            ProtocolObject::from_ref(self),
-        );
-    }
 }
 
-/// What a column reports while something is dragged over it. Points are in the column's coordinates.
-pub enum DropMsg {
-    Over(NSPoint),
-    Exit,
-    Drop(NSPoint),
-}
-
-pub struct ColumnIvars {
-    pub on_drop: RefCell<Option<DropHandler>>,
+/// Where the cards live. Tracks the mouse over the whole board so stacks can fan
+/// out on hover; reports `None` when the mouse leaves.
+pub struct CanvasIvars {
+    pub on_hover: RefCell<Option<HoverHandler>>,
 }
 
 define_class!(
     // SAFETY: NSView has no subclassing requirements; no Drop impl.
     #[unsafe(super(NSView, NSResponder, NSObject))]
     #[thread_kind = MainThreadOnly]
-    #[ivars = ColumnIvars]
-    pub struct ColumnView;
+    #[ivars = CanvasIvars]
+    pub struct CanvasView;
 
-    impl ColumnView {
+    impl CanvasView {
         #[unsafe(method(isFlipped))]
         fn is_flipped(&self) -> bool {
             true
         }
 
-    }
-
-    unsafe impl NSObjectProtocol for ColumnView {}
-
-    unsafe impl NSDraggingDestination for ColumnView {
-        #[unsafe(method(draggingEntered:))]
-        fn dragging_entered(&self, info: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
-            self.over(info)
+        #[unsafe(method(updateTrackingAreas))]
+        fn update_tracking_areas(&self) {
+            for area in self.trackingAreas().iter() {
+                self.removeTrackingArea(&area);
+            }
+            let options = NSTrackingAreaOptions::MouseMoved
+                | NSTrackingAreaOptions::MouseEnteredAndExited
+                | NSTrackingAreaOptions::ActiveInKeyWindow
+                | NSTrackingAreaOptions::InVisibleRect;
+            let area = unsafe {
+                NSTrackingArea::initWithRect_options_owner_userInfo(
+                    NSTrackingArea::alloc(),
+                    NSRect::ZERO,
+                    options,
+                    Some(self),
+                    None,
+                )
+            };
+            self.addTrackingArea(&area);
+            unsafe { msg_send![super(self), updateTrackingAreas] }
         }
 
-        #[unsafe(method(draggingUpdated:))]
-        fn dragging_updated(&self, info: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
-            self.over(info)
+        #[unsafe(method(mouseMoved:))]
+        fn mouse_moved(&self, event: &NSEvent) {
+            let p = self.convertPoint_fromView(event.locationInWindow(), None);
+            self.send(Some(p));
         }
 
-        #[unsafe(method(draggingExited:))]
-        fn dragging_exited(&self, _info: Option<&ProtocolObject<dyn NSDraggingInfo>>) {
-            self.send(DropMsg::Exit);
+        #[unsafe(method(mouseExited:))]
+        fn mouse_exited(&self, _event: &NSEvent) {
+            self.send(None);
         }
 
-        #[unsafe(method(performDragOperation:))]
-        fn perform_drag(&self, info: &ProtocolObject<dyn NSDraggingInfo>) -> bool {
-            let p = self.convertPoint_fromView(info.draggingLocation(), None);
-            self.send(DropMsg::Drop(p))
+        // Only the cards take clicks; empty board passes them to the columns below.
+        #[unsafe(method_id(hitTest:))]
+        fn hit_test(&self, point: NSPoint) -> Option<Retained<NSView>> {
+            let hit: Option<Retained<NSView>> = unsafe { msg_send![super(self), hitTest: point] };
+            hit.filter(|v| !std::ptr::eq(&**v, &**self))
         }
     }
 );
 
-impl ColumnView {
-    pub fn new(mtm: MainThreadMarker, frame: NSRect) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(ColumnIvars {
-            on_drop: RefCell::new(None),
+impl CanvasView {
+    pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(CanvasIvars {
+            on_hover: RefCell::new(None),
         });
-        let view: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
-        view.registerForDraggedTypes(&NSArray::from_slice(&[unsafe { NSPasteboardTypeString }]));
-        view
+        unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] }
     }
 
-    fn over(&self, info: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
-        let p = self.convertPoint_fromView(info.draggingLocation(), None);
-        if self.send(DropMsg::Over(p)) {
-            NSDragOperation::Move
-        } else {
-            NSDragOperation::None
+    fn send(&self, p: Option<NSPoint>) {
+        if let Some(f) = self.ivars().on_hover.borrow().as_ref() {
+            f(p);
         }
-    }
-
-    fn send(&self, msg: DropMsg) -> bool {
-        self.ivars()
-            .on_drop
-            .borrow()
-            .as_ref()
-            .is_some_and(|f| f(msg))
     }
 }
 

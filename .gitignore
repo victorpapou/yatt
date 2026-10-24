@@ -1,3 +1,5 @@
 target/
 .DS_Store
 *.sqlite
+docs/reference/*.mp4
+docs/reference/frames/
