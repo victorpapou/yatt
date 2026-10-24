@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 yatt-core.workspace = true
 yatt-store.workspace = true
+yatt-engine.workspace = true
 anyhow.workspace = true
 # Compile Metal shaders at launch so the build needs only the Command Line Tools,
 # not full Xcode. Release builds can switch to precompiled shaders later.

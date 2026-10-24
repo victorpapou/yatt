@@ -11,6 +11,7 @@ rust-version = "1.89"
 [workspace.dependencies]
 yatt-core = { path = "crates/yatt-core" }
 yatt-store = { path = "crates/yatt-store" }
+yatt-engine = { path = "crates/yatt-engine" }
 yatt-platform = { path = "crates/yatt-platform" }
 gpui = "=0.2.2"
 jiff = { version = "0.2", features = ["serde"] }

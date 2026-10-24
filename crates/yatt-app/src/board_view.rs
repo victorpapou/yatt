@@ -8,10 +8,9 @@ use gpui::{
     IntoElement, ParentElement, Pixels, Point, Render, SharedString, StatefulInteractiveElement,
     Styled, Window, actions, div, prelude::FluentBuilder, px, rgb,
 };
-use jiff::Timestamp;
 use yatt_core::{Mode, Phase, Placement, Status, TaskId};
 
-use crate::state::AppState;
+use yatt_engine::Engine;
 
 actions!(yatt, [Undo, Redo, NewTask, StartPause, Stop, Skip]);
 
@@ -29,13 +28,13 @@ impl Render for DraggedTask {
 }
 
 pub struct BoardView {
-    state: AppState,
+    state: Engine,
     focus: FocusHandle,
     new_count: usize,
 }
 
 impl BoardView {
-    pub fn new(state: AppState, cx: &mut Context<Self>) -> Self {
+    pub fn new(state: Engine, cx: &mut Context<Self>) -> Self {
         // Redraw the clock a few times a second. The timer itself is computed
         // from timestamps, so the interval only affects smoothness, not accuracy.
         cx.spawn(async move |this, cx| {
@@ -67,7 +66,7 @@ impl BoardView {
     }
 
     fn header(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let now = Timestamp::now();
+        let now = self.state.now();
         let timer = &self.state.timer;
         let clock = match timer.remaining_ms(now) {
             Some(ms) => format_clock(ms),
@@ -113,7 +112,7 @@ impl BoardView {
                             .text_sm()
                             .text_color(rgb(0x8a8a93))
                             .child(SharedString::from(if active.is_empty() {
-                                "нет активных задач".to_string()
+                                "нет задач в работе".to_string()
                             } else {
                                 active
                             })),
@@ -169,9 +168,13 @@ impl BoardView {
         let cards = tasks.into_iter().enumerate().map(|(index, task)| {
             let id = task.id;
             let active = self.state.timer.active_tasks.contains(&id);
+            // Only tasks in progress collect time, and only while a work phase runs.
+            let tracking =
+                active && self.state.timer.is_running() && self.state.timer.is_tracking_phase();
             let time = self.state.times.get(&id).copied().unwrap_or_default();
             let meta = format!(
-                "{} · сегодня {} · 🍅 {}",
+                "{}{} · сегодня {} · 🍅 {}",
+                if tracking { "● " } else { "" },
                 format_duration(time.total_ms),
                 format_duration(time.today_ms),
                 time.pomodoros
@@ -180,9 +183,9 @@ impl BoardView {
                 id,
                 title: task.title.clone().into(),
             };
-            card_shell(active)
+            card_shell(tracking)
                 .id(ElementId::Name(SharedString::from(format!("card-{id}"))))
-                .cursor_pointer()
+                .cursor_grab()
                 .child(SharedString::from(task.title.clone()))
                 .child(
                     div()
@@ -190,10 +193,6 @@ impl BoardView {
                         .text_color(rgb(0x8a8a93))
                         .child(SharedString::from(meta)),
                 )
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.state.toggle_active(id);
-                    cx.notify();
-                }))
                 .on_drag(
                     dragged,
                     |d: &DraggedTask, _: Point<Pixels>, _: &mut Window, cx: &mut App| {
@@ -328,11 +327,8 @@ fn format_clock(ms: i64) -> String {
     format!("{:02}:{:02}", secs / 60, secs % 60)
 }
 
+/// h:mm:ss, so a few seconds of work are visible right away.
 fn format_duration(ms: i64) -> String {
-    let mins = ms / 60_000;
-    if mins < 60 {
-        format!("{mins}м")
-    } else {
-        format!("{}ч {:02}м", mins / 60, mins % 60)
-    }
+    let secs = ms.max(0) / 1000;
+    format!("{}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60)
 }

@@ -1,5 +1,4 @@
 mod board_view;
-mod state;
 
 use std::path::PathBuf;
 
@@ -7,10 +6,10 @@ use gpui::{
     App, AppContext, Application, Bounds, KeyBinding, WindowBounds, WindowOptions, actions, px,
     size,
 };
+use yatt_engine::Engine;
 use yatt_store::Store;
 
 use crate::board_view::{BoardView, NewTask, Redo, Skip, StartPause, Stop, Undo};
-use crate::state::AppState;
 
 actions!(yatt, [Quit]);
 
@@ -26,7 +25,7 @@ fn data_path() -> PathBuf {
 
 fn main() -> anyhow::Result<()> {
     let store = Store::open(&data_path())?;
-    let state = AppState::load(store)?;
+    let state = Engine::load(store)?;
 
     Application::new().run(move |cx: &mut App| {
         cx.bind_keys([

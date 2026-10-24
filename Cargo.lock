@@ -6997,6 +6997,7 @@ dependencies = [
  "gpui",
  "jiff",
  "yatt-core",
+ "yatt-engine",
  "yatt-store",
 ]
 
@@ -7009,6 +7010,16 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "uuid",
+]
+
+[[package]]
+name = "yatt-engine"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "jiff",
+ "yatt-core",
+ "yatt-store",
 ]
 
 [[package]]
