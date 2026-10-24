@@ -12,6 +12,7 @@ rust-version = "1.89"
 yatt-core = { path = "crates/yatt-core" }
 yatt-store = { path = "crates/yatt-store" }
 yatt-engine = { path = "crates/yatt-engine" }
+yatt-macos = { path = "crates/yatt-macos" }
 yatt-platform = { path = "crates/yatt-platform" }
 gpui = "=0.2.2"
 jiff = { version = "0.2", features = ["serde"] }
@@ -22,3 +23,4 @@ serde_json = "1"
 thiserror = "2"
 uuid = { version = "1", features = ["v7", "serde"] }
 anyhow = "1"
+futures = "0.3"
