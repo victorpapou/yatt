@@ -51,18 +51,33 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
         sink(UiEvent::StartPause);
         wait(2600).await;
         shot("2-running");
-        if let Some(id) = ids(cx, 1).first() {
-            sink(UiEvent::ToggleExpand(*id));
+        if let Some(id) = ids(cx, 1).first().copied() {
+            sink(UiEvent::SetNotes(
+                id,
+                "## План\n\n- колонки\n- **модалка**".into(),
+            ));
+            sink(UiEvent::ToggleExpand(id));
+            wait(150).await;
+            shot("3a-modal-morphing");
             wait(700).await;
-            shot("3-expanded");
+            shot("3b-modal");
+            window.debug_print_editor();
+            sink(UiEvent::ToggleExpand(id));
+            wait(700).await;
             sink(UiEvent::Move {
-                id: *id,
+                id,
                 status: Status::Done,
                 index: 0,
             });
             wait(700).await;
             shot("4-done");
         }
+        window.toggle_minimal();
+        wait(800).await;
+        shot("5-minimal");
+        window.toggle_minimal();
+        wait(800).await;
+        shot("6-board-again");
         eprintln!("demo: finished");
     })
     .detach();

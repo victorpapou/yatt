@@ -1,6 +1,10 @@
 //! The main window, drawn with AppKit. [`MainWindow::render`] diffs a [`Snapshot`]
 //! against the views it already has: cards are kept per task id, updated in place
-//! and moved with animations, so reorders, column moves and expansion stay smooth.
+//! and moved with animations, so reorders and column moves stay smooth.
+//!
+//! Layout: a header with the timer, then the board split into three columns by
+//! full-height 1 px dividers. A click on a card opens the task modal
+//! (`modal.rs`); minimal mode shrinks the window to the timer alone.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -11,14 +15,15 @@ use block2::{RcBlock, StackBlock};
 use objc2::rc::Retained;
 use objc2::rc::Weak as ObjcWeak;
 use objc2::runtime::AnyObject;
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, sel};
 use objc2_app_kit::{
-    NSAnimatablePropertyContainer, NSAnimationContext, NSAutoresizingMaskOptions,
-    NSBackingStoreType, NSBezelStyle, NSButton, NSColor, NSEvent, NSEventModifierFlags, NSFont,
-    NSFontWeightBold, NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold,
-    NSLineBreakMode, NSProgressIndicator, NSProgressIndicatorStyle, NSScrollView, NSTextAlignment,
-    NSTextField, NSTextView, NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
-    NSVisualEffectState, NSVisualEffectView, NSWindow, NSWindowStyleMask, NSWindowTitleVisibility,
+    NSAnimatablePropertyContainer, NSAnimationContext, NSApplication, NSAutoresizingMaskOptions,
+    NSBackingStoreType, NSBezelStyle, NSButton, NSColor, NSControlSize, NSEvent,
+    NSEventModifierFlags, NSFloatingWindowLevel, NSFont, NSFontWeightBold, NSFontWeightMedium,
+    NSFontWeightRegular, NSFontWeightSemibold, NSImage, NSLineBreakMode, NSNormalWindowLevel,
+    NSProgressIndicator, NSProgressIndicatorStyle, NSScrollView, NSTextAlignment, NSTextField,
+    NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
+    NSWindow, NSWindowStyleMask, NSWindowTitleVisibility,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString, ns_string};
 use objc2_quartz_core::{
@@ -28,9 +33,10 @@ use objc2_quartz_core::{
 use yatt_core::{Status, TaskId};
 
 use crate::classes::{
-    ActionTarget, CardMsg, CardView, ColumnView, DropMsg, FlippedView, NotesDelegate, RootView,
+    ActionTarget, CardMsg, CardView, ColumnView, DropMsg, Fill, FillView, FlippedView, RootView,
     WindowDelegate, editing_text,
 };
+use crate::modal::Modal;
 use crate::model::{CardSnap, Snapshot, TimerSnap, UiEvent, format_clock, format_duration};
 use crate::motion;
 
@@ -38,12 +44,13 @@ pub type Sink = Rc<dyn Fn(UiEvent)>;
 
 const HEADER_H: f64 = 112.0;
 const PAD: f64 = 16.0;
-const COLUMN_GAP: f64 = 12.0;
 const CARD_GAP: f64 = 8.0;
-const CARD_COLLAPSED_H: f64 = 60.0;
-const ENTRY_LINE_H: f64 = 16.0;
+const CARD_H: f64 = 60.0;
+const CARD_INSET: f64 = 12.0;
 const DIGIT_W: f64 = 28.0;
 const COLON_W: f64 = 14.0;
+/// Minimal mode: just the timer.
+const MINI_SIZE: (f64, f64) = (300.0, 136.0);
 
 pub struct MainWindow {
     ui: Rc<Ui>,
@@ -55,11 +62,19 @@ struct Ui {
     root: Retained<RootView>,
     sink: Sink,
     header: Header,
+    /// Everything below the header; hidden in minimal mode.
+    board: Retained<FlippedView>,
+    header_rule: Retained<FillView>,
+    dividers: [Retained<FillView>; 2],
     columns: [Column; 3],
     new_task: Retained<NSTextField>,
     cards: RefCell<HashMap<TaskId, Card>>,
     /// The card being dragged, hidden in its column until the drag ends.
     dragging: Cell<Option<TaskId>>,
+    modal: Modal,
+    minimal: Cell<bool>,
+    /// The window frame to go back to when leaving minimal mode.
+    saved_frame: Cell<NSRect>,
     last: RefCell<Option<Snapshot>>,
     // Kept alive for as long as the window: AppKit holds targets and delegates weakly.
     _retained: RefCell<Vec<Retained<AnyObject>>>,
@@ -76,12 +91,15 @@ struct Header {
     stopwatch: Retained<NSButton>,
     skip: Retained<NSButton>,
     stop: Retained<NSButton>,
+    mini: Retained<NSButton>,
     progress: Retained<NSProgressIndicator>,
+    minimal: Cell<bool>,
 }
 
 struct Column {
     status: Status,
     view: Retained<ColumnView>,
+    tint: Retained<FillView>,
     title: Retained<NSTextField>,
     count: Retained<NSTextField>,
     scroll: Retained<NSScrollView>,
@@ -90,26 +108,16 @@ struct Column {
     order: RefCell<Vec<TaskId>>,
     /// Where a dragged card would land, as an index among the visible cards.
     gap: Cell<Option<usize>>,
+    highlighted: Cell<bool>,
 }
 
 struct Card {
     view: Retained<CardView>,
     title: Retained<NSTextField>,
     meta: Retained<NSTextField>,
-    expanded: Option<Expanded>,
     snap: CardSnap,
-    height: f64,
+    status: Status,
     removing: bool,
-}
-
-struct Expanded {
-    title_field: Retained<NSTextField>,
-    notes_scroll: Retained<NSScrollView>,
-    notes: Retained<NSTextView>,
-    entries: Retained<NSTextField>,
-    done: Retained<NSButton>,
-    delete: Retained<NSButton>,
-    _retained: Vec<Retained<AnyObject>>,
 }
 
 impl MainWindow {
@@ -152,6 +160,11 @@ impl MainWindow {
         let header = Header::new(mtm, &sink, &mut retained);
         root.addSubview(&header.view);
 
+        let board = FlippedView::new(mtm, NSRect::ZERO);
+        root.addSubview(&board);
+        let header_rule = FillView::new(mtm, Fill::Separator);
+        board.addSubview(&header_rule);
+
         let new_task = NSTextField::textFieldWithString(ns_string!(""), mtm);
         new_task.setPlaceholderString(Some(ns_string!("Новая задача")));
         new_task.setBezelStyle(objc2_app_kit::NSTextFieldBezelStyle::RoundedBezel);
@@ -176,9 +189,20 @@ impl MainWindow {
 
         let columns = Status::ALL.map(|status| Column::new(mtm, status));
         for c in &columns {
-            root.addSubview(&c.view);
+            board.addSubview(&c.view);
         }
         columns[0].view.addSubview(&new_task);
+        let dividers = [
+            FillView::new(mtm, Fill::Separator),
+            FillView::new(mtm, Fill::Separator),
+        ];
+        for d in &dividers {
+            board.addSubview(d);
+        }
+
+        let modal = Modal::new(mtm, &sink);
+        root.addSubview(&modal.dim);
+        root.addSubview(&modal.panel);
 
         let ui = Rc::new(Ui {
             mtm,
@@ -186,10 +210,16 @@ impl MainWindow {
             root,
             sink: sink.clone(),
             header,
+            board,
+            header_rule,
+            dividers,
             columns,
             new_task,
             cards: RefCell::new(HashMap::new()),
             dragging: Cell::new(None),
+            modal,
+            minimal: Cell::new(false),
+            saved_frame: Cell::new(NSRect::ZERO),
             last: RefCell::new(None),
             _retained: RefCell::new(retained),
         });
@@ -213,8 +243,42 @@ impl MainWindow {
         self.ui.render(snap);
     }
 
+    /// cmd-N: put the cursor into the new-task field.
+    pub fn focus_new_task(&self) {
+        if self.ui.minimal.get() {
+            self.ui.toggle_minimal();
+        }
+        self.ui.window.makeFirstResponder(Some(&self.ui.new_task));
+    }
+
+    /// cmd-shift-M: the timer alone in a small floating window, or back to the board.
+    pub fn toggle_minimal(&self) {
+        self.ui.toggle_minimal();
+    }
+
+    pub fn is_minimal(&self) -> bool {
+        self.ui.minimal.get()
+    }
+
+    /// cmd-Z while typing undoes the typing, not the board. Returns true when it did.
+    pub fn text_undo(&self, redo: bool) -> bool {
+        if !editing_text(&self.ui.window) {
+            return false;
+        }
+        let action = if redo { sel!(redo:) } else { sel!(undo:) };
+        unsafe {
+            NSApplication::sharedApplication(self.ui.mtm).sendAction_to_from(action, None, None);
+        }
+        true
+    }
+
+    /// Development aid: prints the notes editor's rendered HTML to stderr.
+    pub fn debug_print_editor(&self) {
+        self.ui.modal.debug_print_editor();
+    }
+
     /// Draws the window's content into a PNG, without screen-recording permission.
-    /// Layer styling (card backgrounds, blur) does not show up; text and controls do.
+    /// Web content (the notes editor) does not show up; native views do.
     pub fn capture_png(&self, path: &str) -> bool {
         let Some(view) = self.ui.window.contentView() else {
             return false;
@@ -235,29 +299,6 @@ impl MainWindow {
         };
         data.writeToFile_atomically(&NSString::from_str(path), true)
     }
-
-    /// cmd-N: put the cursor into the new-task field.
-    pub fn focus_new_task(&self) {
-        self.ui.window.makeFirstResponder(Some(&self.ui.new_task));
-    }
-
-    /// cmd-Z while typing undoes the typing, not the board. Returns true when it did.
-    pub fn text_undo(&self, redo: bool) -> bool {
-        if !editing_text(&self.ui.window) {
-            return false;
-        }
-        let Some(responder) = self.ui.window.firstResponder() else {
-            return false;
-        };
-        if let Some(manager) = responder.undoManager() {
-            if redo {
-                manager.redo();
-            } else {
-                manager.undo();
-            }
-        }
-        true
-    }
 }
 
 impl Ui {
@@ -276,12 +317,37 @@ impl Ui {
             let weak = weak.clone();
             move |event: &NSEvent| weak.upgrade().is_some_and(|ui| ui.key_down(event))
         }));
+        *this.root.ivars().on_cancel.borrow_mut() = Some(Box::new({
+            let weak = weak.clone();
+            move || {
+                if let Some(ui) = weak.upgrade()
+                    && let Some(id) = ui.modal.open_task()
+                {
+                    (ui.sink)(UiEvent::ToggleExpand(id));
+                }
+            }
+        }));
         for (i, column) in this.columns.iter().enumerate() {
             let weak = weak.clone();
             *column.view.ivars().on_drop.borrow_mut() = Some(Box::new(move |msg| {
                 weak.upgrade().is_some_and(|ui| ui.on_drop(i, msg))
             }));
         }
+        let target = ActionTarget::new(this.mtm, {
+            let weak = weak.clone();
+            move || {
+                if let Some(ui) = weak.upgrade() {
+                    ui.toggle_minimal();
+                }
+            }
+        });
+        unsafe {
+            this.header.mini.setTarget(Some(&target));
+            this.header.mini.setAction(Some(ActionTarget::sel()));
+        }
+        this._retained
+            .borrow_mut()
+            .push(Retained::into_super(Retained::into_super(target)));
     }
 
     fn key_down(&self, event: &NSEvent) -> bool {
@@ -298,14 +364,6 @@ impl Ui {
                 (self.sink)(UiEvent::StartPause);
                 true
             }
-            // Escape collapses the open card.
-            53 => {
-                let open = self.last.borrow().as_ref().and_then(|s| s.expanded);
-                if let Some(id) = open {
-                    (self.sink)(UiEvent::ToggleExpand(id));
-                }
-                open.is_some()
-            }
             _ => false,
         }
     }
@@ -313,80 +371,104 @@ impl Ui {
     // ---- layout ----
 
     fn layout(&self, animate: bool) {
-        let size = self.root.bounds().size;
+        let bounds = self.root.bounds();
+        let size = bounds.size;
         self.header.view.setFrame(NSRect::new(
-            NSPoint::new(0.0, 0.0),
-            NSSize::new(size.width, HEADER_H),
+            NSPoint::ZERO,
+            NSSize::new(
+                size.width,
+                if self.minimal.get() {
+                    size.height
+                } else {
+                    HEADER_H
+                },
+            ),
         ));
-        self.header.layout(size.width);
+        self.header.layout(size.width, size.height);
+        self.modal.layout(bounds);
+        if self.minimal.get() {
+            return;
+        }
 
-        let col_w = ((size.width - 2.0 * PAD - 2.0 * COLUMN_GAP) / 3.0).floor();
-        let col_h = (size.height - HEADER_H - PAD).max(100.0);
+        let board_h = (size.height - HEADER_H).max(100.0);
+        self.board.setFrame(NSRect::new(
+            NSPoint::new(0.0, HEADER_H),
+            NSSize::new(size.width, board_h),
+        ));
+        self.header_rule
+            .setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(size.width, 1.0)));
+        let col_w = (size.width / 3.0).floor();
         for (i, c) in self.columns.iter().enumerate() {
-            let x = PAD + i as f64 * (col_w + COLUMN_GAP);
+            let x = i as f64 * col_w;
+            let w = if i == 2 { size.width - x } else { col_w };
             c.view.setFrame(NSRect::new(
-                NSPoint::new(x, HEADER_H),
-                NSSize::new(col_w, col_h),
+                NSPoint::new(x, 1.0),
+                NSSize::new(w, board_h - 1.0),
             ));
+            c.tint.setFrame(c.view.bounds());
             c.title.setFrame(NSRect::new(
-                NSPoint::new(14.0, 10.0),
-                NSSize::new(col_w - 70.0, 20.0),
+                NSPoint::new(PAD + 2.0, 14.0),
+                NSSize::new(w - 90.0, 20.0),
             ));
             c.count.setFrame(NSRect::new(
-                NSPoint::new(col_w - 54.0, 10.0),
+                NSPoint::new(w - PAD - 42.0, 14.0),
                 NSSize::new(40.0, 20.0),
             ));
-            let mut top = 38.0;
+            let mut top = 44.0;
             if i == 0 {
                 self.new_task.setFrame(NSRect::new(
-                    NSPoint::new(10.0, top),
-                    NSSize::new(col_w - 20.0, 24.0),
+                    NSPoint::new(CARD_INSET, top),
+                    NSSize::new(w - 2.0 * CARD_INSET, 24.0),
                 ));
-                top += 32.0;
+                top += 34.0;
             }
             c.scroll.setFrame(NSRect::new(
-                NSPoint::new(8.0, top),
-                NSSize::new(col_w - 16.0, (col_h - top - 8.0).max(40.0)),
+                NSPoint::new(CARD_INSET - 4.0, top),
+                NSSize::new(w - 2.0 * CARD_INSET + 8.0, (board_h - top - 1.0).max(40.0)),
             ));
+            if i < 2 {
+                self.dividers[i].setFrame(NSRect::new(
+                    NSPoint::new(x + w - 0.5, 1.0),
+                    NSSize::new(1.0, board_h),
+                ));
+            }
             self.layout_column(i, animate);
         }
     }
 
     /// Stacks a column's cards top to bottom, leaving room for a dragged card when needed.
     fn layout_column(&self, index: usize, animate: bool) {
+        self.layout_column_with(index, animate, motion::MOVE_SECS);
+    }
+
+    fn layout_column_with(&self, index: usize, animate: bool, secs: f64) {
         let c = &self.columns[index];
         let cards = self.cards.borrow();
         let clip = c.scroll.contentView().bounds().size;
-        let width = clip.width - 4.0;
-        let gap_h = self
-            .dragging
-            .get()
-            .and_then(|id| cards.get(&id))
-            .map_or(CARD_COLLAPSED_H, |card| card.height)
-            + CARD_GAP;
-        let mut y = 2.0;
+        let width = clip.width - 8.0;
+        let mut y = 4.0;
         let mut frames = Vec::new();
         let visible = self.visible_order(index);
         for (i, id) in visible.iter().enumerate() {
             if c.gap.get() == Some(i) {
-                y += gap_h;
+                y += CARD_H + CARD_GAP;
             }
             let Some(card) = cards.get(id) else { continue };
             frames.push((
                 card.view.clone(),
-                NSRect::new(NSPoint::new(2.0, y), NSSize::new(width, card.height)),
+                NSRect::new(NSPoint::new(4.0, y), NSSize::new(width, CARD_H)),
             ));
-            y += card.height + CARD_GAP;
+            y += CARD_H + CARD_GAP;
         }
         if c.gap.get() == Some(visible.len()) {
-            y += gap_h;
+            y += CARD_H + CARD_GAP;
         }
         c.doc
             .setFrameSize(NSSize::new(clip.width, y.max(clip.height)));
         c.count
             .setStringValue(&NSString::from_str(&c.order.borrow().len().to_string()));
         drop(cards);
-        animate_frames(frames, animate, motion::MOVE_SECS);
+        animate_frames(frames, animate, secs);
     }
 
     /// The column's cards without the one being dragged.
@@ -405,17 +487,26 @@ impl Ui {
     fn drop_index(&self, index: usize, p: NSPoint) -> usize {
         let c = &self.columns[index];
         let p = c.doc.convertPoint_fromView(p, Some(&c.view));
-        let cards = self.cards.borrow();
         let visible = self.visible_order(index);
-        let mut y = 2.0;
-        for (i, id) in visible.iter().enumerate() {
-            let h = cards.get(id).map_or(CARD_COLLAPSED_H, |c| c.height);
-            if p.y < y + h / 2.0 {
-                return i;
-            }
-            y += h + CARD_GAP;
-        }
-        visible.len()
+        let slot = ((p.y - 4.0 + CARD_GAP / 2.0) / (CARD_H + CARD_GAP)).floor();
+        (slot.max(0.0) as usize).min(visible.len())
+    }
+
+    /// Top of a card in its column's current order.
+    fn card_y(&self, index: usize, id: TaskId) -> f64 {
+        let pos = self.columns[index]
+            .order
+            .borrow()
+            .iter()
+            .position(|x| *x == id)
+            .unwrap_or(0);
+        4.0 + pos as f64 * (CARD_H + CARD_GAP)
+    }
+
+    fn column_of(&self, id: TaskId) -> Option<usize> {
+        self.columns
+            .iter()
+            .position(|c| c.order.borrow().contains(&id))
     }
 
     // ---- drag and drop ----
@@ -439,17 +530,30 @@ impl Ui {
                 // After a drop the card already sits in its new place; otherwise it comes back.
                 self.dragging.set(None);
                 if let Some(card) = self.cards.borrow().get(&id) {
-                    animate(true, motion::APPEAR_SECS, || {
-                        card.view.animator().setAlphaValue(1.0)
+                    let view = card.view.clone();
+                    animate(true, motion::APPEAR_SECS, move || {
+                        view.animator().setAlphaValue(1.0)
                     });
                 }
                 for (i, c) in self.columns.iter().enumerate() {
                     c.gap.set(None);
-                    set_highlight(&c.view, false);
+                    self.set_highlight(i, false);
                     self.layout_column(i, true);
                 }
             }
         }
+    }
+
+    fn set_highlight(&self, index: usize, on: bool) {
+        let c = &self.columns[index];
+        if c.highlighted.replace(on) == on {
+            return;
+        }
+        let tint = c.tint.clone();
+        let alpha = if on { 1.0 } else { 0.0 };
+        animate(true, motion::COLUMN_TINT_SECS, move || {
+            tint.animator().setAlphaValue(alpha)
+        });
     }
 
     fn on_drop(&self, index: usize, msg: DropMsg) -> bool {
@@ -460,22 +564,24 @@ impl Ui {
         match msg {
             DropMsg::Over(p) => {
                 let at = self.drop_index(index, p);
-                set_highlight(&c.view, true);
+                for i in 0..3 {
+                    self.set_highlight(i, i == index);
+                }
                 if c.gap.get() != Some(at) {
                     c.gap.set(Some(at));
-                    self.layout_column_gap(index);
+                    self.layout_column_with(index, true, motion::GAP_SECS);
                 }
                 true
             }
             DropMsg::Exit => {
-                set_highlight(&c.view, false);
+                self.set_highlight(index, false);
                 c.gap.set(None);
-                self.layout_column_gap(index);
+                self.layout_column_with(index, true, motion::GAP_SECS);
                 true
             }
             DropMsg::Drop(p) => {
                 let at = self.drop_index(index, p);
-                set_highlight(&c.view, false);
+                self.set_highlight(index, false);
                 c.gap.set(None);
                 // Put the card where the gap was right away, so the new snapshot finds it in place.
                 for col in &self.columns {
@@ -492,10 +598,10 @@ impl Ui {
                         card.view.removeFromSuperview();
                         c.doc.addSubview(&card.view);
                     }
-                    let width = c.scroll.contentView().bounds().size.width - 4.0;
+                    let width = c.scroll.contentView().bounds().size.width - 8.0;
                     card.view.setFrame(NSRect::new(
-                        NSPoint::new(2.0, y),
-                        NSSize::new(width, card.height),
+                        NSPoint::new(4.0, y),
+                        NSSize::new(width, CARD_H),
                     ));
                     card.view.setAlphaValue(1.0);
                 }
@@ -514,45 +620,54 @@ impl Ui {
         }
     }
 
-    fn layout_column_gap(&self, index: usize) {
-        // Gap changes animate faster than regular moves so the cards follow the cursor.
-        let c = &self.columns[index];
-        let cards = self.cards.borrow();
-        let width = c.scroll.contentView().bounds().size.width - 4.0;
-        let gap_h = self
-            .dragging
-            .get()
-            .and_then(|id| cards.get(&id))
-            .map_or(CARD_COLLAPSED_H, |card| card.height)
-            + CARD_GAP;
-        let mut y = 2.0;
-        let mut frames = Vec::new();
-        for (i, id) in self.visible_order(index).iter().enumerate() {
-            if c.gap.get() == Some(i) {
-                y += gap_h;
-            }
-            let Some(card) = cards.get(id) else { continue };
-            frames.push((
-                card.view.clone(),
-                NSRect::new(NSPoint::new(2.0, y), NSSize::new(width, card.height)),
-            ));
-            y += card.height + CARD_GAP;
-        }
-        drop(cards);
-        animate_frames(frames, true, motion::GAP_SECS);
-    }
+    // ---- minimal mode ----
 
-    /// Top of a card in its column's current order.
-    fn card_y(&self, index: usize, id: TaskId) -> f64 {
-        let cards = self.cards.borrow();
-        let mut y = 2.0;
-        for x in self.columns[index].order.borrow().iter() {
-            if *x == id {
-                break;
+    fn toggle_minimal(&self) {
+        let to_minimal = !self.minimal.get();
+        if to_minimal {
+            if let Some(id) = self.modal.open_task() {
+                (self.sink)(UiEvent::ToggleExpand(id));
             }
-            y += cards.get(x).map_or(CARD_COLLAPSED_H, |c| c.height) + CARD_GAP;
+            let frame = self.window.frame();
+            self.saved_frame.set(frame);
+            self.minimal.set(true);
+            self.header.minimal.set(true);
+            self.board.setHidden(true);
+            self.window
+                .setMinSize(NSSize::new(MINI_SIZE.0, MINI_SIZE.1));
+            // Keep the top-left corner where it is.
+            let target = NSRect::new(
+                NSPoint::new(
+                    frame.origin.x,
+                    frame.origin.y + frame.size.height - MINI_SIZE.1,
+                ),
+                NSSize::new(MINI_SIZE.0, MINI_SIZE.1),
+            );
+            self.window
+                .setFrame_display_animate(target, true, !motion::reduce_motion());
+            self.window.setLevel(NSFloatingWindowLevel);
+        } else {
+            self.minimal.set(false);
+            self.header.minimal.set(false);
+            self.window.setLevel(NSNormalWindowLevel);
+            self.window.setFrame_display_animate(
+                self.saved_frame.get(),
+                true,
+                !motion::reduce_motion(),
+            );
+            self.window.setMinSize(NSSize::new(760.0, 480.0));
+            self.board.setAlphaValue(0.0);
+            self.board.setHidden(false);
+            let board = self.board.clone();
+            animate(true, motion::APPEAR_SECS, move || {
+                board.animator().setAlphaValue(1.0)
+            });
         }
-        y
+        self.header.update_mini_icon();
+        self.layout(false);
+        if let Some(snap) = self.last.borrow().as_ref() {
+            self.header.update(&snap.timer);
+        }
     }
 
     // ---- render ----
@@ -567,12 +682,11 @@ impl Ui {
         for (index, column) in snap.columns.iter().enumerate() {
             let c = &self.columns[index];
             c.title.setStringValue(&NSString::from_str(&column.title));
+            *c.order.borrow_mut() = column.cards.iter().map(|c| c.id).collect();
             for card_snap in &column.cards {
                 seen.push(card_snap.id);
-                let expanded = snap.expanded == Some(card_snap.id);
-                self.upsert_card(index, card_snap, expanded);
+                self.upsert_card(index, card_snap);
             }
-            *c.order.borrow_mut() = column.cards.iter().map(|c| c.id).collect();
         }
 
         let gone: Vec<TaskId> = self
@@ -582,11 +696,13 @@ impl Ui {
             .filter(|(id, card)| !seen.contains(id) && !card.removing)
             .map(|(id, _)| *id)
             .collect();
+
+        self.sync_modal(snap);
         for id in gone {
             self.remove_card(id);
         }
 
-        if self.dragging.get().is_none() || !seen.contains(&self.dragging.get().unwrap()) {
+        if self.dragging.get().is_none_or(|id| !seen.contains(&id)) {
             for i in 0..3 {
                 self.layout_column(i, true);
             }
@@ -594,15 +710,70 @@ impl Ui {
         *self.last.borrow_mut() = Some(snap.clone());
     }
 
-    fn upsert_card(self: &Rc<Self>, index: usize, snap: &CardSnap, expanded: bool) {
+    /// Opens, closes or refreshes the modal to match `snap.expanded`.
+    fn sync_modal(self: &Rc<Self>, snap: &Snapshot) {
+        let open = self.modal.open_task();
+        let want = snap.expanded;
+        let find = |id: TaskId| {
+            snap.columns.iter().find_map(|c| {
+                c.cards
+                    .iter()
+                    .find(|card| card.id == id)
+                    .map(|card| (card.clone(), c.status))
+            })
+        };
+        if open == want {
+            if let Some((card, status)) = want.and_then(find) {
+                self.modal.update(&card, status);
+            }
+            return;
+        }
+        if let Some(id) = open {
+            let to = self.card_rect_in_root(id);
+            let weak = Rc::downgrade(self);
+            self.modal.close(to, move || {
+                if let Some(ui) = weak.upgrade()
+                    && let Some(card) = ui.cards.borrow().get(&id)
+                {
+                    card.view.setAlphaValue(1.0);
+                }
+            });
+            self.window.makeFirstResponder(Some(&self.root));
+        }
+        if let Some((card, status)) = want.and_then(find) {
+            let from = self
+                .card_rect_in_root(card.id)
+                .unwrap_or_else(|| Modal::target_frame(self.root.bounds()));
+            if let Some(view) = self.cards.borrow().get(&card.id) {
+                view.view.setAlphaValue(0.0);
+            }
+            self.modal.open(&card, status, from, self.root.bounds());
+        }
+    }
+
+    /// Where a card is on screen, in the root view's coordinates, if it is laid out.
+    fn card_rect_in_root(&self, id: TaskId) -> Option<NSRect> {
+        let index = self.column_of(id)?;
+        let c = &self.columns[index];
+        let width = c.scroll.contentView().bounds().size.width - 8.0;
+        let rect = NSRect::new(
+            NSPoint::new(4.0, self.card_y(index, id)),
+            NSSize::new(width, CARD_H),
+        );
+        Some(self.root.convertRect_fromView(rect, Some(&c.doc)))
+    }
+
+    fn upsert_card(self: &Rc<Self>, index: usize, snap: &CardSnap) {
+        let status = self.columns[index].status;
         let doc = &self.columns[index].doc;
         let mut cards = self.cards.borrow_mut();
         let card = match cards.get_mut(&snap.id) {
             Some(card) => {
                 card.removing = false;
                 // Moved to another column: keep its spot on screen, then animate to the new place.
-                if !unsafe { card.view.superview() }.is_some_and(|s| same(&s, doc)) {
-                    let frame = match unsafe { card.view.superview() } {
+                let parent = unsafe { card.view.superview() };
+                if !parent.as_ref().is_some_and(|s| same(s, doc)) {
+                    let frame = match parent {
                         Some(old) => doc.convertRect_fromView(card.view.frame(), Some(&old)),
                         None => card.view.frame(),
                     };
@@ -614,18 +785,11 @@ impl Ui {
             }
             None => {
                 let card = Card::new(self.mtm, snap, Rc::downgrade(self));
-                let y = {
-                    let order = self.columns[index].order.borrow();
-                    let pos = order.iter().position(|x| *x == snap.id).unwrap_or(0);
-                    order[..pos]
-                        .iter()
-                        .map(|x| cards.get(x).map_or(CARD_COLLAPSED_H, |c| c.height) + CARD_GAP)
-                        .sum::<f64>()
-                };
-                let width = self.columns[index].scroll.contentView().bounds().size.width - 4.0;
+                let y = self.card_y(index, snap.id);
+                let width = self.columns[index].scroll.contentView().bounds().size.width - 8.0;
                 card.view.setFrame(NSRect::new(
-                    NSPoint::new(2.0, y - 6.0),
-                    NSSize::new(width, card.height),
+                    NSPoint::new(4.0, y - 6.0),
+                    NSSize::new(width, CARD_H),
                 ));
                 card.view.setAlphaValue(0.0);
                 doc.addSubview(&card.view);
@@ -636,7 +800,7 @@ impl Ui {
                 cards.entry(snap.id).or_insert(card)
             }
         };
-        card.update(self, snap, expanded, self.columns[index].status);
+        card.update(snap, status);
     }
 
     fn remove_card(self: &Rc<Self>, id: TaskId) {
@@ -676,6 +840,7 @@ impl Header {
         let phase = label(mtm, "", 15.0, unsafe { NSFontWeightSemibold });
         let tasks = label(mtm, "", 12.0, unsafe { NSFontWeightRegular });
         tasks.setTextColor(Some(&NSColor::secondaryLabelColor()));
+        tasks.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
         view.addSubview(&phase);
         view.addSubview(&tasks);
 
@@ -691,27 +856,33 @@ impl Header {
                 )
             };
             b.setBezelStyle(NSBezelStyle::Push);
-            b.setControlSize(objc2_app_kit::NSControlSize::Large);
+            b.setControlSize(NSControlSize::Large);
             view.addSubview(&b);
             retained.push(Retained::into_super(Retained::into_super(target)));
             b
         };
         let primary = button("Старт", UiEvent::StartPause);
         primary.setBezelColor(Some(&NSColor::controlAccentColor()));
-        primary.setKeyEquivalent(ns_string!(""));
         let stopwatch = button("Секундомер", UiEvent::StartStopwatch);
         let skip = button("Пропустить", UiEvent::Skip);
         let stop = button("Стоп", UiEvent::Stop);
+
+        // Target and action are set in `Ui::wire`: minimal mode is window state, not an event.
+        let mini =
+            unsafe { NSButton::buttonWithTitle_target_action(ns_string!(""), None, None, mtm) };
+        mini.setBordered(false);
+        mini.setToolTip(Some(ns_string!("Только таймер (⇧⌘M)")));
+        view.addSubview(&mini);
 
         let progress = NSProgressIndicator::new(mtm);
         progress.setStyle(NSProgressIndicatorStyle::Bar);
         progress.setIndeterminate(false);
         progress.setMinValue(0.0);
         progress.setMaxValue(1.0);
-        progress.setControlSize(objc2_app_kit::NSControlSize::Small);
+        progress.setControlSize(NSControlSize::Small);
         view.addSubview(&progress);
 
-        Self {
+        let header = Self {
             view,
             digits_box,
             digits: RefCell::new(Vec::new()),
@@ -722,18 +893,68 @@ impl Header {
             stopwatch,
             skip,
             stop,
+            mini,
             progress,
-        }
+            minimal: Cell::new(false),
+        };
+        header.update_mini_icon();
+        header
     }
 
-    fn layout(&self, width: f64) {
-        let top = 34.0;
+    fn update_mini_icon(&self) {
+        let (symbol, tip) = if self.minimal.get() {
+            ("arrow.up.left.and.arrow.down.right", "Показать доску (⇧⌘M)")
+        } else {
+            ("arrow.down.right.and.arrow.up.left", "Только таймер (⇧⌘M)")
+        };
+        let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+            &NSString::from_str(symbol),
+            Some(&NSString::from_str(tip)),
+        );
+        self.mini.setImage(image.as_deref());
+        self.mini.setToolTip(Some(&NSString::from_str(tip)));
+    }
+
+    fn layout(&self, width: f64, height: f64) {
         let digits_w: f64 = self
             .digits
             .borrow()
             .iter()
             .map(|d| d.frame().size.width)
             .sum();
+        let minimal = self.minimal.get();
+        for b in [&self.stopwatch, &self.skip, &self.stop] {
+            if minimal {
+                b.setHidden(true);
+            }
+        }
+        self.tasks.setHidden(minimal);
+        self.mini.setFrame(NSRect::new(
+            NSPoint::new(width - 34.0, 4.0),
+            NSSize::new(24.0, 22.0),
+        ));
+        if minimal {
+            let top = 30.0;
+            self.digits_box.setFrame(NSRect::new(
+                NSPoint::new(PAD, top),
+                NSSize::new(digits_w.max(1.0), 56.0),
+            ));
+            self.phase.setFrame(NSRect::new(
+                NSPoint::new(PAD + 2.0, top + 58.0),
+                NSSize::new(width - 2.0 * PAD - 110.0, 20.0),
+            ));
+            let w = self.primary.fittingSize().width.max(96.0);
+            self.primary.setFrame(NSRect::new(
+                NSPoint::new(width - PAD - w, top + 12.0),
+                NSSize::new(w, 32.0),
+            ));
+            self.progress.setFrame(NSRect::new(
+                NSPoint::new(PAD, height - 12.0),
+                NSSize::new(width - 2.0 * PAD, 6.0),
+            ));
+            return;
+        }
+        let top = 34.0;
         self.digits_box.setFrame(NSRect::new(
             NSPoint::new(PAD + 4.0, top),
             NSSize::new(digits_w.max(1.0), 56.0),
@@ -763,7 +984,7 @@ impl Header {
             NSSize::new(text_w, 16.0),
         ));
         self.progress.setFrame(NSRect::new(
-            NSPoint::new(PAD, HEADER_H - 14.0),
+            NSPoint::new(PAD, HEADER_H - 16.0),
             NSSize::new(width - 2.0 * PAD, 6.0),
         ));
     }
@@ -779,7 +1000,8 @@ impl Header {
         self.skip.setHidden(!t.can_skip);
         self.stop.setHidden(!t.can_stop);
         self.progress.setDoubleValue(t.progress as f64);
-        self.layout(self.view.frame().size.width);
+        let size = self.view.frame().size;
+        self.layout(size.width, size.height);
     }
 
     /// One label per character; a changed digit rolls in from the top.
@@ -791,8 +1013,7 @@ impl Header {
         let mtm = MainThreadMarker::new().expect("main thread");
         let mut digits = self.digits.borrow_mut();
         let chars: Vec<char> = clock.chars().collect();
-        let rebuild = digits.len() != chars.len();
-        if rebuild {
+        if digits.len() != chars.len() {
             for d in digits.drain(..) {
                 d.removeFromSuperview();
             }
@@ -849,7 +1070,9 @@ impl Header {
 impl Column {
     fn new(mtm: MainThreadMarker, status: Status) -> Self {
         let view = ColumnView::new(mtm, NSRect::ZERO);
-        view.setWantsLayer(true);
+        let tint = FillView::new(mtm, Fill::Tint);
+        tint.setAlphaValue(0.0);
+        view.addSubview(&tint);
         let title = label(mtm, "", 13.0, unsafe { NSFontWeightBold });
         let count = label(mtm, "0", 12.0, unsafe { NSFontWeightRegular });
         count.setAlignment(NSTextAlignment::Right);
@@ -866,12 +1089,14 @@ impl Column {
         Self {
             status,
             view,
+            tint,
             title,
             count,
             scroll,
             doc,
             order: RefCell::new(Vec::new()),
             gap: Cell::new(None),
+            highlighted: Cell::new(false),
         }
     }
 }
@@ -881,7 +1106,7 @@ impl Card {
         let view = CardView::new(
             mtm,
             snap.id,
-            NSRect::new(NSPoint::ZERO, NSSize::new(200.0, CARD_COLLAPSED_H)),
+            NSRect::new(NSPoint::ZERO, NSSize::new(200.0, CARD_H)),
         );
         view.setWantsLayer(true);
         *view.ivars().on_msg.borrow_mut() = Some(Box::new(move |id, msg| {
@@ -901,7 +1126,6 @@ impl Card {
             11.0,
             unsafe { NSFontWeightRegular },
         )));
-        meta.setTextColor(Some(&NSColor::secondaryLabelColor()));
         meta.setFrame(NSRect::new(
             NSPoint::new(12.0, 33.0),
             NSSize::new(176.0, 16.0),
@@ -913,21 +1137,26 @@ impl Card {
             view,
             title,
             meta,
-            expanded: None,
             snap: snap.clone(),
-            height: CARD_COLLAPSED_H,
+            status: Status::Backlog,
             removing: false,
         }
     }
 
-    fn update(&mut self, ui: &Ui, snap: &CardSnap, expanded: bool, status: Status) {
+    fn update(&mut self, snap: &CardSnap, status: Status) {
         self.title.setStringValue(&NSString::from_str(&snap.title));
+        let notes = if snap.notes.trim().is_empty() {
+            ""
+        } else {
+            "  ·  ✎"
+        };
         let meta = format!(
-            "{}{}  ·  сегодня {}  ·  🍅 {}",
+            "{}{}  ·  сегодня {}  ·  🍅 {}{}",
             if snap.tracking { "● " } else { "" },
             format_duration(snap.total_ms),
             format_duration(snap.today_ms),
-            snap.pomodoros
+            snap.pomodoros,
+            notes
         );
         self.meta.setStringValue(&NSString::from_str(&meta));
         if self.view.ivars().tracking.get() != snap.tracking {
@@ -940,244 +1169,14 @@ impl Card {
             NSColor::secondaryLabelColor()
         };
         self.meta.setTextColor(Some(&color));
-
-        match (expanded, self.expanded.is_some()) {
-            (true, false) => self.expanded = Some(Expanded::new(ui, &self.view, snap)),
-            (false, true) => {
-                if let Some(e) = self.expanded.take() {
-                    e.remove();
-                }
-            }
-            _ => {}
-        }
-        self.title.setHidden(self.expanded.is_some());
-        if let Some(e) = &self.expanded {
-            e.update(&ui.window, snap, status);
-        }
-        self.height = match &self.expanded {
-            Some(e) => e.height(),
-            None => CARD_COLLAPSED_H,
-        };
         self.snap = snap.clone();
-    }
-}
-
-impl Expanded {
-    fn new(ui: &Ui, card: &CardView, snap: &CardSnap) -> Self {
-        let mtm = ui.mtm;
-        let id = snap.id;
-        let width = card.frame().size.width - 24.0;
-        let mut retained: Vec<Retained<AnyObject>> = Vec::new();
-        let fixed_top =
-            NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewMaxYMargin;
-
-        let title_field = NSTextField::textFieldWithString(&NSString::from_str(&snap.title), mtm);
-        title_field.setFont(Some(&NSFont::systemFontOfSize_weight(13.0, unsafe {
-            NSFontWeightMedium
-        })));
-        title_field.setFrame(NSRect::new(
-            NSPoint::new(10.0, 6.0),
-            NSSize::new(width + 4.0, 24.0),
-        ));
-        title_field.setAutoresizingMask(fixed_top);
-        if let Some(cell) = title_field.cell() {
-            cell.setSendsActionOnEndEditing(true);
-        }
-        {
-            let sink = ui.sink.clone();
-            let field = ObjcWeak::from_retained(&title_field);
-            let original = RefCell::new(snap.title.clone());
-            let target = ActionTarget::new(mtm, move || {
-                let Some(field) = field.load() else { return };
-                let title = field.stringValue().to_string();
-                let title = title.trim().to_string();
-                if !title.is_empty() && title != *original.borrow() {
-                    *original.borrow_mut() = title.clone();
-                    sink(UiEvent::Rename(id, title));
-                }
-            });
-            unsafe {
-                title_field.setTarget(Some(&target));
-                title_field.setAction(Some(ActionTarget::sel()));
-            }
-            retained.push(Retained::into_super(Retained::into_super(target)));
-        }
-
-        let notes_scroll = NSTextView::scrollableTextView(mtm);
-        notes_scroll.setFrame(NSRect::new(
-            NSPoint::new(12.0, 58.0),
-            NSSize::new(width, 72.0),
-        ));
-        notes_scroll.setAutoresizingMask(fixed_top);
-        notes_scroll.setBorderType(objc2_app_kit::NSBorderType::BezelBorder);
-        let notes = notes_scroll
-            .documentView()
-            .and_then(|v| v.downcast::<NSTextView>().ok())
-            .expect("scrollable text view");
-        notes.setRichText(false);
-        notes.setFont(Some(&NSFont::systemFontOfSize(12.0)));
-        notes.setString(&NSString::from_str(&snap.notes));
-        {
-            let sink = ui.sink.clone();
-            let original = RefCell::new(snap.notes.clone());
-            let delegate = NotesDelegate::new(mtm, move |text| {
-                if text != *original.borrow() {
-                    *original.borrow_mut() = text.clone();
-                    sink(UiEvent::SetNotes(id, text));
-                }
-            });
-            notes.setDelegate(Some(delegate.as_delegate()));
-            retained.push(Retained::into_super(Retained::into_super(delegate)));
-        }
-
-        let entries = label(mtm, "", 11.0, unsafe { NSFontWeightRegular });
-        entries.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(
-            11.0,
-            unsafe { NSFontWeightRegular },
-        )));
-        entries.setTextColor(Some(&NSColor::secondaryLabelColor()));
-        entries.setAutoresizingMask(fixed_top);
-        entries.setMaximumNumberOfLines(0);
-
-        let mut button = |title: &str, event: UiEvent| {
-            let sink = ui.sink.clone();
-            let target = ActionTarget::new(mtm, move || sink(event.clone()));
-            let b = unsafe {
-                NSButton::buttonWithTitle_target_action(
-                    &NSString::from_str(title),
-                    Some(&target),
-                    Some(ActionTarget::sel()),
-                    mtm,
-                )
-            };
-            b.setControlSize(objc2_app_kit::NSControlSize::Small);
-            b.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMaxYMargin);
-            retained.push(Retained::into_super(Retained::into_super(target)));
-            b
-        };
-        let done = button(
-            "Готово",
-            UiEvent::Move {
-                id,
-                status: Status::Done,
-                index: 0,
-            },
-        );
-        let delete = button("Удалить", UiEvent::Delete(id));
-
-        let views: [&NSView; 5] = [&title_field, &notes_scroll, &entries, &done, &delete];
-        for v in views {
-            v.setAlphaValue(0.0);
-            card.addSubview(v);
-        }
-        animate(true, motion::EXPAND_SECS, || {
-            for v in views {
-                v.animator().setAlphaValue(1.0);
-            }
-        });
-
-        Self {
-            title_field,
-            notes_scroll,
-            notes,
-            entries,
-            done,
-            delete,
-            _retained: retained,
-        }
-    }
-
-    fn entries_top() -> f64 {
-        140.0
-    }
-
-    fn entries_height(&self) -> f64 {
-        let lines = self
-            .entries
-            .stringValue()
-            .to_string()
-            .lines()
-            .count()
-            .max(1);
-        lines as f64 * ENTRY_LINE_H
-    }
-
-    fn height(&self) -> f64 {
-        Self::entries_top() + self.entries_height() + 8.0 + 24.0 + 12.0
-    }
-
-    fn update(&self, window: &NSWindow, snap: &CardSnap, status: Status) {
-        // Never overwrite what the user is typing.
-        if self.title_field.currentEditor().is_none() {
-            self.title_field
-                .setStringValue(&NSString::from_str(&snap.title));
-        }
-        let notes_focused = window.firstResponder().is_some_and(|r| {
-            std::ptr::eq(
-                &*r as *const _ as *const AnyObject,
-                &*self.notes as *const _ as *const AnyObject,
-            )
-        });
-        if !notes_focused && self.notes.string().to_string() != snap.notes {
-            self.notes.setString(&NSString::from_str(&snap.notes));
-        }
-        let text = if snap.entries.is_empty() {
-            "Записей времени пока нет".to_string()
-        } else {
-            snap.entries.join("\n")
-        };
-        self.entries.setStringValue(&NSString::from_str(&text));
-        let width = self.notes_scroll.frame().size.width;
-        let eh = self.entries_height();
-        self.entries.setFrame(NSRect::new(
-            NSPoint::new(12.0, Self::entries_top()),
-            NSSize::new(width, eh),
-        ));
-        let y = Self::entries_top() + eh + 8.0;
-        // A finished task has nothing to finish.
-        let mut x = 10.0;
-        self.done.setHidden(status == Status::Done);
-        if status != Status::Done {
-            let w = self.done.fittingSize().width.max(70.0);
-            self.done
-                .setFrame(NSRect::new(NSPoint::new(x, y), NSSize::new(w, 24.0)));
-            x += w + 6.0;
-        }
-        let w = self.delete.fittingSize().width.max(70.0);
-        self.delete
-            .setFrame(NSRect::new(NSPoint::new(x, y), NSSize::new(w, 24.0)));
-    }
-
-    fn remove(self) {
-        let views: Vec<Retained<NSView>> = vec![
-            Retained::into_super(Retained::into_super(self.title_field)),
-            Retained::into_super(self.notes_scroll),
-            Retained::into_super(Retained::into_super(self.entries)),
-            Retained::into_super(Retained::into_super(self.done)),
-            Retained::into_super(Retained::into_super(self.delete)),
-        ];
-        let retained = self._retained;
-        let fade = views.clone();
-        animate_with_completion(
-            motion::APPEAR_SECS * 0.6,
-            move || {
-                for v in &fade {
-                    v.animator().setAlphaValue(0.0);
-                }
-            },
-            move || {
-                for v in &views {
-                    v.removeFromSuperview();
-                }
-                let _keep = &retained;
-            },
-        );
+        self.status = status;
     }
 }
 
 // ---- helpers ----
 
-fn same(a: &NSView, b: &NSView) -> bool {
+fn same(a: &objc2_app_kit::NSView, b: &objc2_app_kit::NSView) -> bool {
     std::ptr::eq(a, b)
 }
 
@@ -1187,21 +1186,13 @@ fn label(mtm: MainThreadMarker, text: &str, size: f64, weight: f64) -> Retained<
     l
 }
 
-fn set_highlight(view: &ColumnView, on: bool) {
-    if view.ivars().highlight.get() != on {
-        view.ivars().highlight.set(on);
-        view.setNeedsDisplay(true);
-    }
-}
-
 fn timing() -> Retained<CAMediaTimingFunction> {
     let [a, b, c, d] = motion::SPRING_CURVE;
     CAMediaTimingFunction::functionWithControlPoints(a, b, c, d)
 }
 
-/// Runs `changes` inside an animation group (or right away when `animated` is false
-/// or the system asks for reduced motion).
-fn animate(animated: bool, secs: f64, changes: impl Fn()) {
+/// Runs `changes` inside an animation group (or right away when `animated` is false).
+pub(crate) fn animate(animated: bool, secs: f64, changes: impl Fn()) {
     if !animated {
         changes();
         return;
@@ -1218,7 +1209,7 @@ fn animate(animated: bool, secs: f64, changes: impl Fn()) {
     NSAnimationContext::runAnimationGroup(&block);
 }
 
-fn animate_with_completion(secs: f64, changes: impl Fn(), done: impl Fn() + 'static) {
+pub(crate) fn animate_with_completion(secs: f64, changes: impl Fn(), done: impl Fn() + 'static) {
     let changes = &changes;
     let block = StackBlock::new(move |ctx: NonNull<NSAnimationContext>| {
         let ctx = unsafe { ctx.as_ref() };

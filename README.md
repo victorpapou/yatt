@@ -14,7 +14,7 @@ yet another task tracker: a native macOS task manager in Rust + [GPUI](https://w
 | `yatt-store` | SQLite persistence (WAL file in `~/Library/Application Support/yatt`). |
 | `yatt-engine` | Live app state: board + timer + store, and the rules between them. No UI, testable anywhere. |
 | `yatt-platform` | OS integration traits (app/site blocking, Focus). macOS and Windows implement them. |
-| `yatt-macos` | Native AppKit window (objc2): renders `Snapshot`s, reports `UiEvent`s. Knows nothing about storage. |
+| `yatt-macos` | Native AppKit window (objc2): renders `Snapshot`s, reports `UiEvent`s. Knows nothing about storage. Notes use Tiptap in a WKWebView, bundled from `crates/yatt-macos/editor` (`npm install && npm run build` there; the built `dist/editor.js` is committed). |
 | `yatt-app` | The app: GPUI holds the state (`Workspace` entity over the engine) and menus; AppKit draws. |
 
 ## Run
@@ -26,4 +26,4 @@ cargo test --workspace
 YATT_DEMO=/tmp/yatt-demo cargo run -p yatt-app   # scripted session, saves window PNGs there
 ```
 
-Shortcuts: `space` start/pause (outside text fields), `cmd-.` stop, `cmd-]` skip phase, `cmd-n` new task, `cmd-z` / `cmd-shift-z` undo/redo, `esc` collapses the open card. Click a card to open it (title, notes, time entries); drag cards between columns. Time goes to every task in "In progress" while a work phase runs (two tasks there get the full time each). Drag a card out of the column, or delete it, and its time stops.
+Shortcuts: `space` start/pause (outside text fields), `cmd-.` stop, `cmd-]` skip phase, `cmd-n` new task, `cmd-z` / `cmd-shift-z` undo/redo, `cmd-shift-m` timer-only mode, `esc` closes the task. Click a card to open it (title, markdown notes, time entries); drag cards between columns. Time goes to every task in "In progress" while a work phase runs (two tasks there get the full time each). Drag a card out of the column, or delete it, and its time stops.

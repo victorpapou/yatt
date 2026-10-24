@@ -17,7 +17,8 @@ use crate::workspace::Workspace;
 actions!(
     yatt,
     [
-        Quit, NewTask, Undo, Redo, StartPause, Stopwatch, Stop, Skip, Cut, Copy, Paste, SelectAll
+        Quit, NewTask, Undo, Redo, StartPause, Stopwatch, Stop, Skip, Minimal, Cut, Copy, Paste,
+        SelectAll
     ]
 );
 
@@ -112,6 +113,7 @@ fn install_menus(cx: &mut App, window: &Rc<MainWindow>, sink: &yatt_macos::Sink)
         KeyBinding::new("cmd-shift-z", Redo, None),
         KeyBinding::new("cmd-.", Stop, None),
         KeyBinding::new("cmd-]", Skip, None),
+        KeyBinding::new("cmd-shift-m", Minimal, None),
         KeyBinding::new("cmd-x", Cut, None),
         KeyBinding::new("cmd-c", Copy, None),
         KeyBinding::new("cmd-v", Paste, None),
@@ -122,6 +124,10 @@ fn install_menus(cx: &mut App, window: &Rc<MainWindow>, sink: &yatt_macos::Sink)
     {
         let window = window.clone();
         cx.on_action(move |_: &NewTask, _| window.focus_new_task());
+    }
+    {
+        let window = window.clone();
+        cx.on_action(move |_: &Minimal, _| window.toggle_minimal());
     }
     let send = |event: UiEvent| {
         let sink = sink.clone();
@@ -181,6 +187,10 @@ fn install_menus(cx: &mut App, window: &Rc<MainWindow>, sink: &yatt_macos::Sink)
                 MenuItem::action("Пропустить фазу", Skip),
                 MenuItem::action("Стоп", Stop),
             ],
+        },
+        Menu {
+            name: "Вид".into(),
+            items: vec![MenuItem::action("Только таймер", Minimal)],
         },
     ]);
 }

@@ -4,7 +4,7 @@
 use std::cell::{Cell, RefCell};
 
 use objc2::rc::Retained;
-use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
+use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{
     AnyThread, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send,
     sel,
@@ -12,10 +12,10 @@ use objc2::{
 use objc2_app_kit::{
     NSColor, NSDragOperation, NSDraggingContext, NSDraggingDestination, NSDraggingInfo,
     NSDraggingItem, NSDraggingSession, NSDraggingSource, NSEvent, NSImage, NSPasteboardTypeString,
-    NSResponder, NSTextDelegate, NSTextView, NSTextViewDelegate, NSView, NSWindow,
-    NSWindowDelegate,
+    NSResponder, NSView, NSWindow, NSWindowDelegate,
 };
 use objc2_foundation::{NSArray, NSNotification, NSPoint, NSRect, NSString};
+use objc2_web_kit::{WKScriptMessage, WKScriptMessageHandler, WKUserContentController};
 use yatt_core::TaskId;
 
 pub type KeyHandler = Box<dyn Fn(&NSEvent) -> bool>;
@@ -53,49 +53,6 @@ impl ActionTarget {
 
     pub fn sel() -> objc2::runtime::Sel {
         sel!(fire:)
-    }
-}
-
-// ---- notes text view delegate ----
-
-pub struct NotesIvars {
-    on_end: Box<dyn Fn(String)>,
-}
-
-define_class!(
-    // SAFETY: NSObject has no subclassing requirements; no Drop impl.
-    #[unsafe(super(NSObject))]
-    #[thread_kind = MainThreadOnly]
-    #[ivars = NotesIvars]
-    pub struct NotesDelegate;
-
-    unsafe impl NSObjectProtocol for NotesDelegate {}
-
-    unsafe impl NSTextDelegate for NotesDelegate {
-        #[unsafe(method(textDidEndEditing:))]
-        fn text_did_end_editing(&self, notification: &NSNotification) {
-            let Some(obj) = notification.object() else {
-                return;
-            };
-            if let Ok(view) = obj.downcast::<NSTextView>() {
-                (self.ivars().on_end)(view.string().to_string());
-            }
-        }
-    }
-
-    unsafe impl NSTextViewDelegate for NotesDelegate {}
-);
-
-impl NotesDelegate {
-    pub fn new(mtm: MainThreadMarker, on_end: impl Fn(String) + 'static) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(NotesIvars {
-            on_end: Box::new(on_end),
-        });
-        unsafe { msg_send![super(this), init] }
-    }
-
-    pub fn as_delegate(&self) -> &ProtocolObject<dyn NSTextViewDelegate> {
-        ProtocolObject::from_ref(self)
     }
 }
 
@@ -161,6 +118,8 @@ impl FlippedView {
 
 pub struct RootIvars {
     pub on_layout: RefCell<Option<Box<dyn Fn()>>>,
+    /// Esc anywhere in the window that nothing else handled (`cancelOperation:`).
+    pub on_cancel: RefCell<Option<Box<dyn Fn()>>>,
     /// Returns true when it handled the key.
     pub on_key: RefCell<Option<KeyHandler>>,
 }
@@ -190,6 +149,13 @@ define_class!(
             }
         }
 
+        #[unsafe(method(cancelOperation:))]
+        fn cancel_operation(&self, _sender: Option<&AnyObject>) {
+            if let Some(f) = self.ivars().on_cancel.borrow().as_ref() {
+                f();
+            }
+        }
+
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
             let handled = self
@@ -209,9 +175,126 @@ impl RootView {
     pub fn new(mtm: MainThreadMarker, frame: NSRect) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(RootIvars {
             on_layout: RefCell::new(None),
+            on_cancel: RefCell::new(None),
             on_key: RefCell::new(None),
         });
         unsafe { msg_send![super(this), initWithFrame: frame] }
+    }
+}
+
+/// What a [`FillView`] paints.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Fill {
+    /// A 1 px divider line.
+    Separator,
+    /// The light tint over the column a card is dragged over.
+    Tint,
+    /// The backdrop behind the task modal.
+    Dim,
+    /// The modal panel itself.
+    Panel,
+}
+
+pub struct FillIvars {
+    pub fill: Fill,
+    pub on_click: RefCell<Option<Box<dyn Fn()>>>,
+}
+
+define_class!(
+    // SAFETY: NSView has no subclassing requirements; no Drop impl.
+    #[unsafe(super(NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = FillIvars]
+    pub struct FillView;
+
+    impl FillView {
+        #[unsafe(method(isFlipped))]
+        fn is_flipped(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(wantsUpdateLayer))]
+        fn wants_update_layer(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(updateLayer))]
+        fn update_layer(&self) {
+            let Some(layer) = self.layer() else { return };
+            let color = match self.ivars().fill {
+                Fill::Separator => NSColor::separatorColor(),
+                Fill::Tint => NSColor::labelColor().colorWithAlphaComponent(0.035),
+                Fill::Dim => NSColor::blackColor().colorWithAlphaComponent(0.28),
+                Fill::Panel => NSColor::windowBackgroundColor(),
+            };
+            layer.setBackgroundColor(Some(&color.CGColor()));
+            if self.ivars().fill == Fill::Panel {
+                layer.setCornerRadius(16.0);
+                layer.setBorderWidth(0.5);
+                layer.setBorderColor(Some(&NSColor::separatorColor().CGColor()));
+                layer.setShadowColor(Some(&NSColor::shadowColor().CGColor()));
+                layer.setShadowOpacity(0.3);
+                layer.setShadowRadius(24.0);
+                layer.setShadowOffset(objc2_foundation::NSSize::new(0.0, -8.0));
+            }
+        }
+
+        #[unsafe(method(mouseDown:))]
+        fn mouse_down(&self, event: &NSEvent) {
+            match self.ivars().on_click.borrow().as_ref() {
+                Some(f) => f(),
+                // Panels swallow clicks so they do not reach the board below.
+                None if self.ivars().fill == Fill::Panel => {}
+                None => unsafe { msg_send![super(self), mouseDown: event] },
+            }
+        }
+    }
+);
+
+impl FillView {
+    pub fn new(mtm: MainThreadMarker, fill: Fill) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(FillIvars {
+            fill,
+            on_click: RefCell::new(None),
+        });
+        let view: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
+        view.setWantsLayer(true);
+        view
+    }
+}
+
+// ---- WebKit bridge ----
+
+pub struct ScriptIvars {
+    on_message: Box<dyn Fn(String)>,
+}
+
+define_class!(
+    // SAFETY: NSObject has no subclassing requirements; no Drop impl.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = ScriptIvars]
+    pub struct ScriptHandler;
+
+    unsafe impl NSObjectProtocol for ScriptHandler {}
+
+    unsafe impl WKScriptMessageHandler for ScriptHandler {
+        #[unsafe(method(userContentController:didReceiveScriptMessage:))]
+        fn did_receive(&self, _controller: &WKUserContentController, message: &WKScriptMessage) {
+            let body = unsafe { message.body() };
+            if let Ok(text) = body.downcast::<NSString>() {
+                (self.ivars().on_message)(text.to_string());
+            }
+        }
+    }
+);
+
+impl ScriptHandler {
+    pub fn new(mtm: MainThreadMarker, on_message: impl Fn(String) + 'static) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(ScriptIvars {
+            on_message: Box::new(on_message),
+        });
+        unsafe { msg_send![super(this), init] }
     }
 }
 
@@ -372,8 +455,6 @@ pub enum DropMsg {
 }
 
 pub struct ColumnIvars {
-    /// A card is dragged over this column.
-    pub highlight: Cell<bool>,
     pub on_drop: RefCell<Option<DropHandler>>,
 }
 
@@ -390,22 +471,6 @@ define_class!(
             true
         }
 
-        #[unsafe(method(wantsUpdateLayer))]
-        fn wants_update_layer(&self) -> bool {
-            true
-        }
-
-        #[unsafe(method(updateLayer))]
-        fn update_layer(&self) {
-            let Some(layer) = self.layer() else { return };
-            layer.setCornerRadius(12.0);
-            let fill = if self.ivars().highlight.get() {
-                NSColor::tertiaryLabelColor()
-            } else {
-                NSColor::quaternaryLabelColor()
-            };
-            layer.setBackgroundColor(Some(&fill.colorWithAlphaComponent(0.35).CGColor()));
-        }
     }
 
     unsafe impl NSObjectProtocol for ColumnView {}
@@ -437,7 +502,6 @@ define_class!(
 impl ColumnView {
     pub fn new(mtm: MainThreadMarker, frame: NSRect) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(ColumnIvars {
-            highlight: Cell::new(false),
             on_drop: RefCell::new(None),
         });
         let view: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
@@ -465,7 +529,19 @@ impl ColumnView {
 
 /// The window's current first responder is a text editor (a field being edited or a text view).
 pub fn editing_text(window: &NSWindow) -> bool {
-    window
-        .firstResponder()
-        .is_some_and(|r| r.isKindOfClass(objc2_app_kit::NSText::class()))
+    let Some(r) = window.firstResponder() else {
+        return false;
+    };
+    if r.isKindOfClass(objc2_app_kit::NSText::class()) {
+        return true;
+    }
+    // Inside a web view the first responder is one of WebKit's private subviews.
+    let mut view = r.downcast::<NSView>().ok();
+    while let Some(v) = view {
+        if v.isKindOfClass(objc2_web_kit::WKWebView::class()) {
+            return true;
+        }
+        view = unsafe { v.superview() };
+    }
+    false
 }

@@ -6,6 +6,10 @@ pub mod model;
 #[cfg(target_os = "macos")]
 mod classes;
 #[cfg(target_os = "macos")]
+mod editor;
+#[cfg(target_os = "macos")]
+mod modal;
+#[cfg(target_os = "macos")]
 pub mod motion;
 #[cfg(target_os = "macos")]
 mod window;
