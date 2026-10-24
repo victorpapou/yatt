@@ -1,0 +1,11 @@
+[package]
+name = "yatt-platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OS integration traits for yatt. macOS and (later) Windows implement them in their own crates."
+
+[dependencies]
+jiff.workspace = true
+thiserror.workspace = true

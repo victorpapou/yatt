@@ -1,0 +1,16 @@
+[package]
+name = "yatt-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "SQLite persistence for yatt."
+
+[dependencies]
+yatt-core.workspace = true
+jiff.workspace = true
+rusqlite.workspace = true
+rusqlite_migration.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
