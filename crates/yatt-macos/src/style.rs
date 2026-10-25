@@ -60,13 +60,76 @@ const GLYPHS: [&str; 6] = [
     "doc.fill",
 ];
 
-/// A stable colour index for a task, until projects and tags carry colours.
+/// Every icon a card can wear, for the picker: the six picked from the id
+/// first.
+pub const ICONS: [&str; 24] = [
+    "paperplane.fill",
+    "flag.fill",
+    "bubble.left.fill",
+    "sun.max.fill",
+    "calendar",
+    "doc.fill",
+    "star.fill",
+    "heart.fill",
+    "bolt.fill",
+    "flame.fill",
+    "leaf.fill",
+    "book.fill",
+    "pencil",
+    "hammer.fill",
+    "wrench.and.screwdriver.fill",
+    "cart.fill",
+    "phone.fill",
+    "envelope.fill",
+    "person.fill",
+    "house.fill",
+    "briefcase.fill",
+    "graduationcap.fill",
+    "music.note",
+    "gamecontroller.fill",
+];
+
+/// How many colours a card can be.
+pub const HUE_COUNT: usize = HUES.len();
+
+/// A task's own colour and icon.
+type Look = (Option<usize>, Option<&'static str>);
+
+thread_local! {
+    /// Colours and icons tasks chose for themselves (from the snapshot).
+    static LOOKS: std::cell::RefCell<std::collections::HashMap<TaskId, Look>> =
+        Default::default();
+}
+
+/// Records the colour and icon a task chose (`None`: the one from its id).
+pub fn set_look(id: TaskId, color: Option<u8>, icon: Option<&str>) {
+    let color = color.map(|c| c as usize % HUES.len());
+    let icon = icon.and_then(|i| ICONS.iter().copied().find(|x| *x == i));
+    LOOKS.with(|l| {
+        let mut l = l.borrow_mut();
+        if color.is_none() && icon.is_none() {
+            l.remove(&id);
+        } else {
+            l.insert(id, (color, icon));
+        }
+    });
+}
+
+fn look(id: TaskId) -> Look {
+    LOOKS.with(|l| l.borrow().get(&id).copied().unwrap_or_default())
+}
+
+/// A task's colour index: its own, or a stable one from its id.
 pub fn hue_of(id: TaskId) -> usize {
-    (fold(id) % HUES.len() as u64) as usize
+    look(id)
+        .0
+        .unwrap_or((fold(id) % HUES.len() as u64) as usize)
 }
 
 pub fn glyph_of(id: TaskId) -> &'static str {
-    GLYPHS[((fold(id) / 7) % GLYPHS.len() as u64) as usize]
+    look(id)
+        .1
+        .unwrap_or(GLYPHS[((fold(id) / 7) % GLYPHS.len() as u64) as usize])
 }
 
 fn fold(id: TaskId) -> u64 {
@@ -100,6 +163,11 @@ pub fn fill(hue: usize) -> Retained<NSColor> {
         (false, false) => 0.55,
     };
     rgb(HUES[hue % HUES.len()].0, alpha)
+}
+
+/// A card colour, solid: for the colour picker.
+pub fn swatch(hue: usize) -> Retained<NSColor> {
+    rgb(HUES[hue % HUES.len()].0, 1.0)
 }
 
 pub fn text(hue: usize) -> Retained<NSColor> {

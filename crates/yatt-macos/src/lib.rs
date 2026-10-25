@@ -16,6 +16,8 @@ mod modal;
 #[cfg(target_os = "macos")]
 pub mod motion;
 #[cfg(target_os = "macos")]
+mod picker;
+#[cfg(target_os = "macos")]
 mod style;
 #[cfg(target_os = "macos")]
 mod window;

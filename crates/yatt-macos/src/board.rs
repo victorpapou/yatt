@@ -150,6 +150,7 @@ struct Card {
     /// "3 задачи" under the label while leading a group drag.
     count: Retained<NSTextField>,
     hue: usize,
+    glyph: &'static str,
     tracking: bool,
     selected: bool,
     body: Body,
@@ -401,6 +402,11 @@ impl Board {
             for (i, col) in columns.iter().enumerate() {
                 titles[i] = col.title.clone();
                 order[i] = col.cards.iter().map(|c| c.id).collect();
+            }
+        }
+        for col in columns {
+            for snap in &col.cards {
+                style::set_look(snap.id, snap.color, snap.icon.as_deref());
             }
         }
         for (ci, col) in columns.iter().enumerate() {
@@ -866,6 +872,7 @@ impl Board {
             label,
             count,
             hue,
+            glyph: style::glyph_of(snap.id),
             tracking: false,
             selected: false,
             body: Body::at(0.0, 0.0),
@@ -1968,6 +1975,25 @@ impl Board {
 
 impl Card {
     fn update(&mut self, snap: &CardSnap) {
+        // A new colour or icon: the tint, the ink and the glyph follow.
+        let hue = style::hue_of(snap.id);
+        let glyph = style::glyph_of(snap.id);
+        if hue != self.hue || glyph != self.glyph {
+            self.hue = hue;
+            self.glyph = glyph;
+            let ink = style::text(hue);
+            self.title.setTextColor(Some(&ink));
+            self.time
+                .setTextColor(Some(&ink.colorWithAlphaComponent(0.5)));
+            self.label.setTextColor(Some(&ink));
+            self.count
+                .setTextColor(Some(&ink.colorWithAlphaComponent(0.7)));
+            let mtm = MainThreadMarker::new().expect("main thread");
+            let icon = style::glyph_view(mtm, glyph, hue);
+            icon.setFrame(self.icon.frame());
+            self.content.replaceSubview_with(&self.icon, &icon);
+            self.icon = icon;
+        }
         set_title(&self.title, &snap.title);
         set_meta(&self.time, &time_text(snap));
         self.tracking = snap.tracking;

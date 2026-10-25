@@ -50,6 +50,12 @@ pub enum Command {
         id: TaskId,
         pomodoros: Option<u32>,
     },
+    /// The card's colour and icon.
+    SetLook {
+        id: TaskId,
+        color: Option<u8>,
+        icon: Option<String>,
+    },
     Move {
         id: TaskId,
         status: Status,
@@ -205,6 +211,20 @@ impl Board {
                 Ok(Applied {
                     changed: vec![id],
                     inverse: Command::SetEstimate { id, pomodoros: old },
+                })
+            }
+            Command::SetLook { id, color, icon } => {
+                let task = self.task_mut(id)?;
+                let old_color = std::mem::replace(&mut task.color, color);
+                let old_icon = std::mem::replace(&mut task.icon, icon);
+                task.updated_at = now;
+                Ok(Applied {
+                    changed: vec![id],
+                    inverse: Command::SetLook {
+                        id,
+                        color: old_color,
+                        icon: old_icon,
+                    },
                 })
             }
             Command::Move {

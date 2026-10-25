@@ -30,6 +30,9 @@ pub struct CardSnap {
     pub tracking: bool,
     /// Latest time entries, formatted ("20:08 – 20:31 · 0:23:00"). Filled only for the expanded card.
     pub entries: Vec<String>,
+    /// The card's own colour and icon, when it chose them.
+    pub color: Option<u8>,
+    pub icon: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -49,6 +52,15 @@ pub struct TimerSnap {
     pub running: bool,
 }
 
+/// A status's name, as its column is called.
+pub fn status_label(status: Status) -> &'static str {
+    match status {
+        Status::Backlog => "Бэклог",
+        Status::InProgress => "В работе",
+        Status::Done => "Готово",
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum UiEvent {
     /// A new task on top of `status`.
@@ -66,6 +78,12 @@ pub enum UiEvent {
     Rename(TaskId, String),
     SetNotes(TaskId, String),
     Delete(TaskId),
+    /// The card's colour and icon (`None`: from its id).
+    SetLook {
+        id: TaskId,
+        color: Option<u8>,
+        icon: Option<String>,
+    },
     /// Several moves or deletes made together: undone and redone as one.
     Group(Vec<UiEvent>),
     /// Copies of tasks, `(title, notes)` in order, on top of `status`.

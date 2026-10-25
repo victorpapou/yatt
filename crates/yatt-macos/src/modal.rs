@@ -18,10 +18,11 @@ use block2::RcBlock;
 
 use objc2::rc::{Retained, Weak as ObjcWeak};
 use objc2::runtime::AnyObject;
-use objc2::{DefinedClass, MainThreadMarker};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSAnimatablePropertyContainer, NSButton, NSColor, NSControlSize, NSFont, NSFontWeightMedium,
-    NSFontWeightRegular, NSLineBreakMode, NSTextField, NSView,
+    NSAnimatablePropertyContainer, NSButton, NSColor, NSFont, NSFontWeightMedium,
+    NSFontWeightRegular, NSImage, NSLineBreakMode, NSMenu, NSMenuItem, NSPasteboard,
+    NSPasteboardTypeString, NSTextField, NSView,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString, NSTimer, ns_string};
 use objc2_quartz_core::{CACornerMask, CACurrentMediaTime};
@@ -33,10 +34,9 @@ use crate::editor::{EditorMsg, NotesEditor};
 use crate::model::{CardSnap, UiEvent, format_duration};
 use crate::motion;
 use crate::physics::{self, Body};
+use crate::picker::{Current, Picker};
 use crate::style;
 use crate::window::{Sink, animate};
-
-const ENTRY_LINES: usize = 4;
 
 /// The card's parts that change as it opens into the panel.
 struct Parts {
@@ -104,9 +104,11 @@ pub struct Modal {
     stats: Retained<NSTextField>,
     rules: [Retained<FillView>; 2],
     editor: NotesEditor,
-    entries: Retained<NSTextField>,
-    done: Retained<NSButton>,
-    delete: Retained<NSButton>,
+    /// The time entries' one line, and every entry, as written.
+    times: Retained<NSButton>,
+    all_entries: Rc<RefCell<Vec<String>>>,
+    look: Retained<NSButton>,
+    picker: Rc<Picker>,
     /// The task on screen, shared with the callbacks.
     open: Rc<Cell<Option<TaskId>>>,
     /// Last title known to match the store, to tell edits from echoes.
@@ -335,8 +337,6 @@ impl Modal {
         }
 
         let stats = small_label(mtm);
-        let entries = small_label(mtm);
-        entries.setMaximumNumberOfLines(ENTRY_LINES as isize);
 
         let editor = {
             let (sink, open, known) = (sink.clone(), open.clone(), notes_known.clone());
@@ -360,53 +360,80 @@ impl Modal {
             })
         };
 
-        let mut button = |label: &str, events: Vec<Box<dyn Fn(TaskId) -> UiEvent>>| {
-            let (sink, open) = (sink.clone(), open.clone());
+        // The look and status, in a popover off a small button in the header.
+        let picker = Rc::new(Picker::new(mtm, sink));
+        let look = {
+            let picker = picker.clone();
+            let slot: Rc<RefCell<Option<Retained<NSButton>>>> = Rc::default();
+            let anchor = slot.clone();
             let target = ActionTarget::new(mtm, move || {
-                if let Some(id) = open.get() {
-                    for e in &events {
-                        sink(e(id));
-                    }
+                if let Some(b) = anchor.borrow().as_ref() {
+                    picker.open(b);
                 }
             });
             let b = unsafe {
-                NSButton::buttonWithTitle_target_action(
-                    &NSString::from_str(label),
+                NSButton::buttonWithImage_target_action(
+                    &NSImage::imageWithSystemSymbolName_accessibilityDescription(
+                        ns_string!("paintpalette"),
+                        Some(ns_string!("Цвет, иконка, статус")),
+                    )
+                    .expect("symbol"),
                     Some(&target),
                     Some(ActionTarget::sel()),
                     mtm,
                 )
             };
-            b.setControlSize(NSControlSize::Regular);
+            b.setBordered(false);
+            b.setToolTip(Some(ns_string!("Цвет, иконка, статус")));
+            *slot.borrow_mut() = Some(b.clone());
             retained.push(Retained::into_super(Retained::into_super(target)));
             b
         };
-        let done = button(
-            "Готово",
-            vec![
-                Box::new(UiEvent::ToggleExpand),
-                Box::new(|id| UiEvent::Move {
-                    id,
-                    status: Status::Done,
-                    index: 0,
-                }),
-            ],
-        );
-        let delete = button("Удалить", vec![Box::new(UiEvent::Delete)]);
+        // The time entries: one quiet line; a click lists them to copy, one or
+        // all, exactly as written. A menu, so it scrolls however many there are.
+        let all_entries: Rc<RefCell<Vec<String>>> = Rc::default();
+        let times = {
+            let entries = all_entries.clone();
+            let slot: Rc<RefCell<Option<Retained<NSButton>>>> = Rc::default();
+            let anchor = slot.clone();
+            let target = ActionTarget::new(mtm, move || {
+                let list = entries.borrow().clone();
+                if let Some(b) = anchor.borrow().as_ref() {
+                    copy_menu(mtm, b, &list);
+                }
+            });
+            let b = unsafe {
+                NSButton::buttonWithTitle_target_action(
+                    ns_string!(""),
+                    Some(&target),
+                    Some(ActionTarget::sel()),
+                    mtm,
+                )
+            };
+            b.setBordered(false);
+            b.setAlignment(objc2_app_kit::NSTextAlignment::Left);
+            b.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(
+                12.0,
+                unsafe { NSFontWeightRegular },
+            )));
+            b.setToolTip(Some(ns_string!("Скопировать время")));
+            *slot.borrow_mut() = Some(b.clone());
+            retained.push(Retained::into_super(Retained::into_super(target)));
+            b
+        };
 
         let rules = [
             FillView::new(mtm, Fill::Separator),
             FillView::new(mtm, Fill::Separator),
         ];
-        let views: [&NSView; 8] = [
+        let views: [&NSView; 7] = [
             &title,
             &stats,
+            &look,
             &rules[0],
             &editor.view,
             &rules[1],
-            &entries,
-            &done,
-            &delete,
+            &times,
         ];
         for v in views {
             content.addSubview(v);
@@ -438,9 +465,10 @@ impl Modal {
             stats,
             rules,
             editor,
-            entries,
-            done,
-            delete,
+            times,
+            all_entries,
+            look,
+            picker,
             open,
             title_known,
             notes_known,
@@ -495,7 +523,11 @@ impl Modal {
         let iw = w - 2.0 * pad;
         self.title.setFrame(NSRect::new(
             NSPoint::new(pad - 2.0, 20.0),
-            NSSize::new(iw + 4.0, 28.0),
+            NSSize::new(iw + 4.0 - 40.0, 28.0),
+        ));
+        self.look.setFrame(NSRect::new(
+            NSPoint::new(w - pad - 28.0, 20.0),
+            NSSize::new(28.0, 28.0),
         ));
         self.stats
             .setFrame(NSRect::new(NSPoint::new(pad, 52.0), NSSize::new(iw, 16.0)));
@@ -503,7 +535,7 @@ impl Modal {
         if self.open.get().is_some() {
             blend(&self.parts(), 1.0, NSSize::new(w, h));
         }
-        let bottom_h = 16.0 * ENTRY_LINES as f64 + 64.0;
+        let bottom_h = 44.0;
         self.editor.view.setFrame(NSRect::new(
             NSPoint::new(pad - 4.0, 92.0),
             NSSize::new(iw + 8.0, h - 92.0 - bottom_h - 8.0),
@@ -512,20 +544,9 @@ impl Modal {
             NSPoint::new(0.0, h - bottom_h),
             NSSize::new(w, 1.0),
         ));
-        self.entries.setFrame(NSRect::new(
-            NSPoint::new(pad, h - bottom_h + 12.0),
-            NSSize::new(iw, 16.0 * ENTRY_LINES as f64),
-        ));
-        let y = h - 44.0;
-        let dw = self.done.fittingSize().width.max(84.0);
-        let delw = self.delete.fittingSize().width.max(84.0);
-        self.delete.setFrame(NSRect::new(
-            NSPoint::new(w - pad - delw, y),
-            NSSize::new(delw, 28.0),
-        ));
-        self.done.setFrame(NSRect::new(
-            NSPoint::new(w - pad - delw - 8.0 - dw, y),
-            NSSize::new(dw, 28.0),
+        self.times.setFrame(NSRect::new(
+            NSPoint::new(pad - 2.0, h - bottom_h + 12.0),
+            NSSize::new(iw, 20.0),
         ));
     }
 
@@ -597,6 +618,7 @@ impl Modal {
     /// Lands on `to` turned by `deg`, the card's place and angle.
     pub fn close(&self, to: Option<NSRect>, deg: f64, done: impl Fn() + 'static) {
         self.editor.flush();
+        self.picker.close();
         if let Some(window) = self.panel.window() {
             window.makeFirstResponder(None);
         }
@@ -670,22 +692,76 @@ impl Modal {
         self.title.setTextColor(Some(&ink));
         self.stats
             .setTextColor(Some(&ink.colorWithAlphaComponent(0.75)));
-        self.entries
-            .setTextColor(Some(&ink.colorWithAlphaComponent(0.75)));
+        self.look
+            .setContentTintColor(Some(&ink.colorWithAlphaComponent(0.75)));
+        self.picker.show_task(Current {
+            id: Some(snap.id),
+            color: snap.color,
+            icon: snap.icon.clone(),
+            status: Some(status),
+        });
         self.editor.set_ink(&style::text_css(hue));
-        let entries = if snap.entries.is_empty() {
-            "Записей времени пока нет".to_string()
-        } else {
-            snap.entries
-                .iter()
-                .take(ENTRY_LINES)
-                .cloned()
-                .collect::<Vec<_>>()
-                .join("\n")
+        let line = match snap.entries.len() {
+            0 => "Записей времени пока нет".to_string(),
+            n => format!(
+                "{}  ·  {}  ⌄",
+                snap.entries[0],
+                if n == 1 {
+                    "1 запись".to_string()
+                } else {
+                    format!("{n} {}", plural(n, "запись", "записи", "записей"))
+                }
+            ),
         };
-        self.entries.setStringValue(&NSString::from_str(&entries));
-        self.done.setHidden(status == Status::Done);
+        self.times.setTitle(&NSString::from_str(&line));
+        self.times
+            .setContentTintColor(Some(&NSColor::secondaryLabelColor()));
+        *self.all_entries.borrow_mut() = snap.entries.clone();
     }
+}
+
+fn plural(n: usize, one: &'static str, few: &'static str, many: &'static str) -> &'static str {
+    match (n % 10, n % 100) {
+        (1, x) if x != 11 => one,
+        (2..=4, x) if !(12..=14).contains(&x) => few,
+        _ => many,
+    }
+}
+
+/// The time entries to copy, under `anchor`: all of them, or any one, each
+/// exactly as written.
+fn copy_menu(mtm: MainThreadMarker, anchor: &NSButton, entries: &[String]) {
+    if entries.is_empty() {
+        return;
+    }
+    let menu = NSMenu::new(mtm);
+    let mut targets = Vec::new();
+    let mut item = |title: &str, text: String| {
+        let t = ActionTarget::new(mtm, move || {
+            let pb = NSPasteboard::generalPasteboard();
+            pb.clearContents();
+            unsafe { pb.setString_forType(&NSString::from_str(&text), NSPasteboardTypeString) };
+        });
+        let it = unsafe {
+            NSMenuItem::initWithTitle_action_keyEquivalent(
+                NSMenuItem::alloc(mtm),
+                &NSString::from_str(title),
+                Some(ActionTarget::sel()),
+                ns_string!(""),
+            )
+        };
+        unsafe { it.setTarget(Some(&t)) };
+        menu.addItem(&it);
+        targets.push(t);
+    };
+    item("Скопировать всё", entries.join("\n"));
+    menu.addItem(&NSMenuItem::separatorItem(mtm));
+    for e in entries {
+        item(e, e.clone());
+    }
+    let at = NSPoint::new(0.0, anchor.bounds().size.height + 4.0);
+    menu.popUpMenuPositioningItem_atLocation_inView(None, at, Some(anchor));
+    drop(targets);
 }
 
 fn small_label(mtm: MainThreadMarker) -> Retained<NSTextField> {

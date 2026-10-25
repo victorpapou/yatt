@@ -8,7 +8,8 @@ use yatt_engine::Engine;
 use yatt_macos::{CardSnap, ColumnSnap, Snapshot, TimerSnap, UiEvent, format_duration};
 
 /// How many time entries the expanded card lists.
-const ENTRIES_SHOWN: usize = 8;
+/// Every entry of the open task, for copying.
+const ENTRIES_SHOWN: usize = usize::MAX;
 
 pub struct Workspace {
     pub engine: Engine,
@@ -45,6 +46,7 @@ impl Workspace {
             }
             UiEvent::Rename(id, title) => e.execute(Command::Rename { id, title }),
             UiEvent::SetNotes(id, notes) => e.execute(Command::SetNotes { id, notes }),
+            UiEvent::SetLook { id, color, icon } => e.execute(Command::SetLook { id, color, icon }),
             UiEvent::Paste { .. } | UiEvent::Group(_) => {
                 // A paste, or a group of moves or deletes: one step to undo.
                 let mut cmds = Vec::new();
@@ -118,6 +120,8 @@ impl Workspace {
                         } else {
                             Vec::new()
                         },
+                        color: t.color,
+                        icon: t.icon.clone(),
                     }
                 })
                 .collect(),
