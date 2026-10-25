@@ -87,3 +87,15 @@ damped, k 250. The cards start together (at most 5 ms apart).
 Still different: ours rests up to about 30 ms later than the slowest reference
 case; the opening overshoots more in position than the reference does in angle
 (the clip gives no positions there). The reference shows 1–3 crossings; ours 1.
+
+## Opening: one flow, not two halves
+
+Each card used to take the short way round from the pile to its slot, so the
+cards whose slots lie more than half a turn from the pile went the other way:
+two groups met in the middle ("glued from two halves"). Now a card leaving the
+pile always goes clockwise, the way the fan winds, counting its way round
+continuously (`Body::lap`), so the fan spills out of the stack in one flow,
+older cards further round. Test: `a_fan_spills_out_one_way_round` (eight
+cards: under 20% of each card's travel goes back, all of it the end's spring
+back; no frame jumps more than 40 pt). The resting places now carry a small
+fixed stray per card (`fan_jitter`).

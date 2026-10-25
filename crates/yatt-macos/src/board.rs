@@ -960,7 +960,12 @@ impl Board {
                         let shown = i < shown_n;
                         let (dx, dy, deg) = if shown {
                             let (dx, dy, deg) = physics::fan(i, shown_n, w);
-                            (dx * scale, dy * scale, deg)
+                            // Each card strays a little from its place, its own way.
+                            let seed = id.0.as_u128();
+                            let (turn, out, round) =
+                                physics::fan_jitter((seed ^ (seed >> 64)) as u64);
+                            let (a, r) = (dy.atan2(dx) + round.to_radians(), dx.hypot(dy) + out);
+                            (r * a.cos() * scale, r * a.sin() * scale, deg + turn)
                         } else {
                             parked.insert(*id);
                             (0.0, 0.0, 0.0)
@@ -969,12 +974,13 @@ impl Board {
                         // A new place: the cards set off as a short wave.
                         let moved =
                             (card.body.tx - at.0).abs() > 2.0 || (card.body.ty - at.1).abs() > 2.0;
-                        let was_round = card.body.orbit.is_some();
+                        let was = card.body.orbit;
                         self.send_home(card, Space::Canvas, at);
                         if shown {
+                            card.body.orbit = was;
                             card.body.round(dx, dy);
                             // A card dropped into an open fan rakes the rest in.
-                            if was_round && moved {
+                            if was.is_some() && moved {
                                 card.body.push_in(physics::fan_kick(i));
                             }
                         }

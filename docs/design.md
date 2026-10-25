@@ -108,12 +108,19 @@ tabular digits, tracked +0.15, at 50%.
   shows outside the lead at rest. The selection ring is off while dragging. The
   column opens one card's room for the whole group, which lands together,
   keeping the stacking order it flew in until the last card is down.
-- A fan opens alive, as in the reference: the stack's own cards fly apart as a
-  wave (each up to 35 ms after the one before, 150 ms in all) on a bouncy spring
-  that overshoots by about a quarter and springs back, settled in about 0.55 s,
-  each swinging into its angle. Nothing fades: hidden cards are whole from the
-  first frame under the pile; folding, they fly back under it and only then
-  leave the render tree.
+- A fanned card is a loose body lying on the fan's spiral, not one spring to a
+  fixed slot (measured from the reference clips,
+  docs/reference/tima/motion/analysis.md): firm across the spiral, like
+  gravity onto a floor; loose along it, so cards slide round and turn as they
+  go; neighbours pressed together shove apart; a card dropped into an open fan
+  rakes the others in toward the centre and they spring back out (about 10%
+  past, at rest in about 0.55 s). Opening, every card spills out from under the
+  pile the same way round, clockwise as the fan winds, older ones further, all
+  together (at most 5 ms apart); no card takes the short way against the
+  others. Each card strays a little from its exact place (±2.5° turn, ±2.5 pt,
+  ±2.5° round, fixed by its id, `FAN_JITTER`). Nothing fades: hidden cards are
+  whole from the first frame under the pile; folding (critically damped, about
+  0.3 s) they fly back under it and only then leave the render tree.
 - Scrolling down over a stack fans it out, scrolling up folds it; any number of
   stacks can stand fanned. A click on a card, in a stack or a fan, opens it.
 - A fan is the swatch layout of the reference frames
