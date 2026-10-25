@@ -7154,6 +7154,7 @@ dependencies = [
  "yatt-core",
  "yatt-engine",
  "yatt-macos",
+ "yatt-platform",
  "yatt-store",
 ]
 
@@ -7192,6 +7193,7 @@ dependencies = [
  "objc2-quartz-core",
  "objc2-web-kit",
  "yatt-core",
+ "yatt-platform",
 ]
 
 [[package]]

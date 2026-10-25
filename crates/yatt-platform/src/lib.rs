@@ -49,6 +49,84 @@ pub trait FocusMode {
     fn deactivate(&self, option: &str) -> Result<()>;
 }
 
+/// What the timer is doing, for the menu bar.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MenuBarTimer {
+    Idle,
+    /// A work interval or a break: how much of it is left.
+    Pomodoro {
+        remaining_ms: i64,
+        total_ms: i64,
+        paused: bool,
+    },
+    Stopwatch {
+        elapsed_ms: i64,
+        paused: bool,
+    },
+}
+
+/// The menu bar item: a small disc filled `fill` of the way round (0..=1)
+/// clockwise from the top, maybe a short label after it, dimmed when nothing
+/// runs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MenuBarLook {
+    pub fill: f64,
+    pub label: Option<String>,
+    pub dimmed: bool,
+    pub paused: bool,
+}
+
+/// One full turn of the disc for a stopwatch: an hour (it has no end).
+pub const STOPWATCH_TURN_MS: i64 = 3_600_000;
+
+/// Pomodoro: the time left, as the disc, no text. Stopwatch: the time so far,
+/// a turn an hour, and the minutes as text (no seconds, so it does not tick).
+pub fn menu_bar_look(t: MenuBarTimer) -> MenuBarLook {
+    match t {
+        MenuBarTimer::Idle => MenuBarLook {
+            fill: 0.0,
+            label: None,
+            dimmed: true,
+            paused: false,
+        },
+        MenuBarTimer::Pomodoro {
+            remaining_ms,
+            total_ms,
+            paused,
+        } => MenuBarLook {
+            fill: if total_ms > 0 {
+                (remaining_ms as f64 / total_ms as f64).clamp(0.0, 1.0)
+            } else {
+                0.0
+            },
+            label: None,
+            dimmed: paused,
+            paused,
+        },
+        MenuBarTimer::Stopwatch { elapsed_ms, paused } => MenuBarLook {
+            fill: (elapsed_ms.rem_euclid(STOPWATCH_TURN_MS)) as f64 / STOPWATCH_TURN_MS as f64,
+            label: Some(minutes_label(elapsed_ms)),
+            dimmed: paused,
+            paused,
+        },
+    }
+}
+
+/// "<1 мин", "12 мин", "1 ч 05 мин": whole minutes, never seconds.
+pub fn minutes_label(ms: i64) -> String {
+    let min = ms.max(0) / 60_000;
+    match min {
+        0 => "<1 мин".to_string(),
+        m if m < 60 => format!("{m} мин"),
+        m => format!("{} ч {:02} мин", m / 60, m % 60),
+    }
+}
+
+/// Shows the timer in the system's menu bar.
+pub trait MenuBar {
+    fn show(&self, look: &MenuBarLook);
+}
+
 /// The whole platform layer handed to the app at startup.
 pub struct Platform {
     pub apps: Box<dyn AppBlocker>,
@@ -99,5 +177,42 @@ impl FocusMode for Noop {
     }
     fn deactivate(&self, _: &str) -> Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn menu_bar_shows_what_the_timer_does() {
+        let idle = menu_bar_look(MenuBarTimer::Idle);
+        assert!(idle.dimmed && idle.fill == 0.0 && idle.label.is_none());
+        let p = menu_bar_look(MenuBarTimer::Pomodoro {
+            remaining_ms: 15 * 60_000,
+            total_ms: 25 * 60_000,
+            paused: false,
+        });
+        assert!((p.fill - 0.6).abs() < 1e-9 && p.label.is_none() && !p.dimmed);
+        let paused = menu_bar_look(MenuBarTimer::Pomodoro {
+            remaining_ms: 1,
+            total_ms: 0,
+            paused: true,
+        });
+        assert!(paused.paused && paused.dimmed && paused.fill == 0.0);
+        let s = menu_bar_look(MenuBarTimer::Stopwatch {
+            elapsed_ms: 90 * 60_000 + 59_000,
+            paused: false,
+        });
+        assert!((s.fill - 0.5 - 59.0 / 3600.0).abs() < 1e-9);
+        assert_eq!(s.label.as_deref(), Some("1 ч 30 мин"));
+    }
+
+    #[test]
+    fn minutes_never_tick_seconds() {
+        assert_eq!(minutes_label(59_999), "<1 мин");
+        assert_eq!(minutes_label(60_000), "1 мин");
+        assert_eq!(minutes_label(12 * 60_000 + 59_000), "12 мин");
+        assert_eq!(minutes_label(65 * 60_000), "1 ч 05 мин");
     }
 }

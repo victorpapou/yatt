@@ -6,6 +6,7 @@ use jiff::tz::TimeZone;
 use yatt_core::{Command, Mode, Phase, Placement, Status, TaskId};
 use yatt_engine::Engine;
 use yatt_macos::{CardSnap, ColumnSnap, Snapshot, TimerSnap, UiEvent, format_duration};
+use yatt_platform::MenuBarTimer;
 
 /// How many time entries the expanded card lists.
 /// Every entry of the open task, for copying.
@@ -171,6 +172,18 @@ impl Workspace {
             can_stop: t.phase != Phase::Idle,
             progress: t.progress(now),
             running: t.is_running(),
+            menu_bar: match (t.phase, t.planned_secs()) {
+                (Phase::Idle, _) => MenuBarTimer::Idle,
+                (_, Some(p)) => MenuBarTimer::Pomodoro {
+                    remaining_ms: t.remaining_ms(now).unwrap_or(0),
+                    total_ms: p as i64 * 1000,
+                    paused: !t.is_running(),
+                },
+                (_, None) => MenuBarTimer::Stopwatch {
+                    elapsed_ms: t.elapsed_ms(now),
+                    paused: !t.is_running(),
+                },
+            },
         }
     }
 }

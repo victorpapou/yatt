@@ -99,6 +99,8 @@ struct Ui {
     root: Retained<RootView>,
     sink: Sink,
     header: Header,
+    /// The timer in the system's menu bar.
+    status: crate::menubar::StatusBar,
     toolbar: Retained<NSToolbar>,
     /// The toolbar's one item, holding the header's view outside minimal mode.
     timer_item: Retained<NSToolbarItem>,
@@ -195,6 +197,23 @@ impl MainWindow {
         let mut retained: Vec<Retained<AnyObject>> = Vec::new();
         retained.extend(crate::eventlog::install());
         let header = Header::new(mtm, &sink, &mut retained);
+        let status = {
+            let (a, b) = (sink.clone(), sink.clone());
+            crate::menubar::StatusBar::new(
+                mtm,
+                move || {
+                    let mtm = MainThreadMarker::new().expect("main thread");
+                    let app = NSApplication::sharedApplication(mtm);
+                    #[allow(deprecated)]
+                    app.activateIgnoringOtherApps(true);
+                    if let Some(w) = app.windows().firstObject() {
+                        w.makeKeyAndOrderFront(None);
+                    }
+                },
+                move || a(UiEvent::StartPause),
+                move || b(UiEvent::Stop),
+            )
+        };
         // The timer row lives in a native toolbar, unified with the titlebar.
         let timer_item = PlainToolbarItem::item(mtm, ns_string!("yatt.timer"));
         timer_item.setView(Some(&header.view));
@@ -235,8 +254,12 @@ impl MainWindow {
             id(&items[4]),
             space,
             id(&items[5]),
-            id(&items[6]),
         ];
+        let order = if crate::model::MINIMAL_MODE {
+            [order, vec![id(&items[6])]].concat()
+        } else {
+            order
+        };
         let toolbar_delegate = ToolbarDelegate::new(mtm, items, order);
         toolbar.setDelegate(Some(ProtocolObject::from_ref(&*toolbar_delegate)));
         toolbar.setDisplayMode(NSToolbarDisplayMode::IconOnly);
@@ -307,6 +330,7 @@ impl MainWindow {
             root,
             sink: sink.clone(),
             header,
+            status,
             toolbar,
             timer_item,
             top_inset: Cell::new(52.0),
@@ -955,6 +979,9 @@ impl Ui {
 
     fn toggle_minimal(&self) {
         let to_minimal = !self.minimal.get();
+        if to_minimal && !crate::model::MINIMAL_MODE {
+            return;
+        }
         if to_minimal {
             if let Some(id) = self.modal.open_task() {
                 (self.sink)(UiEvent::ToggleExpand(id));
@@ -1022,6 +1049,10 @@ impl Ui {
             return;
         }
         self.header.update(&snap.timer);
+        yatt_platform::MenuBar::show(
+            &self.status,
+            &yatt_platform::menu_bar_look(snap.timer.menu_bar),
+        );
         for (c, col) in self.columns.iter().zip(&snap.columns) {
             c.title.setStringValue(&NSString::from_str(&col.title));
             let count = col.cards.len().to_string();

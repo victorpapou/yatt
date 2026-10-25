@@ -50,7 +50,12 @@ pub struct TimerSnap {
     /// Phase progress in 0.0..=1.0.
     pub progress: f32,
     pub running: bool,
+    /// For the menu bar.
+    pub menu_bar: yatt_platform::MenuBarTimer,
 }
+
+/// The timer-only window mode (⇧⌘M): off for now; the code stays.
+pub const MINIMAL_MODE: bool = false;
 
 /// A status's name, as its column is called.
 pub fn status_label(status: Status) -> &'static str {

@@ -8,6 +8,7 @@ description = "yatt's native AppKit views. Renders view-model snapshots, reports
 
 [dependencies]
 yatt-core.workspace = true
+yatt-platform.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

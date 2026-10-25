@@ -16,6 +16,7 @@ yatt-core.workspace = true
 yatt-store.workspace = true
 yatt-engine.workspace = true
 yatt-macos.workspace = true
+yatt-platform.workspace = true
 futures.workspace = true
 anyhow.workspace = true
 # Compile Metal shaders at launch so the build needs only the Command Line Tools,
