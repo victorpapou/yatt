@@ -117,6 +117,95 @@ pub fn ring_shown(selected: bool, dragging: bool) -> bool {
     selected && !dragging
 }
 
+/// A held card's turn about the grab point: natural period and damping ratio of
+/// its return to level, and the most it turns.
+pub const GRIP_PERIOD: f64 = 0.5;
+pub const GRIP_ZETA: f64 = 0.5;
+pub const GRIP_MAX: f64 = 30.0;
+
+/// A card held at the point it was grabbed: a rigid body hanging from the
+/// pointer there. The grab point follows the pointer (very stiff, critically
+/// damped); the card turns about it as its own inertia makes it, so it swings
+/// round in the direction it is moved when held by a corner, and mostly just
+/// slides when held at its centre; a damped spring brings it back level.
+/// Angles in degrees, positive clockwise (y down).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Grip {
+    /// The grab point from the card's centre, in the card's own unturned frame.
+    pub r: (f64, f64),
+    /// The grab point on screen, and its velocity.
+    pub px: f64,
+    pub py: f64,
+    pub vx: f64,
+    pub vy: f64,
+    /// The card's turn and its rate, in degrees and degrees per second.
+    pub theta: f64,
+    pub omega: f64,
+}
+
+impl Grip {
+    /// Held at `p` on screen, `r` from the centre in the card's frame, turned `theta`.
+    pub fn new(r: (f64, f64), p: (f64, f64), theta: f64) -> Self {
+        Self {
+            r,
+            px: p.0,
+            py: p.1,
+            vx: 0.0,
+            vy: 0.0,
+            theta,
+            omega: 0.0,
+        }
+    }
+
+    /// Moves the grab point towards `to` for `dt` seconds; `size` is the card's
+    /// (width, height) as drawn.
+    pub fn step(&mut self, to: (f64, f64), dt: f64, size: (f64, f64)) {
+        let steps = (dt / (1.0 / 480.0)).ceil().max(1.0) as usize;
+        let h = dt / steps as f64;
+        let (k, c) = (HELD.k, HELD.damping());
+        let w0 = std::f64::consts::TAU / GRIP_PERIOD;
+        // Moment of inertia of the card about its centre, per unit mass.
+        let i_cm = (size.0 * size.0 + size.1 * size.1) / 12.0;
+        for _ in 0..steps {
+            let (vx0, vy0) = (self.vx, self.vy);
+            self.vx += (-k * (self.px - to.0) - c * self.vx) * h;
+            self.vy += (-k * (self.py - to.1) - c * self.vy) * h;
+            self.px += self.vx * h;
+            self.py += self.vy * h;
+            let (ax, ay) = ((self.vx - vx0) / h, (self.vy - vy0) / h);
+            // From the grab point to the centre, turned with the card.
+            let (gx, gy) = turn(self.r, self.theta);
+            let (cx, cy) = (-gx, -gy);
+            // Seen from the moving grab point the centre is pushed against the
+            // acceleration; its torque about the grab point turns the card.
+            let torque = cx * (-ay) - cy * (-ax);
+            let inertia = i_cm + cx * cx + cy * cy;
+            let theta = self.theta.to_radians();
+            let omega = self.omega.to_radians();
+            let alpha = torque / inertia - w0 * w0 * theta - 2.0 * GRIP_ZETA * w0 * omega;
+            let omega = omega + alpha * h;
+            self.omega = omega.to_degrees();
+            self.theta = (theta + omega * h).to_degrees();
+            if self.theta.abs() > GRIP_MAX {
+                self.theta = GRIP_MAX.copysign(self.theta);
+                self.omega = 0.0;
+            }
+        }
+    }
+
+    /// Where the card's centre is now.
+    pub fn centre(&self) -> (f64, f64) {
+        let (gx, gy) = turn(self.r, self.theta);
+        (self.px - gx, self.py - gy)
+    }
+}
+
+/// `v` turned by `deg` degrees clockwise (y down).
+pub fn turn(v: (f64, f64), deg: f64) -> (f64, f64) {
+    let (s, c) = deg.to_radians().sin_cos();
+    (v.0 * c - v.1 * s, v.0 * s + v.1 * c)
+}
+
 /// One card's motion state: top-left corner `(x, y)` in a y-down space, rotation `r` in degrees.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Body {
@@ -422,6 +511,55 @@ mod tests {
         }
         let lag = (1000.0 * t - f.x) / 1000.0;
         assert!((lag - trail_step(4)).abs() < 0.005, "lag {lag}");
+    }
+
+    /// Drags a card held at `r` (from its centre) to the right and stops;
+    /// returns the largest turn either way and the turn at the end.
+    fn grip_drag(r: (f64, f64)) -> (f64, f64, f64) {
+        let size = (230.0, 101.0);
+        let mut g = Grip::new(r, (0.0, 0.0), 0.0);
+        let dt = 1.0 / 120.0;
+        let (mut most, mut least) = (0.0f64, 0.0f64);
+        for k in 0..240 {
+            let x = if k < 30 { 40.0 * k as f64 } else { 1200.0 };
+            g.step((x, 0.0), dt, size);
+            most = most.max(g.theta);
+            least = least.min(g.theta);
+        }
+        (most, least, g.theta)
+    }
+
+    #[test]
+    fn where_a_card_is_held_decides_how_it_turns() {
+        // Held by the top-left corner and pulled right, it swings clockwise; by
+        // the bottom-left, the other way; at the centre it hardly turns.
+        let (top, _, end_top) = grip_drag((-115.0, -50.0));
+        let (_, bottom, end_bottom) = grip_drag((-115.0, 50.0));
+        let (c_most, c_least, _) = grip_drag((0.0, 0.0));
+        assert!(top > 3.0, "top-left: {top}");
+        assert!(bottom < -3.0, "bottom-left: {bottom}");
+        assert!(c_most.max(-c_least) < 0.5, "centre: {c_most} {c_least}");
+        // And it comes back level while still held.
+        assert!(
+            end_top.abs() < 0.2 && end_bottom.abs() < 0.2,
+            "{end_top} {end_bottom}"
+        );
+    }
+
+    #[test]
+    fn a_held_card_stays_stable_at_3000_pt_per_s() {
+        let mut g = Grip::new((-115.0, -50.0), (0.0, 0.0), 0.0);
+        let (dt, mut x, mut dir) = (1.0 / 120.0, 0.0f64, 1.0f64);
+        for k in 0..600 {
+            if k % 12 == 0 {
+                dir = -dir;
+            }
+            x += 3000.0 * dt * dir;
+            g.step((x, x * 0.3), dt, (230.0, 101.0));
+            assert!(g.theta.is_finite() && g.theta.abs() <= GRIP_MAX + 1e-9);
+            let (cx, cy) = g.centre();
+            assert!(cx.is_finite() && cy.is_finite());
+        }
     }
 
     #[test]

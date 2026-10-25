@@ -209,6 +209,8 @@ struct Drag {
     target: Option<usize>,
     /// Where the cards go in the target column, counted without them.
     index: usize,
+    /// The lead, held where it was grabbed.
+    grip: physics::Grip,
 }
 
 /// A dropped group on its way into its column, all of it at once: it keeps the
@@ -530,6 +532,26 @@ impl Board {
             }
         }
         out
+    }
+
+    /// Development aid: the lowest opacity among a column's drawn cards (the
+    /// card and its text), and how many are drawn.
+    pub fn demo_column_opacity(&self, column: usize) -> (f64, usize) {
+        let cards = self.cards.borrow();
+        let mut low = 1.0f64;
+        let mut drawn = 0;
+        for id in &self.order.borrow()[column] {
+            if let Some(c) = cards.get(id)
+                && !c.view.isHidden()
+            {
+                drawn += 1;
+                low = low.min(c.view.alphaValue());
+                if !c.muted {
+                    low = low.min(c.content.alphaValue());
+                }
+            }
+        }
+        (low, drawn)
     }
 
     /// Development aid: selects exactly these cards.
@@ -868,6 +890,7 @@ impl Board {
         // Cards that need not draw: deep in a folded stack, or far down a dragged
         // group's tail, right under the cards in front.
         let mut parked: HashSet<TaskId> = HashSet::new();
+        let mut at_once: HashSet<TaskId> = HashSet::new();
         let mut cards = self.cards.borrow_mut();
         let (w, h) = (CARD_W, CARD_H);
 
@@ -1036,6 +1059,8 @@ impl Board {
             .unwrap_or_default();
         if let Some(d) = drag.as_ref() {
             parked.extend(d.ids.iter().skip(1 + physics::TRAIL_SHOWN).copied());
+            // These never come to rest while dragged: out of the tree at once.
+            at_once.extend(d.ids.iter().skip(1 + physics::TRAIL_SHOWN).copied());
         }
         // A landing group keeps the stacking order it flew in until the last of
         // its cards is down.
@@ -1055,7 +1080,7 @@ impl Board {
             if lead != Some(*id) {
                 card.set_lifted(false);
             }
-            card.set_parked(parked.contains(id));
+            card.set_parked(parked.contains(id), at_once.contains(id));
             if card.flying {
                 card.body.spring = physics::FLY;
                 card.z = 900.0;
@@ -1195,13 +1220,27 @@ impl Board {
         let overlay_dy = self.overlay_dy.get();
         let mut cards = self.cards.borrow_mut();
 
-        if let Some(drag) = self.drag.borrow().as_ref() {
+        if let Some(drag) = self.drag.borrow_mut().as_mut() {
             // The lead chases the pointer; every other card of the group chases the
             // lead itself on a very stiff spring, so it stays exactly under it.
-            // The lead hangs from the pointer; each follower hangs off the card
-            // ahead of it, a chain on strings. Their angles swing on their own
-            // (`Body::step`); the targets are level.
+            // The lead is held at the point it was grabbed and turns about it as
+            // it is moved (`physics::Grip`); each follower hangs off the card
+            // ahead of it, a chain on strings, its angle swinging on its own
+            // (`Body::step`).
             let pointer = (drag.cursor.0 - drag.grab.0, drag.cursor.1 - drag.grab.1);
+            if let Some(lead) = drag.ids.first().and_then(|id| cards.get_mut(id)) {
+                let s = lead.scale;
+                drag.grip.step(drag.cursor, dt, (CARD_W * s, CARD_H * s));
+                let (cx, cy) = drag.grip.centre();
+                let (x, y, r) = (cx - CARD_W / 2.0, cy - CARD_H / 2.0, drag.grip.theta);
+                let spring = lead.body.spring;
+                lead.body = Body {
+                    spring,
+                    r,
+                    tr: r,
+                    ..Body::at(x, y)
+                };
+            }
             let at: Vec<Option<(f64, f64)>> = drag
                 .ids
                 .iter()
@@ -1212,15 +1251,11 @@ impl Board {
                 let Some(card) = cards.get_mut(id) else {
                     continue;
                 };
-                let (tx, ty) = match i {
-                    0 => pointer,
-                    _ => at[i - 1].unwrap_or(pointer),
-                };
-                if i > 0 {
-                    card.body.spring = chain;
-                } else if !drag.group {
-                    card.body.spring = physics::HELD;
+                if i == 0 {
+                    continue;
                 }
+                let (tx, ty) = at[i - 1].unwrap_or(pointer);
+                card.body.spring = chain;
                 card.body.target(tx, ty + physics::trail(i).0, 0.0);
             }
         }
@@ -1231,6 +1266,10 @@ impl Board {
         for card in cards.values_mut() {
             // A culled row is out of sight: it lands at once and draws when it
             // comes near.
+            // Parked and arrived under the stack: now it can leave the tree.
+            if card.parked.get() && !card.view.isHidden() && card.body.at_rest() {
+                card.view.setHidden(true);
+            }
             // Out of sight (a culled row, or a card hidden in a stack or under a
             // dragged group): it lands at once and draws when it shows again.
             // Waiting for its turn in a fan's wave.
@@ -1733,6 +1772,10 @@ impl Board {
         };
         *self.press.borrow_mut() = None;
         let group = ids.len() > 1;
+        // Held where it was grabbed: that point, from the card's centre, in the
+        // card's own unturned frame.
+        let centre = (body.x + CARD_W / 2.0, body.y + CARD_H / 2.0);
+        let r = physics::turn((start.x - centre.0, start.y - centre.1), -body.r);
         *self.drag.borrow_mut() = Some(Drag {
             ids,
             group,
@@ -1740,6 +1783,7 @@ impl Board {
             cursor: (p.x, p.y),
             target: Some(col),
             index: 0,
+            grip: physics::Grip::new(r, (start.x, start.y), body.r),
         });
         // Rings off, followers stacked, the tail hidden: right away, not at the
         // first change of target.
@@ -1908,28 +1952,27 @@ impl Card {
 
     /// Fades the whole card out and takes it out of the render tree (no blur, no
     /// edges, nothing to composite), or brings it back.
-    fn set_parked(&mut self, on: bool) {
+    ///
+    /// Never by fading: a card that leaves the render tree first travels to
+    /// where it is covered (under a stack's top cards) and goes when it comes to
+    /// rest there (`tick`), or at once (`at_once`) when it is already covered;
+    /// one that comes back is whole from its first frame, still covered, and
+    /// travels out from there.
+    fn set_parked(&mut self, on: bool, at_once: bool) {
         if self.parked.get() == on {
+            if on && at_once && !self.view.isHidden() {
+                self.view.setHidden(true);
+            }
             return;
         }
         self.parked.set(on);
-        let view = self.view.clone();
         if on {
-            let (done_view, parked) = (view.clone(), self.parked.clone());
-            crate::window::animate_with_completion(
-                motion::APPEAR_SECS,
-                move || view.animator().setAlphaValue(0.0),
-                move || {
-                    if parked.get() {
-                        done_view.setHidden(true);
-                    }
-                },
-            );
+            if at_once {
+                self.view.setHidden(true);
+            }
         } else {
-            view.setHidden(self.culled);
-            animate(true, motion::APPEAR_SECS, move || {
-                view.animator().setAlphaValue(1.0)
-            });
+            self.view.setAlphaValue(1.0);
+            self.view.setHidden(self.culled);
         }
     }
 
@@ -1973,12 +2016,9 @@ impl Card {
             return;
         }
         self.muted = on;
-        let (content, alpha) = (self.content.clone(), if on { 0.0 } else { 1.0 });
-        // Nothing to ease on a card that is not drawn.
-        let hidden = self.culled || (self.parked.get() && self.view.isHidden());
-        animate(!hidden, motion::GLASS_SECS, move || {
-            content.animator().setAlphaValue(alpha)
-        });
+        // At once: it changes while the card lies under the stack's top card,
+        // as it starts to travel out or arrives back; no fade in the transition.
+        self.content.setAlphaValue(if on { 0.0 } else { 1.0 });
     }
 
     /// Places the view; on the overlay the canvas's offset is added.

@@ -449,6 +449,12 @@ impl MainWindow {
         self.ui.cards.demo_misfit_parts()
     }
 
+    /// Development aid: the lowest opacity among a column's drawn cards, and how
+    /// many are drawn.
+    pub fn demo_column_opacity(&self, column: usize) -> (f64, usize) {
+        self.ui.cards.demo_column_opacity(column)
+    }
+
     /// Development aid: selects exactly these cards.
     pub fn demo_select(&self, ids: &[TaskId]) {
         self.ui.cards.demo_select(ids);

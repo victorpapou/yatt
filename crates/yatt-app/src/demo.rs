@@ -69,7 +69,12 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             if let Some(&top) = ids(cx, 0).first() {
                 window.demo_real_click(centre(top), 1);
             }
-            wait(900).await;
+            for _ in 0..6 {
+                wait(40).await;
+                let (low, drawn) = window.demo_column_opacity(0);
+                eprintln!("demo: fan of {n} opening: {drawn} cards drawn, lowest opacity {low:.2}");
+            }
+            wait(660).await;
             shot(&format!("fan-{n}"));
             window.capture_layers_png(&format!("{dir}/fan-{n}-layers.png"));
             eprintln!("demo: finished");
@@ -332,6 +337,8 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
                 wait(ms - at).await;
                 at = ms;
                 shot(name);
+                let (low, drawn) = window.demo_column_opacity(1);
+                eprintln!("demo: fan opening at {name}: {drawn} cards drawn, lowest opacity {low:.2}");
             }
             click((window.demo_column_x(0), 640.0), false, false);
             wait(600).await;

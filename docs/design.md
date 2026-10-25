@@ -97,14 +97,22 @@ tabular digits, tracked +0.15, at 50%.
   at most 12°): a sideways push tilts it against the move, it swings back past
   level once or twice and settles. One integrator, fixed 480 Hz substeps
   (`Body::step`). The task panel uses the same integrator without the swing.
-- A dragged group is a chain: the lead hangs from the pointer, each follower off
+- A carried card is held at the very point it was grabbed: a rigid body hanging
+  from the pointer there (`physics::Grip`). Moving it turns it about that point
+  as its own inertia makes it: held by a corner it swings round in the direction
+  it is moved, held at its centre it mostly slides; a damped spring brings it
+  back level (period 0.5 s, ζ 0.5, at most 30°), while held and after the drop.
+- A dragged group is a chain: the lead is held as above, each follower hangs off
   the card ahead, lagging one link (80 ms for two cards, 60 ms for three, 40 ms
   from four on); up to eight followers draw, each 5% smaller, centred so none
   shows outside the lead at rest. The selection ring is off while dragging. The
   column opens one card's room for the whole group, which lands together,
   keeping the stacking order it flew in until the last card is down.
 - A fan opens as a short wave (each card up to 12 ms after the one before, 60 ms
-  in all), its cards swinging into their angles.
+  in all), its cards swinging into their angles. Nothing fades: the stack's own
+  cards, hidden ones included, are whole from the first frame, lying under the
+  pile, and fly out from there; folding, they fly back under it and only then
+  leave the render tree.
 - A fan is the swatch layout of the reference frames
   (docs/reference/tima/swatch): from the newest card, just right of the top and
   turned about −70°, the cards wind clockwise round one centre about 40° apart
