@@ -220,7 +220,11 @@ disc for the time gone, no outline and no text. The stopwatch has no end, so
 no pie: only its minutes as text («<1 мин», «12 мин», «1 ч 05 мин»), never
 seconds, so it does not tick. Idle: a still three-quarter pie, dimmed; paused
 dims too. It is drawn again only when a degree of the pie, the minutes or the
-state change. Its menu: open yatt, pause or resume, stop.
+state change. Its menu: the timer to the second at the top, then the tasks it
+counts for (or, with nothing counted, those «В работе»), each with its colour
+and time; a click on one brings yatt forward and opens that task's panel
+(morphing from its card, or from the middle when the card is out of sight).
+Then open yatt, pause or resume, stop.
 
 ## Pomodoro lengths
 
@@ -234,3 +238,16 @@ starts or pauses. Long breaks keep their own length.
 
 Off for now (`MINIMAL_MODE`): its toolbar button and menu item are gone, the
 code stays.
+
+## Motion safety
+
+A fan card's way round its centre is always measured the short way (never
+counted up: a path through the centre would add whole turns, and the card
+whirled round the board). No card moves faster than 6000 pt/s, and a
+non-number lands the card on its place. A fuzz test drives eight cards with
+random targets, fans, kicks and 2 s frames.
+
+## Card ↔ panel
+
+The panel grows out of the card with a little jelly: one soft give past its
+size (about 4%, `MORPH_GIVE`) and back; it shrinks back lighter (under 1%).

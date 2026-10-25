@@ -18,6 +18,7 @@ editor takes them before the board ever sees them.
 | ⌫ / ⌦ | Delete the selected cards (one undo step) | Delete characters | Delete characters |
 | Fingers or wheel down / up over a stack (either scrolling setting) | Fan it out / fold it, following the fingers (140 pt for all the way; a fling goes at once; let go part way and it opens or folds, whichever is nearer, after 0.25 s) | — | — |
 | Click on a card (list, stack or fan) | Open it | — | — |
+| A task in the menu bar's menu | Brings yatt forward and opens the task | the same | the same |
 | Esc | Clear the selection; fold the fans | End editing | Close the task panel |
 | ⌘. | Stop the timer | Stop the timer | Stop the timer |
 | ⌘] | Skip the phase | Skip the phase | Skip the phase |

@@ -38,6 +38,11 @@ impl Workspace {
             UiEvent::Move { id, status, index } => {
                 e.move_task(id, status, Placement::Index(index));
             }
+            UiEvent::OpenTask(id) => {
+                if e.board.get(id).is_some() {
+                    self.expanded = Some(id);
+                }
+            }
             UiEvent::ToggleExpand(id) => {
                 self.expanded = if self.expanded == Some(id) {
                     None
@@ -260,6 +265,23 @@ mod tests {
 
     fn workspace() -> Workspace {
         Workspace::new(Engine::load(Store::open_in_memory().unwrap()).unwrap())
+    }
+
+    #[test]
+    fn opening_a_task_from_the_menu_bar_shows_its_panel() {
+        let mut ws = workspace();
+        ws.handle(UiEvent::NewTask {
+            title: "А".into(),
+            status: Status::InProgress,
+        });
+        let id = ws.snapshot().columns[1].cards[0].id;
+        ws.handle(UiEvent::OpenTask(id));
+        assert_eq!(ws.snapshot().expanded, Some(id));
+        // Again: it stays open (not a toggle).
+        ws.handle(UiEvent::OpenTask(id));
+        assert_eq!(ws.snapshot().expanded, Some(id));
+        ws.handle(UiEvent::OpenTask(yatt_core::TaskId::new()));
+        assert_eq!(ws.snapshot().expanded, Some(id));
     }
 
     #[test]

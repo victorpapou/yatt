@@ -83,6 +83,8 @@ pub enum UiEvent {
         index: usize,
     },
     ToggleExpand(TaskId),
+    /// Opens that task's panel, whatever was open (from the menu bar).
+    OpenTask(TaskId),
     Rename(TaskId, String),
     SetNotes(TaskId, String),
     Delete(TaskId),

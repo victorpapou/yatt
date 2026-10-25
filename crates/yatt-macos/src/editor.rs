@@ -163,9 +163,20 @@ impl NotesEditor {
 }
 
 fn set_ink_js(css: &str) -> String {
-    let rule = js_string(&format!(".ProseMirror {{ color: {css}; }}"));
+    // The body's ink, and the placeholder and quiet parts in it, in the panel's
+    // own appearance (system colours there follow the colour scheme).
+    let rule = js_string(&format!(
+        ".ProseMirror {{ color: {css}; }} \
+         .ProseMirror p.is-editor-empty:first-child::before {{ \
+         color: color-mix(in srgb, {css} 45%, transparent); }}"
+    ));
+    let scheme = if crate::style::dark() {
+        "dark"
+    } else {
+        "light"
+    };
     format!(
-        "document.documentElement.style.colorScheme = 'light';\
+        "document.documentElement.style.colorScheme = '{scheme}';\
          (document.getElementById('ink') || document.head.appendChild(\
          Object.assign(document.createElement('style'), {{ id: 'ink' }}))).textContent = {rule};"
     )

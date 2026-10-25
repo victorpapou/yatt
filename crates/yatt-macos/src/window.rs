@@ -202,7 +202,17 @@ impl MainWindow {
         retained.extend(crate::eventlog::install());
         let header = Header::new(mtm, &sink, &mut retained);
         let status = {
-            let (a, b) = (sink.clone(), sink.clone());
+            let (a, b, c) = (sink.clone(), sink.clone(), sink.clone());
+            let front = || {
+                let mtm = MainThreadMarker::new().expect("main thread");
+                let app = NSApplication::sharedApplication(mtm);
+                #[allow(deprecated)]
+                app.activateIgnoringOtherApps(true);
+                if let Some(w) = app.windows().firstObject() {
+                    w.deminiaturize(None);
+                    w.makeKeyAndOrderFront(None);
+                }
+            };
             crate::menubar::StatusBar::new(
                 mtm,
                 move || {
@@ -216,6 +226,10 @@ impl MainWindow {
                 },
                 move || a(UiEvent::StartPause),
                 move || b(UiEvent::Stop),
+                move |id| {
+                    front();
+                    c(UiEvent::OpenTask(id));
+                },
             )
         };
         // The timer row lives in a native toolbar, unified with the titlebar.
@@ -1057,6 +1071,25 @@ impl Ui {
             &self.status,
             &yatt_platform::menu_bar_look(snap.timer.menu_bar),
         );
+        // The tasks being counted, or else those «В работе».
+        let working = &snap.columns[1].cards;
+        let counted: Vec<_> = working.iter().filter(|c| c.tracking).collect();
+        let shown = if counted.is_empty() {
+            working.iter().collect()
+        } else {
+            counted
+        };
+        let tasks: Vec<crate::menubar::MenuTask> = shown
+            .into_iter()
+            .map(|c| crate::menubar::MenuTask {
+                id: c.id,
+                title: c.title.clone(),
+                hue: style::hue_of(c.id),
+                time: crate::model::format_duration(c.total_ms),
+            })
+            .collect();
+        self.status
+            .show_tasks(&crate::model::format_clock(snap.timer.clock_ms), &tasks);
         for (c, col) in self.columns.iter().zip(&snap.columns) {
             c.title.setStringValue(&NSString::from_str(&col.title));
             let count = col.cards.len().to_string();

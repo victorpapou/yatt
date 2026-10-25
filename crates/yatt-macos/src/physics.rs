@@ -89,9 +89,14 @@ pub const SHIFT: Spring = Spring::new(300.0, 1.0);
 pub const SLOT: Spring = Spring::new(1500.0, 1.0);
 /// A new card flying from the new-task field into its column.
 pub const FLY: Spring = Spring::new(220.0, 1.0);
-/// The task modal growing out of its card and shrinking back: no wobble, the
-/// panel's text has to stay readable all the way.
-pub const MORPH: Spring = Spring::new(520.0, 0.88);
+/// The task modal growing out of its card: a little jelly, one soft give past
+/// its size (about [`MORPH_GIVE`]) and back; the panel's contents are clipped by
+/// its frame, so nothing inside moves.
+pub const MORPH: Spring = Spring::new(430.0, 0.72);
+/// Shrinking back into the card: lighter, barely past (under 1%).
+pub const MORPH_BACK: Spring = Spring::new(520.0, 0.84);
+/// How far past its size the opening panel grows, as a share of the way.
+pub const MORPH_GIVE: f64 = 0.04;
 
 /// How far behind the card ahead each follower of a dragged group hangs, in
 /// seconds of lag at a steady speed: for a group of two, of three, and of four
@@ -261,9 +266,10 @@ pub struct Body {
     /// On a fan: the target's offset from the fan's centre. The body then moves
     /// round that centre ([`FAN_RADIAL`], [`FAN_ALONG`]) instead of by `spring`.
     pub orbit: Option<(f64, f64)>,
-    /// On a fan: how far round the centre the body still has to go to its
-    /// target, in radians, counted continuously (it may be most of a turn, as a
-    /// card spills out of the stack), and the angle it was last seen at.
+    /// On a fan: how far round the centre the body is from its target, in
+    /// radians (the short way, −π..π), and the angle it was last seen at.
+    /// Never counted up over time: a path through the centre would add whole
+    /// turns, and the card would whirl round the board.
     pub lap: f64,
     pub lap_at: f64,
     /// Just out of the stack: the card goes straight to its place (with
@@ -312,16 +318,13 @@ impl Body {
         let at = dy.atan2(dx);
         match self.orbit {
             Some(o) if o == (dx, dy) => return,
-            Some(o) if !self.spill => self.lap += wrap(o.1.atan2(o.0) - at),
             Some(_) => {}
             None => self.spill = true,
         }
         self.orbit = Some((dx, dy));
-        if self.spill {
-            let (_, ang, _) = self.polar((dx, dy));
-            self.lap = wrap(ang - at);
-            self.lap_at = ang;
-        }
+        let (_, ang, _) = self.polar((dx, dy));
+        self.lap = wrap(ang - at);
+        self.lap_at = ang;
     }
 
     /// Where the body sits round its fan: (unit vector out from the centre, its
@@ -376,7 +379,7 @@ impl Body {
                 // Across the spiral, firm; along it, loose.
                 let (u, ang, rho) = self.polar(o);
                 if rho >= 1e-3 {
-                    self.lap += wrap(ang - self.lap_at);
+                    self.lap = wrap(ang - o.1.atan2(o.0));
                     self.lap_at = ang;
                 }
                 if self.spill && (self.x - self.tx).hypot(self.y - self.ty) < 0.5 {
@@ -401,6 +404,13 @@ impl Body {
                 self.vx += (-k * (self.x - self.tx) - c * self.vx) * h;
                 self.vy += (-k * (self.y - self.ty) - c * self.vy) * h;
             }
+            // However the springs are pushed (a stall, a big kick), no card
+            // flies faster than this.
+            let speed = self.vx.hypot(self.vy);
+            if speed > MAX_SPEED {
+                self.vx *= MAX_SPEED / speed;
+                self.vy *= MAX_SPEED / speed;
+            }
             self.x += self.vx * h;
             self.y += self.vy * h;
             // The angle leans into the sideways motion (clockwise moving right,
@@ -420,6 +430,13 @@ impl Body {
                 self.r = tr + limit.copysign(self.r - tr);
                 self.vr = 0.0;
             }
+        }
+        // Something gave a non-number: land rather than vanish or fly.
+        if ![self.x, self.y, self.r, self.vx, self.vy, self.vr]
+            .iter()
+            .all(|v| v.is_finite())
+        {
+            self.settle();
         }
     }
 
@@ -465,6 +482,9 @@ pub fn fan_scrub(open: f64, down: f64) -> f64 {
 pub fn fan_snap(open: f64) -> bool {
     open > 0.5
 }
+
+/// The fastest any card moves, in points a second.
+pub const MAX_SPEED: f64 = 6000.0;
 
 /// An angle brought into −π..π.
 fn wrap(a: f64) -> f64 {
@@ -885,6 +905,66 @@ mod tests {
     }
 
     #[test]
+    fn no_card_runs_wild_under_random_handling() {
+        // Random targets, fans, spills, kicks and shoves, with frames from
+        // 1/120 s to 2 s: every card stays a number, within reach of the board
+        // and under the speed limit, and comes to rest on its place.
+        let mut z = 0x1234_5678_9ABC_DEF0_u64;
+        let mut rnd = || {
+            z ^= z << 13;
+            z ^= z >> 7;
+            z ^= z << 17;
+            (z >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut cards: Vec<Body> = (0..8).map(|i| Body::at(100.0 * i as f64, 50.0)).collect();
+        for round_ in 0..400 {
+            let i = (rnd() * 8.0) as usize % 8;
+            let (x, y) = (rnd() * 1500.0, rnd() * 1000.0);
+            match (rnd() * 5.0) as u32 {
+                0 => cards[i].target(x, y, rnd() * 60.0 - 30.0),
+                1 => {
+                    let a = rnd() * std::f64::consts::TAU;
+                    let r = 40.0 + rnd() * 120.0;
+                    let (dx, dy) = (r * a.cos(), r * a.sin());
+                    cards[i].target(x + dx, y + dy, rnd() * 90.0 - 45.0);
+                    cards[i].round(dx, dy);
+                }
+                2 => cards[i].push_in(rnd() * 2000.0),
+                3 => cards[i].push_along(rnd() * 4000.0 - 2000.0),
+                _ => {
+                    cards[i].vx += rnd() * 1e5 - 5e4;
+                    cards[i].vy += rnd() * 1e5 - 5e4;
+                }
+            }
+            let dt = [1.0 / 120.0, 1.0 / 60.0, 1.0 / 30.0, 0.5, 2.0][round_ % 5];
+            {
+                let mut ring: Vec<&mut Body> = cards.iter_mut().collect();
+                fan_contact(&mut ring, dt);
+            }
+            for b in &mut cards {
+                b.step(dt);
+                assert!(
+                    b.x.is_finite() && b.y.is_finite() && b.r.is_finite(),
+                    "{b:?}"
+                );
+                assert!(b.vx.hypot(b.vy) <= MAX_SPEED + 1e-6, "{b:?}");
+                assert!(
+                    b.x > -3000.0 && b.x < 4500.0 && b.y > -3000.0 && b.y < 4000.0,
+                    "{b:?}"
+                );
+            }
+        }
+        for _ in 0..600 {
+            for b in &mut cards {
+                b.step(1.0 / 60.0);
+            }
+        }
+        for b in &cards {
+            assert!((b.x - b.tx).hypot(b.y - b.ty) < 1.0, "{b:?}");
+        }
+    }
+
+    #[test]
     fn fan_jitter_is_small_and_fixed_per_card() {
         assert_eq!(fan_jitter(42), fan_jitter(42));
         assert_ne!(fan_jitter(42), fan_jitter(43));
@@ -1064,6 +1144,20 @@ mod tests {
             t += 1.0 / 120.0;
         }
         assert!(t < 0.8, "settled after {t}s");
+        // One soft give past, about MORPH_GIVE of the way.
+        let mut b = Body::at(0.0, 0.0);
+        b.spring = MORPH;
+        b.swings = false;
+        b.target(100.0, 0.0, 0.0);
+        let mut far = 0.0_f64;
+        for _ in 0..240 {
+            b.step(1.0 / 120.0);
+            far = far.max(b.x);
+        }
+        assert!(
+            far > 101.0 && far < 100.0 * (1.0 + MORPH_GIVE + 0.01),
+            "{far}"
+        );
     }
 
     #[test]

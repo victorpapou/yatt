@@ -21,8 +21,8 @@ use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSAnimatablePropertyContainer, NSButton, NSColor, NSFont, NSFontWeightMedium,
-    NSFontWeightRegular, NSImage, NSLineBreakMode, NSMenu, NSMenuItem, NSPasteboard,
-    NSPasteboardTypeString, NSTextField, NSView,
+    NSFontWeightRegular, NSImage, NSImageSymbolConfiguration, NSLineBreakMode, NSMenu, NSMenuItem,
+    NSPasteboard, NSPasteboardTypeString, NSTextField, NSView,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString, NSTimer, ns_string};
 use objc2_quartz_core::{CACornerMask, CACurrentMediaTime};
@@ -109,6 +109,8 @@ pub struct Modal {
     all_entries: Rc<RefCell<Vec<String>>>,
     look: Retained<NSButton>,
     picker: Rc<Picker>,
+    /// The card's own edge round the panel (outline and inner glow).
+    edges: style::Edges,
     /// The task on screen, shared with the callbacks.
     open: Rc<Cell<Option<TaskId>>>,
     /// Last title known to match the store, to tell edits from echoes.
@@ -170,6 +172,14 @@ impl Morph {
     /// Springs to `r`, then runs `done` (dropping any earlier one unrun).
     fn to(self: &Rc<Self>, r: NSRect, deg: f64, done: Option<Box<dyn Fn()>>) {
         let (mut o, mut s) = (self.origin.get(), self.size.get());
+        // Growing: a little jelly; shrinking back: lighter.
+        let spring = if r.size.width >= s.x {
+            physics::MORPH
+        } else {
+            physics::MORPH_BACK
+        };
+        o.spring = spring;
+        s.spring = spring;
         self.from_w.set(s.x);
         self.to_w.set(r.size.width);
         o.target(r.origin.x, r.origin.y, deg);
@@ -371,19 +381,28 @@ impl Modal {
                     picker.open(b);
                 }
             });
+            // The toolbar's icon size and weight, crisp at any scale.
+            let config =
+                NSImageSymbolConfiguration::configurationWithPointSize_weight(15.0, unsafe {
+                    NSFontWeightMedium
+                });
+            let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+                ns_string!("paintpalette"),
+                Some(ns_string!("Цвет, иконка, статус")),
+            )
+            .and_then(|i| i.imageWithSymbolConfiguration(&config))
+            .expect("symbol");
             let b = unsafe {
                 NSButton::buttonWithImage_target_action(
-                    &NSImage::imageWithSystemSymbolName_accessibilityDescription(
-                        ns_string!("paintpalette"),
-                        Some(ns_string!("Цвет, иконка, статус")),
-                    )
-                    .expect("symbol"),
+                    &image,
                     Some(&target),
                     Some(ActionTarget::sel()),
                     mtm,
                 )
             };
             b.setBordered(false);
+            b.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageOnly);
+            b.setImageScaling(objc2_app_kit::NSImageScaling::ScaleNone);
             b.setToolTip(Some(ns_string!("Цвет, иконка, статус")));
             *slot.borrow_mut() = Some(b.clone());
             retained.push(Retained::into_super(Retained::into_super(target)));
@@ -469,6 +488,7 @@ impl Modal {
             all_entries,
             look,
             picker,
+            edges,
             open,
             title_known,
             notes_known,
@@ -660,6 +680,7 @@ impl Modal {
     pub fn restyle(&self) {
         self.face.repaint();
         self.sheet.repaint();
+        self.edges.restyle();
     }
 
     /// Refreshes what the open task shows, without touching what is being typed.
