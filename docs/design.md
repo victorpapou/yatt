@@ -49,7 +49,7 @@ glow, no layer shadow.
 
 1. Outside, the outline: a black shadow at 50%, 1 pt blur, no offset, only
    outside the card.
-2. Inside, a soft white glow along the edge: 42% white at the edge, fading out
+2. Inside, a soft white glow along the edge: 51% white at the edge, fading out
    on an ease-out curve over 3.75 pt, only inside the card, over the tint and
    under the text.
 
@@ -90,18 +90,18 @@ tabular digits, tracked +0.15, at 50%.
   animations on a view's layer and a plain setter would jump.
 - Cards already in a list that move over to make room, or close a gap, glide on
   a critically damped spring (ease in and out, no overshoot).
-- Cards hang as if on a string (measured from the reference clip,
-  docs/reference/tima/motion/notes.md). A card's position goes to its place on
-  a critically damped spring (no overshoot, no jitter); its angle hangs from the
-  point that moves it as a damped pendulum (period 0.45 s, ζ 0.45, lever 150 pt,
-  at most 12°): a sideways push tilts it against the move, it swings back past
-  level once or twice and settles. One integrator, fixed 480 Hz substeps
-  (`Body::step`). The task panel uses the same integrator without the swing.
+- Cards feel weighted (matched to the reference clip,
+  docs/reference/tima/motion). A card's position goes to its place on a
+  critically damped spring (no overshoot, no jitter); its angle leans into its
+  sideways motion, 3° per 1000 pt/s and at most 7°, through a damped response
+  (period 0.45 s, ζ 0.7): one slight overshoot, no swinging. One integrator,
+  fixed 480 Hz substeps (`Body::step`). The task panel uses it without the lean.
 - A carried card is held at the very point it was grabbed: a rigid body hanging
   from the pointer there (`physics::Grip`). Moving it turns it about that point
   as its own inertia makes it: held by a corner it swings round in the direction
-  it is moved, held at its centre it mostly slides; a damped spring brings it
-  back level (period 0.5 s, ζ 0.5, at most 30°), while held and after the drop.
+  it is moved, held at its centre it mostly slides. It takes a third of a rigid
+  body's turn, so it reads as weight, and a damped spring brings it back level
+  (period 0.5 s, ζ 0.7, at most 8°), while held and after the drop.
 - A dragged group is a chain: the lead is held as above, each follower hangs off
   the card ahead, lagging one link (80 ms for two cards, 60 ms for three, 40 ms
   from four on); up to eight followers draw, each 5% smaller, centred so none

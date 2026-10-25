@@ -192,6 +192,9 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
                 let p = ease(from, to, i as f64 / 20.0);
                 window.demo_real_mouse(DemoMouse::Drag, p);
                 wait(16).await;
+                if i % 4 == 0 {
+                    window.capture_layers_png(&format!("{dir}/motion-ours-{i:02}.png"));
+                }
                 // The card's view must be under the pointer all the way, not only
                 // land at the end.
                 if let Some(v) = window.demo_view_center(top) {

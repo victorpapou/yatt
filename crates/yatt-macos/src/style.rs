@@ -560,9 +560,9 @@ fn edge_layer(image: Option<&CGImage>, inset: f64) -> Retained<CALayer> {
 /// The outline: black at 50%, blurred 1 pt.
 const OUTLINE_ALPHA: f64 = 0.5;
 const OUTLINE_BLUR: f64 = 1.0;
-/// The inner edge: a soft white glow, 42% at the edge, fading out on an ease-out
+/// The inner edge: a soft white glow, 51% at the edge, fading out on an ease-out
 /// curve over 3.75 pt, drawn as stacked strokes.
-const INSET_ALPHA: f64 = 0.42;
+const INSET_ALPHA: f64 = 0.51;
 const INSET_DEPTH: f64 = 3.75;
 const INSET_STEPS: usize = 24;
 

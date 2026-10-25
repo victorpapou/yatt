@@ -36,13 +36,14 @@ pub const FAN_OPEN: Spring = Spring::new(560.0, 1.0);
 /// A fan folding back into its stack: quicker.
 pub const FAN_FOLD: Spring = Spring::new(800.0, 1.0);
 
-/// The hanging swing of a card's angle: natural period, damping ratio, the
-/// lever from the point that moves it (sets how far a push tilts it: about 8° at
-/// 4000 pt/s² sideways), and the most it tilts. Measured from the reference clip.
+/// The weighted tilt of a moving card: it leans into its sideways motion, about
+/// 3° per 1000 pt/s and at most 7°, following through a damped response
+/// (period 0.45 s, ζ 0.7: one slight overshoot, no swinging). Matched to the
+/// reference clip (docs/reference/tima/motion).
 pub const SWING_PERIOD: f64 = 0.45;
-pub const SWING_ZETA: f64 = 0.45;
-pub const SWING_LEVER: f64 = 150.0;
-pub const SWING_MAX: f64 = 12.0;
+pub const SWING_ZETA: f64 = 0.7;
+pub const SWING_PER_SPEED: f64 = 0.003;
+pub const SWING_MAX: f64 = 7.0;
 
 /// When the `i`-th card of a fan of `n` starts to move as the fan opens, in
 /// seconds: a wave through the fan, at most 12 ms apart and 60 ms in all
@@ -120,8 +121,11 @@ pub fn ring_shown(selected: bool, dragging: bool) -> bool {
 /// A held card's turn about the grab point: natural period and damping ratio of
 /// its return to level, and the most it turns.
 pub const GRIP_PERIOD: f64 = 0.5;
-pub const GRIP_ZETA: f64 = 0.5;
-pub const GRIP_MAX: f64 = 30.0;
+pub const GRIP_ZETA: f64 = 0.7;
+pub const GRIP_MAX: f64 = 8.0;
+/// How much of the full rigid-body turn a held card takes: a third, so it
+/// reads as weight, not as hanging.
+pub const GRIP_GAIN: f64 = 0.35;
 
 /// A card held at the point it was grabbed: a rigid body hanging from the
 /// pointer there. The grab point follows the pointer (very stiff, critically
@@ -182,7 +186,8 @@ impl Grip {
             let inertia = i_cm + cx * cx + cy * cy;
             let theta = self.theta.to_radians();
             let omega = self.omega.to_radians();
-            let alpha = torque / inertia - w0 * w0 * theta - 2.0 * GRIP_ZETA * w0 * omega;
+            let alpha =
+                GRIP_GAIN * torque / inertia - w0 * w0 * theta - 2.0 * GRIP_ZETA * w0 * omega;
             let omega = omega + alpha * h;
             self.omega = omega.to_degrees();
             self.theta = (theta + omega * h).to_degrees();
@@ -253,23 +258,21 @@ impl Body {
         let h = dt / steps as f64;
         let (k, c) = (self.spring.k, self.spring.damping());
         let w0 = std::f64::consts::TAU / SWING_PERIOD;
-        let deg_per_accel = 180.0 / std::f64::consts::PI / SWING_LEVER;
         for _ in 0..steps {
-            let vx0 = self.vx;
             self.vx += (-k * (self.x - self.tx) - c * self.vx) * h;
             self.vy += (-k * (self.y - self.ty) - c * self.vy) * h;
             self.x += self.vx * h;
             self.y += self.vy * h;
-            // The angle hangs from the moving point: a push to the right leaves
-            // the bottom behind, turning the card clockwise, and it swings back.
-            let ax = (self.vx - vx0) / h;
-            let swing = self.r - self.tr;
-            let (zeta, push) = if self.swings {
-                (SWING_ZETA, deg_per_accel * ax)
+            // The angle leans into the sideways motion (clockwise moving right,
+            // as the bottom lags), through a damped response.
+            let lean = if self.swings {
+                (self.vx * SWING_PER_SPEED).clamp(-SWING_MAX, SWING_MAX)
             } else {
-                (1.0, 0.0)
+                0.0
             };
-            self.vr += (-w0 * w0 * swing - 2.0 * zeta * w0 * self.vr + push) * h;
+            let zeta = if self.swings { SWING_ZETA } else { 1.0 };
+            let swing = self.r - self.tr - lean;
+            self.vr += (-w0 * w0 * swing - 2.0 * zeta * w0 * self.vr) * h;
             self.r += self.vr * h;
             let limit = SWING_MAX;
             if (self.r - self.tr).abs() > limit {
@@ -441,11 +444,11 @@ mod tests {
         let dt = 1.0 / 120.0;
         let mut tilt = 0.0f64;
         for k in 0..30 {
-            b.target(40.0 * k as f64, 0.0, 0.0);
+            b.target(10.0 * k as f64, 0.0, 0.0);
             b.step(dt);
             tilt = tilt.max(b.r);
         }
-        assert!(tilt > 2.0 && tilt <= SWING_MAX, "tilt {tilt}");
+        assert!(tilt > 1.0 && tilt <= SWING_MAX, "tilt {tilt}");
         let mut back = 0.0f64;
         let mut t = 0.0;
         while t < 3.0 {
@@ -456,7 +459,8 @@ mod tests {
                 break;
             }
         }
-        assert!(back < -0.2, "no swing back ({back})");
+        // One slight overshoot past level, no more.
+        assert!(back < -0.01 && back > -0.4 * tilt, "swing back {back}");
         assert!(b.r.abs() < 0.05, "not settled: {}", b.r);
         assert!(t < 1.5, "took {t}s");
     }
@@ -536,9 +540,9 @@ mod tests {
         let (top, _, end_top) = grip_drag((-115.0, -50.0));
         let (_, bottom, end_bottom) = grip_drag((-115.0, 50.0));
         let (c_most, c_least, _) = grip_drag((0.0, 0.0));
-        assert!(top > 3.0, "top-left: {top}");
-        assert!(bottom < -3.0, "bottom-left: {bottom}");
-        assert!(c_most.max(-c_least) < 0.5, "centre: {c_most} {c_least}");
+        assert!(top > 1.0 && top <= GRIP_MAX, "top-left: {top}");
+        assert!(bottom < -1.0, "bottom-left: {bottom}");
+        assert!(c_most.max(-c_least) < 0.3, "centre: {c_most} {c_least}");
         // And it comes back level while still held.
         assert!(
             end_top.abs() < 0.2 && end_bottom.abs() < 0.2,
