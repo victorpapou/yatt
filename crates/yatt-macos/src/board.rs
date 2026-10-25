@@ -68,6 +68,8 @@ const ROW_OVERSCAN: f64 = 0.5;
 const LANDING_MAX_SECS: f64 = 2.0;
 /// Room a fan keeps from the canvas's sides, when it has room.
 const FAN_MARGIN: f64 = 8.0;
+/// How far a fan may stick out past its column on each side before it shrinks.
+const FAN_PEEK: f64 = 36.0;
 /// A fanned card under the pointer grows a little, keeping its place in the order.
 const HOVER_SCALE: f64 = 1.03;
 /// The new-task field's text inset from the capsule's left edge.
@@ -764,10 +766,15 @@ impl Board {
         self.cols[ci].scroll.contentView().bounds().origin.y
     }
 
-    /// Top-left of a stack's top card, centred in the column.
+    /// Top-left of a stack's top card: the pile centred in the column both ways.
     fn stack_anchor(&self, ci: usize) -> (f64, f64) {
         let g = self.geom.get()[ci];
-        (physics::centred_left(g.x, g.w, CARD_W), LIST_TOP + 10.0)
+        let tall = self.height.get() - LIST_TOP;
+        let pile = CARD_H + physics::pile(2).0;
+        (
+            physics::centred_left(g.x, g.w, CARD_W),
+            LIST_TOP + ((tall - pile) / 2.0).max(10.0),
+        )
     }
 
     // ---- cards ----
@@ -948,17 +955,19 @@ impl Board {
                     let a = self.stack_anchor(ci);
                     // The swatch fan of the reference, newest card on top, shrunk
                     // as a whole (angles unchanged) to fit its column and the board's
-                    // height, and centred on the column below the chips.
+                    // height (sticking out past the column a little first), and
+                    // centred in the column both ways below the chips.
                     let g = self.geom.get()[ci];
+                    let tall = self.height.get() - LIST_TOP;
                     let room = (
-                        g.w - 2.0 * FAN_MARGIN,
-                        self.height.get() - LIST_TOP - 2.0 * FAN_MARGIN,
+                        g.w - 2.0 * FAN_MARGIN + 2.0 * FAN_PEEK,
+                        tall - 2.0 * FAN_MARGIN,
                     );
                     let (shown_n, scale) = physics::fan_fit(n, (w, h), room);
-                    let (x0, y0, x1, _) = physics::fan_bounds(shown_n, (w, h));
+                    let (x0, y0, x1, y1) = physics::fan_bounds(shown_n, (w, h));
                     let centre = (
                         g.x + g.w / 2.0 - (x0 + x1) / 2.0 * scale,
-                        LIST_TOP + FAN_MARGIN - y0 * scale,
+                        LIST_TOP + tall / 2.0 - (y0 + y1) / 2.0 * scale,
                     );
                     for (i, id) in ids.iter().enumerate() {
                         let Some(card) = cards.get_mut(id) else {

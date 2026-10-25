@@ -1124,6 +1124,18 @@ impl Header {
         stopwatch_item.setToolTip(Some(ns_string!("Секундомер")));
         stopwatch.setTitle(ns_string!(""));
         stopwatch.setImage(symbol("play.fill", "Секундомер").as_deref());
+        for (item, b, name, tip) in [
+            (&skip_item, &skip, "forward.end.fill", "Пропустить (⌘])"),
+            (&stop_item, &stop, "stop.fill", "Стоп (⌘.)"),
+        ] {
+            let image = symbol(name, tip);
+            item.setTitle(ns_string!(""));
+            item.setImage(image.as_deref());
+            item.setToolTip(Some(&NSString::from_str(tip)));
+            b.setTitle(ns_string!(""));
+            b.setImage(image.as_deref());
+            b.setToolTip(Some(&NSString::from_str(tip)));
+        }
         start_item.setTitle(ns_string!(""));
         // The view switches: two icons side by side, which the toolbar puts in one
         // shared bubble. Their targets are set in `Ui::wire`.
@@ -1280,8 +1292,10 @@ impl Header {
         ));
         self.ring.layout();
         let dx = RING_D + 8.0;
+        // Optically centred: the digits' line box sits a little high of their
+        // ink (measured on the toolbar capture: 1.5 pt).
         self.digits_box.setFrame(NSRect::new(
-            NSPoint::new(dx, mid - dh / 2.0),
+            NSPoint::new(dx, mid - dh / 2.0 + DIGITS_DROP),
             NSSize::new(digits_w.max(1.0), dh),
         ));
         // The controls are toolbar items of their own here.
@@ -1674,6 +1688,9 @@ impl Column {
 // ---- helpers ----
 
 /// An SF Symbol by name.
+/// How far the toolbar digits sit below their box's geometric centre line.
+const DIGITS_DROP: f64 = 1.5;
+
 fn symbol(name: &str, description: &str) -> Option<Retained<NSImage>> {
     NSImage::imageWithSystemSymbolName_accessibilityDescription(
         &NSString::from_str(name),
