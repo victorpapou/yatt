@@ -652,7 +652,8 @@ impl Board {
         // tint and under the text.
         let edges = style::Edges::new(mtm);
         for v in [
-            &*edges.outer,
+            &*edges.ring,
+            &edges.outer,
             &glass,
             &face,
             &edges.inner,
@@ -1541,7 +1542,7 @@ impl Card {
     fn set_selected(&mut self, on: bool) {
         if self.selected != on {
             self.selected = on;
-            self.refill();
+            self.edges.set_selected(on);
         }
     }
 

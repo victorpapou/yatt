@@ -54,3 +54,13 @@ pub fn quietly(f: impl FnOnce()) {
 pub fn reduce_motion() -> bool {
     NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
 }
+
+/// Runs `f` inside a Core Animation transaction lasting `secs`, so the layer
+/// properties it sets ease over instead of jumping.
+pub fn eased(secs: f64, f: impl FnOnce()) {
+    objc2_quartz_core::CATransaction::begin();
+    objc2_quartz_core::CATransaction::setDisableActions(false);
+    objc2_quartz_core::CATransaction::setAnimationDuration(secs);
+    f();
+    objc2_quartz_core::CATransaction::commit();
+}

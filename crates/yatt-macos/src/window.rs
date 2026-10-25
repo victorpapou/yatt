@@ -26,11 +26,12 @@ use objc2_app_kit::{
     NSEventModifierFlags, NSEventType, NSFloatingWindowLevel, NSFocusRingType, NSFont,
     NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold, NSImage, NSLineBreakMode,
     NSNormalWindowLevel, NSTextAlignment, NSTextField, NSToolbar, NSToolbarDisplayMode,
-    NSToolbarItem, NSView, NSWindow, NSWindowOrderingMode, NSWindowStyleMask,
+    NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem, NSToolbarItemStyle,
+    NSToolbarSpaceItemIdentifier, NSView, NSWindow, NSWindowOrderingMode, NSWindowStyleMask,
     NSWindowTitleVisibility, NSWindowToolbarStyle,
 };
 use objc2_core_graphics::CGMutablePath;
-use objc2_foundation::{NSPoint, NSRect, NSSize, NSString, ns_string};
+use objc2_foundation::{NSCopying, NSPoint, NSRect, NSSize, NSString, ns_string};
 use objc2_quartz_core::{
     CAMediaTiming, CAMediaTimingFunction, CAShapeLayer, CATransition, kCALineCapRound,
     kCAMediaTimingFunctionEaseOut, kCATransitionFade, kCATransitionFromTop, kCATransitionPush,
@@ -120,6 +121,8 @@ struct Header {
     /// Lists or stacks, for the whole board.
     stack: Retained<NSButton>,
     ring: Ring,
+    /// The same controls as native toolbar items.
+    bar: Bar,
     minimal: Cell<bool>,
 }
 
@@ -176,12 +179,42 @@ impl MainWindow {
         timer_item.setView(Some(&header.view));
         #[allow(deprecated)]
         {
-            timer_item.setMinSize(NSSize::new(420.0, TOOLBAR_H));
-            timer_item.setMaxSize(NSSize::new(10_000.0, TOOLBAR_H));
+            timer_item.setMinSize(NSSize::new(260.0, TOOLBAR_H));
+            timer_item.setMaxSize(NSSize::new(560.0, TOOLBAR_H));
         }
         let toolbar =
             NSToolbar::initWithIdentifier(NSToolbar::alloc(mtm), ns_string!("yatt.toolbar"));
-        let toolbar_delegate = ToolbarDelegate::new(mtm, timer_item.clone());
+        // [ring, digits, phase] … [Старт] [Секундомер] [Пропустить] [Стоп] [▤ ⤡]
+        let bar = &header.bar;
+        let items: Vec<Retained<NSToolbarItem>> = vec![
+            timer_item.clone(),
+            bar.start.clone(),
+            bar.stopwatch.clone(),
+            bar.skip.clone(),
+            bar.stop.clone(),
+            bar.stack.clone(),
+            bar.mini.clone(),
+        ];
+        // The toolbar gives neighbouring items one shared bubble; a fixed space
+        // between two items gives each its own.
+        let id = |item: &Retained<NSToolbarItem>| item.itemIdentifier();
+        let flexible = unsafe { NSToolbarFlexibleSpaceItemIdentifier }.copy();
+        let space = unsafe { NSToolbarSpaceItemIdentifier }.copy();
+        let order: Vec<Retained<NSString>> = vec![
+            id(&items[0]),
+            flexible,
+            id(&items[1]),
+            space.clone(),
+            id(&items[2]),
+            space.clone(),
+            id(&items[3]),
+            space.clone(),
+            id(&items[4]),
+            space,
+            id(&items[5]),
+            id(&items[6]),
+        ];
+        let toolbar_delegate = ToolbarDelegate::new(mtm, items, order);
         toolbar.setDelegate(Some(ProtocolObject::from_ref(&*toolbar_delegate)));
         toolbar.setDisplayMode(NSToolbarDisplayMode::IconOnly);
         toolbar.setAllowsUserCustomization(false);
@@ -455,6 +488,8 @@ impl Ui {
         unsafe {
             this.header.mini.setTarget(Some(&target));
             this.header.mini.setAction(Some(ActionTarget::sel()));
+            this.header.bar.mini.setTarget(Some(&target));
+            this.header.bar.mini.setAction(Some(ActionTarget::sel()));
         }
         this._retained
             .borrow_mut()
@@ -470,6 +505,8 @@ impl Ui {
         unsafe {
             this.header.stack.setTarget(Some(&target));
             this.header.stack.setAction(Some(ActionTarget::sel()));
+            this.header.bar.stack.setTarget(Some(&target));
+            this.header.bar.stack.setAction(Some(ActionTarget::sel()));
         }
         this._retained
             .borrow_mut()
@@ -788,9 +825,23 @@ impl Header {
         view.addSubview(&phase);
         view.addSubview(&tasks);
 
-        let mut button = |title: &str, event: UiEvent| {
+        // Each control is both a button (minimal mode) and a native toolbar item of
+        // its own, so the toolbar gives it its own bubble.
+        let mut items: Vec<Retained<NSToolbarItem>> = Vec::new();
+        let mut button = |title: &str, id: &str, event: UiEvent| {
             let sink = sink.clone();
             let target = ActionTarget::new(mtm, move || sink(event.clone()));
+            let item = NSToolbarItem::initWithItemIdentifier(
+                NSToolbarItem::alloc(mtm),
+                &NSString::from_str(id),
+            );
+            item.setTitle(&NSString::from_str(title));
+            item.setLabel(&NSString::from_str(title));
+            unsafe {
+                item.setTarget(Some(&target));
+                item.setAction(Some(ActionTarget::sel()));
+            }
+            items.push(item);
             let b = unsafe {
                 NSButton::buttonWithTitle_target_action(
                     &NSString::from_str(title),
@@ -805,11 +856,24 @@ impl Header {
             retained.push(Retained::into_super(Retained::into_super(target)));
             b
         };
-        let primary = button("Старт", UiEvent::StartPause);
+        let primary = button("Старт", "yatt.start", UiEvent::StartPause);
         primary.setBezelColor(Some(&NSColor::controlAccentColor()));
-        let stopwatch = button("Секундомер", UiEvent::StartStopwatch);
-        let skip = button("Пропустить", UiEvent::Skip);
-        let stop = button("Стоп", UiEvent::Stop);
+        let stopwatch = button("Секундомер", "yatt.stopwatch", UiEvent::StartStopwatch);
+        let skip = button("Пропустить", "yatt.skip", UiEvent::Skip);
+        let stop = button("Стоп", "yatt.stop", UiEvent::Stop);
+        let [start_item, stopwatch_item, skip_item, stop_item]: [Retained<NSToolbarItem>; 4] =
+            items.try_into().expect("four control items");
+        start_item.setStyle(NSToolbarItemStyle::Prominent);
+        // The view switches: two icons side by side, which the toolbar puts in one
+        // shared bubble. Their targets are set in `Ui::wire`.
+        let icon_item = |id: &str| {
+            NSToolbarItem::initWithItemIdentifier(
+                NSToolbarItem::alloc(mtm),
+                &NSString::from_str(id),
+            )
+        };
+        let stack_item = icon_item("yatt.stack");
+        let mini_item = icon_item("yatt.mini");
 
         // Target and action are set in `Ui::wire`: minimal mode is window state, not an event.
         let mini =
@@ -826,14 +890,6 @@ impl Header {
 
         let ring = Ring::new(mtm);
         view.addSubview(&ring.view);
-        // Outside minimal mode the toolbar sizes the row: the controls keep to the
-        // right edge and the texts take up what is left.
-        for b in [&primary, &stopwatch, &skip, &stop, &mini, &stack] {
-            b.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinXMargin);
-        }
-        for t in [&phase, &tasks] {
-            t.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
-        }
 
         let header = Self {
             view,
@@ -849,6 +905,14 @@ impl Header {
             mini,
             stack,
             ring,
+            bar: Bar {
+                start: start_item,
+                stopwatch: stopwatch_item,
+                skip: skip_item,
+                stop: stop_item,
+                stack: stack_item,
+                mini: mini_item,
+            },
             minimal: Cell::new(false),
         };
         header.update_mini_icon();
@@ -870,6 +934,9 @@ impl Header {
         );
         self.stack.setImage(image.as_deref());
         self.stack.setToolTip(Some(&tip));
+        self.bar.stack.setImage(image.as_deref());
+        self.bar.stack.setToolTip(Some(&tip));
+        self.bar.stack.setLabel(&tip);
     }
 
     fn update_mini_icon(&self) {
@@ -884,6 +951,9 @@ impl Header {
         );
         self.mini.setImage(image.as_deref());
         self.mini.setToolTip(Some(&NSString::from_str(tip)));
+        self.bar.mini.setImage(image.as_deref());
+        self.bar.mini.setToolTip(Some(&NSString::from_str(tip)));
+        self.bar.mini.setLabel(&NSString::from_str(tip));
     }
 
     fn layout(&self, width: f64, height: f64) {
@@ -902,6 +972,8 @@ impl Header {
         self.tasks.setHidden(minimal);
         self.stack.setHidden(minimal);
         if minimal {
+            self.primary.setHidden(false);
+            self.mini.setHidden(false);
             // Under the traffic lights: the ring, then the big digits, the phase
             // under them, the main button on the right.
             let top = 30.0;
@@ -949,30 +1021,19 @@ impl Header {
             NSPoint::new(dx, mid - dh / 2.0),
             NSSize::new(digits_w.max(1.0), dh),
         ));
-        self.stack.setFrame(NSRect::new(
-            NSPoint::new(width - 56.0, mid - 11.0),
-            NSSize::new(24.0, 22.0),
-        ));
-        self.mini.setFrame(NSRect::new(
-            NSPoint::new(width - 28.0, mid - 11.0),
-            NSSize::new(24.0, 22.0),
-        ));
-        let buttons = [&self.primary, &self.stopwatch, &self.skip, &self.stop];
-        let mut x = width - 68.0;
-        for b in buttons.iter().rev() {
-            if b.isHidden() {
-                continue;
-            }
-            let w = b.fittingSize().width.max(84.0);
-            x -= w;
-            b.setFrame(NSRect::new(
-                NSPoint::new(x, mid - 14.0),
-                NSSize::new(w, 28.0),
-            ));
-            x -= 6.0;
+        // The controls are toolbar items of their own here.
+        for b in [
+            &self.primary,
+            &self.stopwatch,
+            &self.skip,
+            &self.stop,
+            &self.stack,
+            &self.mini,
+        ] {
+            b.setHidden(true);
         }
-        let text_x = dx + digits_w + 14.0;
-        let text_w = (x - text_x - 8.0).max(40.0);
+        let text_x = dx + digits_w + 12.0;
+        let text_w = (width - text_x - 12.0).max(40.0);
         self.phase
             .setFont(Some(&NSFont::systemFontOfSize_weight(13.0, unsafe {
                 NSFontWeightSemibold
@@ -1006,6 +1067,12 @@ impl Header {
         self.stopwatch.setHidden(!t.can_start_stopwatch);
         self.skip.setHidden(!t.can_skip);
         self.stop.setHidden(!t.can_stop);
+        let title = NSString::from_str(&t.primary_label);
+        self.bar.start.setTitle(&title);
+        self.bar.start.setLabel(&title);
+        self.bar.stopwatch.setHidden(!t.can_start_stopwatch);
+        self.bar.skip.setHidden(!t.can_skip);
+        self.bar.stop.setHidden(!t.can_stop);
         self.ring.set(t.progress as f64);
         let size = self.view.frame().size;
         self.layout(size.width, size.height);
@@ -1077,6 +1144,17 @@ impl Header {
         }
         *shown = clock.to_string();
     }
+}
+
+/// The toolbar's control items, each its own bubble; the two view switches,
+/// side by side, share one.
+struct Bar {
+    start: Retained<NSToolbarItem>,
+    stopwatch: Retained<NSToolbarItem>,
+    skip: Retained<NSToolbarItem>,
+    stop: Retained<NSToolbarItem>,
+    stack: Retained<NSToolbarItem>,
+    mini: Retained<NSToolbarItem>,
 }
 
 /// The phase's progress as a ring: a faint track and an accent arc that grows

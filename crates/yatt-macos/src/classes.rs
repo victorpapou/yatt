@@ -89,7 +89,9 @@ impl WindowDelegate {
 // ---- toolbar ----
 
 pub struct ToolbarIvars {
-    item: Retained<NSToolbarItem>,
+    items: Vec<Retained<NSToolbarItem>>,
+    /// Identifiers in order, the system's spaces included.
+    order: Vec<Retained<NSString>>,
 }
 
 define_class!(
@@ -97,7 +99,7 @@ define_class!(
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[ivars = ToolbarIvars]
-    /// Serves the window's toolbar its one item: the timer row.
+    /// Serves the window's toolbar its items, in a fixed order.
     pub struct ToolbarDelegate;
 
     unsafe impl NSObjectProtocol for ToolbarDelegate {}
@@ -107,32 +109,36 @@ define_class!(
         fn item_for(
             &self,
             _toolbar: &objc2_app_kit::NSToolbar,
-            _id: &NSString,
+            id: &NSString,
             _flag: bool,
         ) -> Option<Retained<NSToolbarItem>> {
-            Some(self.ivars().item.clone())
+            self.ivars()
+                .items
+                .iter()
+                .find(|item| *item.itemIdentifier() == *id)
+                .cloned()
         }
 
         #[unsafe(method_id(toolbarDefaultItemIdentifiers:))]
         fn default_ids(&self, _toolbar: &objc2_app_kit::NSToolbar) -> Retained<NSArray<NSString>> {
-            self.ids()
+            NSArray::from_retained_slice(&self.ivars().order)
         }
 
         #[unsafe(method_id(toolbarAllowedItemIdentifiers:))]
         fn allowed_ids(&self, _toolbar: &objc2_app_kit::NSToolbar) -> Retained<NSArray<NSString>> {
-            self.ids()
+            NSArray::from_retained_slice(&self.ivars().order)
         }
     }
 );
 
 impl ToolbarDelegate {
-    pub fn new(mtm: MainThreadMarker, item: Retained<NSToolbarItem>) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(ToolbarIvars { item });
+    pub fn new(
+        mtm: MainThreadMarker,
+        items: Vec<Retained<NSToolbarItem>>,
+        order: Vec<Retained<NSString>>,
+    ) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(ToolbarIvars { items, order });
         unsafe { msg_send![super(this), init] }
-    }
-
-    fn ids(&self) -> Retained<NSArray<NSString>> {
-        NSArray::from_retained_slice(&[self.ivars().item.itemIdentifier()])
     }
 }
 
@@ -289,13 +295,12 @@ define_class!(
             };
             layer.setBackgroundColor(Some(&color.CGColor()));
             match fill {
-                Fill::Card { selected, .. } => {
+                Fill::Card { .. } => {
                     crate::style::round(&layer, crate::style::CARD_RADIUS);
-                    // No stroke or shadow: the card's edge is its own two layers
-                    // (`style::Edges`).
-                    // Selection gets an accent ring; a running timer shows as ●.
-                    layer.setBorderWidth(if selected { 2.5 } else { 0.0 });
-                    layer.setBorderColor(Some(&NSColor::controlAccentColor().CGColor()));
+                    // No stroke or shadow: the card's edge, and the selection ring
+                    // outside it, are layers of their own (`style::Edges`). A
+                    // running timer shows as ● in the text.
+                    layer.setBorderWidth(0.0);
                 }
                 Fill::Chip(_) => crate::style::round(&layer, 10.0),
                 _ => {}

@@ -287,68 +287,30 @@ fn edge_image(
 pub struct Edges {
     pub outer: Retained<NSView>,
     pub inner: Retained<NSView>,
+    /// The selection: a blue ring outside the outline, never on the card itself.
+    pub ring: Retained<NSView>,
+    ring_layer: Retained<CALayer>,
 }
 
 impl Edges {
     pub fn new(mtm: MainThreadMarker) -> Self {
-        thread_local! {
-            static IMAGES: (Option<CFRetained<CGImage>>, Option<CFRetained<CGImage>>) = (
-                edge_image(EDGE_PAD, |cx, card, side| {
-                    // Clip to outside the card, then let a filled card cast its
-                    // shadow: only the part outside remains.
-                    let all = CGMutablePath::new();
-                    unsafe {
-                        CGMutablePath::add_rect(Some(&all), std::ptr::null(), CGRect::new(CGPoint::ZERO, CGSize::new(side, side)));
-                        CGMutablePath::add_path(Some(&all), std::ptr::null(), Some(card));
-                    }
-                    CGContext::add_path(Some(cx), Some(&all));
-                    CGContext::eo_clip(Some(cx));
-                    let black = CGColor::new_srgb(0.0, 0.0, 0.0, OUTLINE_ALPHA);
-                    CGContext::set_shadow_with_color(Some(cx), CGSize::new(0.0, 0.0), OUTLINE_BLUR, Some(&black));
-                    CGContext::set_fill_color_with_color(Some(cx), Some(&CGColor::new_srgb(0.0, 0.0, 0.0, 1.0)));
-                    CGContext::add_path(Some(cx), Some(card));
-                    CGContext::fill_path(Some(cx));
-                }),
-                edge_image(0.0, |cx, card, side| {
-                    // Clip to the card, then let everything outside it cast a white
-                    // shadow inwards.
-                    CGContext::add_path(Some(cx), Some(card));
-                    CGContext::clip(Some(cx));
-                    let white = CGColor::new_srgb(1.0, 1.0, 1.0, INSET_ALPHA);
-                    CGContext::set_shadow_with_color(Some(cx), CGSize::new(0.0, 0.0), INSET_BLUR, Some(&white));
-                    CGContext::set_fill_color_with_color(Some(cx), Some(&CGColor::new_srgb(1.0, 1.0, 1.0, 1.0)));
-                    let ring = CGMutablePath::new();
-                    unsafe {
-                        CGMutablePath::add_rect(Some(&ring), std::ptr::null(), CGRect::new(CGPoint::new(-20.0, -20.0), CGSize::new(side + 40.0, side + 40.0)));
-                        CGMutablePath::add_path(Some(&ring), std::ptr::null(), Some(card));
-                    }
-                    CGContext::add_path(Some(cx), Some(&ring));
-                    CGContext::eo_fill_path(Some(cx));
-                }),
-            );
-        }
         let layer_view = |image: Option<&CGImage>, inset: f64| {
-            let layer = CALayer::new();
-            if let Some(image) = image {
-                let image: &AnyObject = unsafe { &*(image as *const CGImage).cast::<AnyObject>() };
-                unsafe { layer.setContents(Some(image)) };
-            }
-            let side = 2.0 * (EDGE_CORNER + inset) + 1.0;
-            let c = (EDGE_CORNER + inset) / side;
-            layer.setContentsCenter(CGRect::new(
-                CGPoint::new(c, c),
-                CGSize::new(1.0 / side, 1.0 / side),
-            ));
-            layer.setContentsScale(EDGE_SCALE);
             // A layer-hosting view: AppKit leaves the layer's contents alone.
             let view = FlippedView::new(mtm, NSRect::ZERO);
-            view.setLayer(Some(&layer));
+            view.setLayer(Some(&edge_layer(image, inset)));
             view.setWantsLayer(true);
             Retained::into_super(view)
         };
-        IMAGES.with(|(outer, inner)| Self {
-            outer: layer_view(outer.as_deref(), EDGE_PAD),
-            inner: layer_view(inner.as_deref(), 0.0),
+        let ring_layer = selection_ring_layer();
+        ring_layer.setOpacity(0.0);
+        let ring = FlippedView::new(mtm, NSRect::ZERO);
+        ring.setLayer(Some(&ring_layer));
+        ring.setWantsLayer(true);
+        with_edge_images(|outer, inner| Self {
+            outer: layer_view(outer, EDGE_PAD),
+            inner: layer_view(inner, 0.0),
+            ring: Retained::into_super(ring),
+            ring_layer,
         })
     }
 
@@ -360,6 +322,19 @@ impl Edges {
         ));
         self.inner
             .setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(w, h)));
+        let o = RING_GAP + RING_WIDTH;
+        self.ring.setFrame(NSRect::new(
+            NSPoint::new(-o, -o),
+            NSSize::new(w + 2.0 * o, h + 2.0 * o),
+        ));
+    }
+
+    /// Shows or hides the selection ring, easing over.
+    pub fn set_selected(&self, on: bool) {
+        let layer = self.ring_layer.clone();
+        crate::motion::eased(crate::motion::SOFTEN_SECS, move || {
+            layer.setOpacity(if on { 1.0 } else { 0.0 })
+        });
     }
 
     /// Lets both layers follow their view's size from now on.
@@ -372,12 +347,93 @@ impl Edges {
     }
 }
 
+/// The outline and inner-edge bitmaps, drawn once per thread.
+fn with_edge_images<R>(f: impl FnOnce(Option<&CGImage>, Option<&CGImage>) -> R) -> R {
+    thread_local! {
+        static IMAGES: (Option<CFRetained<CGImage>>, Option<CFRetained<CGImage>>) = (
+            edge_image(EDGE_PAD, |cx, card, side| {
+                // Clip to outside the card, then let a filled card cast its
+                // shadow: only the part outside remains.
+                let all = CGMutablePath::new();
+                unsafe {
+                    CGMutablePath::add_rect(Some(&all), std::ptr::null(), CGRect::new(CGPoint::ZERO, CGSize::new(side, side)));
+                    CGMutablePath::add_path(Some(&all), std::ptr::null(), Some(card));
+                }
+                CGContext::add_path(Some(cx), Some(&all));
+                CGContext::eo_clip(Some(cx));
+                let black = CGColor::new_srgb(0.0, 0.0, 0.0, OUTLINE_ALPHA);
+                // Shadow blur is in device pixels whatever the scale: in points it is this.
+                CGContext::set_shadow_with_color(Some(cx), CGSize::new(0.0, 0.0), OUTLINE_BLUR * EDGE_SCALE, Some(&black));
+                CGContext::set_fill_color_with_color(Some(cx), Some(&CGColor::new_srgb(0.0, 0.0, 0.0, 1.0)));
+                CGContext::add_path(Some(cx), Some(card));
+                CGContext::fill_path(Some(cx));
+            }),
+            edge_image(0.0, |cx, card, _side| {
+                // Clip to the card and stroke its outline again and again, each
+                // time wider and faint: the strokes pile up at the edge and thin
+                // out inwards, a white band fading over INSET_DEPTH points.
+                // (A shadow would be blurred in device pixels, not points, and
+                // reads at only half its alpha right at the edge.)
+                CGContext::add_path(Some(cx), Some(card));
+                CGContext::clip(Some(cx));
+                let n = INSET_STEPS as f64;
+                let a = 1.0 - (1.0 - INSET_ALPHA).powf(1.0 / n);
+                let white = CGColor::new_srgb(1.0, 1.0, 1.0, a);
+                CGContext::set_stroke_color_with_color(Some(cx), Some(&white));
+                for k in 1..=INSET_STEPS {
+                    // The stroke straddles the outline: half of it lies inside.
+                    CGContext::set_line_width(Some(cx), 2.0 * INSET_DEPTH * k as f64 / n);
+                    CGContext::add_path(Some(cx), Some(card));
+                    CGContext::stroke_path(Some(cx));
+                }
+            }),
+        );
+    }
+    IMAGES.with(|(outer, inner)| f(outer.as_deref(), inner.as_deref()))
+}
+
+/// Where the selection ring sits: `RING_GAP` points outside the card (clear of
+/// the 1 pt outline), `RING_WIDTH` wide.
+const RING_GAP: f64 = 1.5;
+const RING_WIDTH: f64 = 2.0;
+
+/// The selection ring's layer: an accent stroke on the inside of its bounds, with
+/// continuous corners whose radius is the card's plus the outset, so it runs
+/// parallel to the card's edge. No fill, no inset, no white line.
+fn selection_ring_layer() -> Retained<CALayer> {
+    let layer = CALayer::new();
+    round(&layer, CARD_RADIUS + RING_GAP + RING_WIDTH);
+    layer.setBorderWidth(RING_WIDTH);
+    layer.setBorderColor(Some(&NSColor::controlAccentColor().CGColor()));
+    layer
+}
+
+/// A 9-slice layer showing an edge bitmap whose card shape sits `inset` points
+/// in from its sides.
+fn edge_layer(image: Option<&CGImage>, inset: f64) -> Retained<CALayer> {
+    let layer = CALayer::new();
+    if let Some(image) = image {
+        let image: &AnyObject = unsafe { &*(image as *const CGImage).cast::<AnyObject>() };
+        unsafe { layer.setContents(Some(image)) };
+    }
+    let side = 2.0 * (EDGE_CORNER + inset) + 1.0;
+    let c = (EDGE_CORNER + inset) / side;
+    layer.setContentsCenter(CGRect::new(
+        CGPoint::new(c, c),
+        CGSize::new(1.0 / side, 1.0 / side),
+    ));
+    layer.setContentsScale(EDGE_SCALE);
+    layer
+}
+
 /// The outline: black at 30%, blurred 1 pt.
 const OUTLINE_ALPHA: f64 = 0.3;
 const OUTLINE_BLUR: f64 = 1.0;
-/// The inner shadow: white, about 2 pt.
-const INSET_ALPHA: f64 = 0.7;
-const INSET_BLUR: f64 = 2.0;
+/// The inner edge: white, 65% at the edge, fading out over 2 pt in a number of
+/// strokes.
+const INSET_ALPHA: f64 = 0.65;
+const INSET_DEPTH: f64 = 2.0;
+const INSET_STEPS: usize = 12;
 
 /// Sets a label's text with `kern` points of tracking, in the label's own font,
 /// colour and truncation (an attributed string brings its own and would otherwise
@@ -452,4 +508,173 @@ pub fn glass(mtm: MainThreadMarker, radius: f64) -> (Retained<NSView>, Retained<
     }
     glass.addSubview(&content);
     (Retained::into_super(glass), content)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Renders a card's plain layers (tint, then the inner edge; no backdrop) into
+    /// a bitmap at 2 px per point and returns its BGRA pixels and row length.
+    fn render_card(tint: (f64, f64, f64)) -> (Vec<u8>, usize) {
+        let (w, h) = (CARD_W, CARD_H);
+        let root = CALayer::new();
+        root.setFrame(CGRect::new(CGPoint::ZERO, CGSize::new(w, h)));
+        let face = CALayer::new();
+        face.setFrame(root.bounds());
+        face.setBackgroundColor(Some(&CGColor::new_srgb(tint.0, tint.1, tint.2, 1.0)));
+        round(&face, CARD_RADIUS);
+        let inner = with_edge_images(|_, inner| edge_layer(inner, 0.0));
+        inner.setFrame(root.bounds());
+        root.addSublayer(&face);
+        root.addSublayer(&inner);
+
+        let (pw, ph) = ((w * EDGE_SCALE) as usize, (h * EDGE_SCALE) as usize);
+        let mut px = vec![0u8; pw * ph * 4];
+        let space = CGColorSpace::new_device_rgb().unwrap();
+        let info = CGImageAlphaInfo::PremultipliedFirst.0 | CGImageByteOrderInfo::Order32Little.0;
+        let cx = unsafe {
+            CGBitmapContextCreate(
+                px.as_mut_ptr().cast(),
+                pw,
+                ph,
+                8,
+                pw * 4,
+                Some(&space),
+                info,
+            )
+        }
+        .unwrap();
+        CGContext::scale_ctm(Some(&cx), EDGE_SCALE, EDGE_SCALE);
+        root.renderInContext(&cx);
+        drop(cx);
+        (px, pw)
+    }
+
+    /// Lightness (sum of R, G, B) at a point `x` points in from the left edge, on
+    /// the card's middle row.
+    fn light(px: &[u8], pw: usize, x: f64) -> u32 {
+        let (col, row) = (
+            (x * EDGE_SCALE) as usize,
+            (CARD_H * EDGE_SCALE / 2.0) as usize,
+        );
+        let i = (row * pw + col) * 4;
+        px[i] as u32 + px[i + 1] as u32 + px[i + 2] as u32
+    }
+
+    #[test]
+    fn the_white_inset_shows_inside_the_edge_on_a_coloured_card() {
+        // The purple of Тима's screenshot.
+        let (px, pw) = render_card((0.78, 0.58, 0.95));
+        let centre = light(&px, pw, CARD_W / 2.0);
+        let at = |x| light(&px, pw, x);
+        eprintln!(
+            "lightness (R+G+B): 0.25 pt in {}, 1 pt {}, 1.5 pt {}, 2 pt {}, 3 pt {}, centre {centre}",
+            at(0.25),
+            at(1.0),
+            at(1.5),
+            at(2.0),
+            at(3.0)
+        );
+        // Right inside the edge more than half way to white (the inset is 65%
+        // white there), still lighter at 1 pt, gone by about 2 pt.
+        let white = 3 * 255;
+        assert!(
+            (at(0.25) - centre) * 100 > 55 * (white - centre),
+            "edge {} vs centre {centre}",
+            at(0.25)
+        );
+        assert!(
+            (at(1.0) - centre) * 100 > 25 * (white - centre),
+            "1 pt {}",
+            at(1.0)
+        );
+        assert!(at(1.0) > at(1.5) && at(1.5) >= at(2.0));
+        assert!(at(3.0) <= centre + 3, "3 pt {} vs centre {centre}", at(3.0));
+    }
+
+    /// Renders a selected card the way `Edges` stacks it (ring, outline, tint,
+    /// inner edge) over white, 8 pt of margin all round, and returns the pixels
+    /// along the middle row as (R, G, B) per point offset from the card's edge.
+    fn selected_cross_section(tint: (f64, f64, f64), offsets: &[f64]) -> Vec<(u8, u8, u8)> {
+        let m = 8.0;
+        let (w, h) = (CARD_W + 2.0 * m, CARD_H + 2.0 * m);
+        let root = CALayer::new();
+        root.setFrame(CGRect::new(CGPoint::ZERO, CGSize::new(w, h)));
+        root.setBackgroundColor(Some(&CGColor::new_srgb(1.0, 1.0, 1.0, 1.0)));
+        let card = CGRect::new(CGPoint::new(m, m), CGSize::new(CARD_W, CARD_H));
+        let around = |d: f64| {
+            CGRect::new(
+                CGPoint::new(m - d, m - d),
+                CGSize::new(CARD_W + 2.0 * d, CARD_H + 2.0 * d),
+            )
+        };
+        let ring = selection_ring_layer();
+        ring.setFrame(around(RING_GAP + RING_WIDTH));
+        let (outer, inner) = with_edge_images(|o, i| (edge_layer(o, EDGE_PAD), edge_layer(i, 0.0)));
+        outer.setFrame(around(EDGE_PAD));
+        inner.setFrame(card);
+        let face = CALayer::new();
+        face.setFrame(card);
+        face.setBackgroundColor(Some(&CGColor::new_srgb(tint.0, tint.1, tint.2, 1.0)));
+        round(&face, CARD_RADIUS);
+        for l in [&ring, &outer, &face, &inner] {
+            root.addSublayer(l);
+        }
+        let (pw, ph) = ((w * EDGE_SCALE) as usize, (h * EDGE_SCALE) as usize);
+        let mut px = vec![0u8; pw * ph * 4];
+        let space = CGColorSpace::new_device_rgb().unwrap();
+        let info = CGImageAlphaInfo::PremultipliedFirst.0 | CGImageByteOrderInfo::Order32Little.0;
+        let cx = unsafe {
+            CGBitmapContextCreate(
+                px.as_mut_ptr().cast(),
+                pw,
+                ph,
+                8,
+                pw * 4,
+                Some(&space),
+                info,
+            )
+        }
+        .unwrap();
+        CGContext::scale_ctm(Some(&cx), EDGE_SCALE, EDGE_SCALE);
+        root.renderInContext(&cx);
+        drop(cx);
+        let row = (h * EDGE_SCALE / 2.0) as usize;
+        offsets
+            .iter()
+            .map(|d| {
+                let col = ((m + d) * EDGE_SCALE) as usize;
+                let i = (row * pw + col) * 4;
+                (px[i + 2], px[i + 1], px[i])
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_selected_card_reads_ring_outline_inset_tint_from_outside_in() {
+        let tint = (0.78, 0.58, 0.95);
+        // Offsets from the card's left edge, in points (negative is outside).
+        let at = [-2.5, -0.5, 0.25, CARD_W / 2.0];
+        let px = selected_cross_section(tint, &at);
+        eprintln!("selected card, R G B at {at:?} pt from the edge: {px:?}");
+        let sum = |p: (u8, u8, u8)| p.0 as u32 + p.1 as u32 + p.2 as u32;
+        let (ring, outline, inset, centre) = (px[0], px[1], px[2], px[3]);
+        // The ring: blue, outside the card.
+        let c = |v: u8| v as u32;
+        assert!(
+            c(ring.2) > c(ring.0) + 60 && c(ring.2) > c(ring.1) + 30,
+            "ring {ring:?}"
+        );
+        // The outline: darker than the white page, not blue.
+        assert!(
+            sum(outline) < 3 * 255 - 30 && c(outline.2) < c(outline.0) + 40,
+            "outline {outline:?}"
+        );
+        // The inset: lighter than the tint; the centre is the tint.
+        assert!(
+            sum(inset) > sum(centre) + 60,
+            "inset {inset:?} vs centre {centre:?}"
+        );
+    }
 }

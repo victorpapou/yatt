@@ -17,9 +17,11 @@ content and colour. Nothing is cross-faded or swapped for a separate view.
 
 ## Header
 
-The timer row is a native `NSToolbar` item, unified with the titlebar: a progress
-ring (a donut that fills clockwise from the top) before the digits, then the
-phase over the tasks, the controls on the right. Minimal mode hides the toolbar
+The timer row is a native `NSToolbar`, unified with the titlebar, in separate
+items, each its own bubble: [progress ring (a donut that fills clockwise from the
+top), digits, phase over the tasks] … [Старт] [Секундомер] [Пропустить] [Стоп]
+[list/stack and minimal-mode icons, sharing one bubble]. The toolbar puts
+neighbouring items into one shared bubble, so fixed spaces separate them. Minimal mode hides the toolbar
 and shows the same row, larger, as the whole window.
 
 ## Card material
@@ -35,12 +37,21 @@ glow, no layer shadow.
 
 1. Outside, the outline: a black shadow at 30%, 1 pt blur, no offset, only
    outside the card.
-2. Inside, a white inner shadow about 2 pt deep along the edge, only inside it.
+2. Inside, a white inner edge: 65% white at the edge, fading out over 2 pt,
+   only inside the card, over the tint and under the text.
 
 All sizes are points: the bitmaps are drawn at 2 px per point and shown at that
-scale, never multiplied by the screen's backing factor.
+scale, never multiplied by the screen's backing factor. (Core Graphics blurs
+shadows in device pixels whatever the scale, so the outline's blur is converted,
+and the inner edge is built from strokes, which are in points.) Tests render the
+real layers and check the pixels: outside in, ring, outline, inner edge, tint.
 
-Both are drawn once at start-up as 9-slice bitmaps on the card's continuous
+Selection is a third layer, outside the card: a 2 pt accent ring 1.5 pt beyond
+the edge (clear of the outline), corners concentric with the card's. It never
+touches the card's own edge, so a selected card keeps its white inner edge
+exactly as it is.
+
+The edges are drawn once at start-up as 9-slice bitmaps on the card's continuous
 corner curve, so they cost a picture per card, not a shadow pass per frame. A
 layer shadow would also show through the translucent glass, darkening the card
 from inside.
