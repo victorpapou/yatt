@@ -108,6 +108,14 @@ pub fn chain_spring(n: usize) -> Spring {
     Spring::new(1.0 / (tau * tau), 1.0)
 }
 
+/// How far a scroll moves the fingers (or the wheel) down, in points, from an
+/// event's vertical delta: with natural scrolling (`inverted`, the delta follows
+/// the fingers) the delta is the motion itself; without it, the delta opposes it.
+/// The same gesture reads the same whatever the system setting.
+pub fn gesture_down(delta_y: f64, inverted: bool) -> f64 {
+    if inverted { delta_y } else { -delta_y }
+}
+
 /// The stacking order of the `k`-th card of a dragged or landing group (0 = the
 /// lead): the lead on top, each next one under the one before, for the whole
 /// flight and landing, above everything else on the board.
@@ -560,6 +568,17 @@ mod tests {
             let (cx, cy) = g.centre();
             assert!(cx.is_finite() && cy.is_finite());
         }
+    }
+
+    #[test]
+    fn a_downward_gesture_reads_down_with_either_scrolling_setting() {
+        // Fingers moving down: natural scrolling reports a positive delta, the
+        // classic setting a negative one; both are the same gesture.
+        assert_eq!(gesture_down(5.0, true), 5.0);
+        assert_eq!(gesture_down(-5.0, false), 5.0);
+        // And up.
+        assert_eq!(gesture_down(-5.0, true), -5.0);
+        assert_eq!(gesture_down(5.0, false), -5.0);
     }
 
     #[test]

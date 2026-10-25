@@ -499,8 +499,8 @@ pub struct Scroll {
     /// The trackpad or wheel event itself, for handing on to a column's scroll view.
     pub event: Option<Retained<NSEvent>>,
     pub at: NSPoint,
-    /// How far it scrolls down the page, in points (negative: up), as the
-    /// user's scrolling setting has it.
+    /// How far the fingers (or the wheel) move down, in points (negative: up),
+    /// the same whatever the natural-scrolling setting.
     pub down: f64,
 }
 
@@ -606,7 +606,10 @@ define_class!(
             self.send(CanvasMsg::Scroll(Scroll {
                 event: Some(event.retain()),
                 at: self.local(event),
-                down: -event.scrollingDeltaY() * k,
+                down: crate::physics::gesture_down(
+                    event.scrollingDeltaY() * k,
+                    event.isDirectionInvertedFromDevice(),
+                ),
             }));
         }
     }
