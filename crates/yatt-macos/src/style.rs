@@ -20,7 +20,7 @@ pub const CARD_W: f64 = 230.0;
 pub const CARD_H: f64 = 101.0;
 pub const CARD_RADIUS: f64 = 20.0;
 /// Blur of what shows through a card, in points.
-pub const CARD_BLUR: f64 = 11.0;
+pub const CARD_BLUR: f64 = 8.0;
 
 type Rgb = (u8, u8, u8);
 
@@ -71,7 +71,7 @@ fn rgb((r, g, b): Rgb, alpha: f64) -> Retained<NSColor> {
 /// The card's tint: translucent, so the cards and board behind it show through
 /// the blur.
 pub fn fill(hue: usize) -> Retained<NSColor> {
-    rgb(HUES[hue % HUES.len()].0, 0.43)
+    rgb(HUES[hue % HUES.len()].0, 0.38)
 }
 
 pub fn text(hue: usize) -> Retained<NSColor> {
