@@ -11,8 +11,8 @@ use objc2::{
 };
 use objc2_app_kit::{
     NSColor, NSControl, NSControlTextEditingDelegate, NSEvent, NSEventModifierFlags, NSEventPhase,
-    NSResponder, NSTextFieldDelegate, NSTextView, NSTrackingArea, NSTrackingAreaOptions, NSView,
-    NSWindow, NSWindowDelegate,
+    NSGradient, NSResponder, NSTextFieldDelegate, NSTextView, NSTrackingArea,
+    NSTrackingAreaOptions, NSView, NSWindow, NSWindowDelegate,
 };
 use objc2_foundation::{NSNotification, NSPoint, NSRect, NSString};
 use objc2_web_kit::{WKScriptMessage, WKScriptMessageHandler, WKUserContentController};
@@ -183,14 +183,12 @@ impl RootView {
 /// What a [`FillView`] paints.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Fill {
-    /// A card's pastel face; `tracking` and `selected` add an accent rim.
+    /// A card's tint; `selected` adds an accent ring.
     Card {
         hue: usize,
         tracking: bool,
         selected: bool,
     },
-    /// The light frosting over a glass card's blur.
-    Frost,
     /// The "N скрыто" capsule.
     Badge,
     /// A 1 px divider line.
@@ -232,51 +230,38 @@ define_class!(
             let fill = self.ivars().fill.get();
             let color = match fill {
                 Fill::Card { hue, .. } => crate::style::fill(hue),
-                Fill::Frost => NSColor::whiteColor().colorWithAlphaComponent(0.42),
                 Fill::Badge => NSColor::whiteColor().colorWithAlphaComponent(0.55),
                 Fill::Separator => NSColor::separatorColor(),
                 Fill::Tint => NSColor::labelColor().colorWithAlphaComponent(0.035),
                 Fill::Dim => NSColor::blackColor().colorWithAlphaComponent(0.28),
-                Fill::Panel => NSColor::windowBackgroundColor(),
+                // The panel's look comes from the card material inside it.
+                Fill::Panel => NSColor::clearColor(),
             };
             layer.setBackgroundColor(Some(&color.CGColor()));
             match fill {
-                Fill::Card {
-                    tracking, selected, ..
-                } => {
+                Fill::Card { selected, .. } => {
                     crate::style::round(&layer, crate::style::CARD_RADIUS);
-                    layer.setBorderWidth(if selected {
-                        2.5
-                    } else if tracking {
-                        1.5
-                    } else {
-                        0.5
-                    });
+                    // A light hairline; selection gets an accent ring. A running timer
+                    // shows as ● on the card itself.
+                    layer.setBorderWidth(if selected { 2.5 } else { 0.75 });
                     let rim = if selected {
                         NSColor::controlAccentColor()
-                    } else if tracking {
-                        NSColor::controlAccentColor().colorWithAlphaComponent(0.6)
                     } else {
-                        NSColor::whiteColor().colorWithAlphaComponent(0.6)
+                        NSColor::whiteColor().colorWithAlphaComponent(0.8)
                     };
                     layer.setBorderColor(Some(&rim.CGColor()));
-                }
-                Fill::Frost => {
-                    crate::style::round(&layer, crate::style::CARD_RADIUS);
-                    layer.setBorderWidth(0.5);
-                    layer.setBorderColor(Some(
-                        &NSColor::whiteColor().colorWithAlphaComponent(0.75).CGColor(),
-                    ));
+                    // A soft white glow around the glass.
+                    layer.setShadowColor(Some(&NSColor::whiteColor().CGColor()));
+                    layer.setShadowOpacity(0.85);
+                    layer.setShadowRadius(7.0);
+                    layer.setShadowOffset(objc2_foundation::NSSize::new(0.0, 0.0));
                 }
                 Fill::Badge => crate::style::round(&layer, 9.0),
                 _ => {}
             }
             if fill == Fill::Panel {
-                crate::style::round(&layer, 16.0);
-                layer.setBorderWidth(0.5);
-                layer.setBorderColor(Some(&NSColor::separatorColor().CGColor()));
                 layer.setShadowColor(Some(&NSColor::shadowColor().CGColor()));
-                layer.setShadowOpacity(0.3);
+                layer.setShadowOpacity(0.22);
                 layer.setShadowRadius(24.0);
                 layer.setShadowOffset(objc2_foundation::NSSize::new(0.0, -8.0));
             }
@@ -308,6 +293,54 @@ impl FillView {
         });
         let view: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
         view.setWantsLayer(true);
+        view
+    }
+}
+
+define_class!(
+    // SAFETY: NSView has no subclassing requirements; no Drop impl.
+    #[unsafe(super(NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = NoIvars]
+    /// A white sheen fading downwards: the light top of a glass card.
+    pub struct SheenView;
+
+    impl SheenView {
+        #[unsafe(method(isFlipped))]
+        fn is_flipped(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(drawRect:))]
+        fn draw_rect(&self, _dirty: NSRect) {
+            let white = NSColor::whiteColor();
+            let gradient = NSGradient::initWithStartingColor_endingColor(
+                NSGradient::alloc(),
+                &white.colorWithAlphaComponent(0.32),
+                &white.colorWithAlphaComponent(0.0),
+            );
+            // Flipped: 90° runs from the top edge down.
+            if let Some(g) = gradient {
+                g.drawInRect_angle(self.bounds(), 90.0);
+            }
+        }
+
+        #[unsafe(method_id(hitTest:))]
+        fn hit_test(&self, _point: NSPoint) -> Option<Retained<NSView>> {
+            None
+        }
+    }
+);
+
+impl SheenView {
+    pub fn new(mtm: MainThreadMarker, radius: f64) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(NoIvars);
+        let view: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
+        view.setWantsLayer(true);
+        if let Some(layer) = view.layer() {
+            crate::style::round(&layer, radius);
+            layer.setMasksToBounds(true);
+        }
         view
     }
 }

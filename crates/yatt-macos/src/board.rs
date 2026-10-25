@@ -3,15 +3,17 @@
 //!
 //! - Each column is a plain list by default, scrolling on its own. A toggle in the
 //!   column header collapses it into a stack like the reference clip
-//!   (docs/reference/card-motion.md): the top card is frosted glass with an "ещё N"
-//!   badge, the next ones peek out below it as slivers. A click fans the stack out
-//!   around a ring; the card under the pointer turns to glass. Dragging the folded
-//!   stack takes it whole.
+//!   (docs/reference/card-motion.md): the top card carries an "ещё N" badge, the
+//!   next ones peek out below it as slivers. A click fans the stack out into a
+//!   rosette whose spread grows with the count; the card under the pointer lifts.
+//!   Dragging the folded stack takes it whole.
+//! - Every card is tinted glass: a blur of what is behind, the card's colour over
+//!   it with a light sheen on top, a hairline rim and a soft white glow.
 //! - Click opens a card, ⌘-click toggles it in the selection, ⇧-click selects a
 //!   range within the column.
 //! - Dragging one card is a plain drag: it follows the pointer and the list makes
-//!   room. Dragging a selection lifts the pressed card as glass with the target
-//!   column written on it; the other selected cards trail it on softer springs,
+//!   room. Dragging a selection blurs the pressed card's content and writes the
+//!   target column on it; the other selected cards trail it on softer springs,
 //!   each smaller than the one ahead.
 //! - A two-finger swipe across a card drags it (or the selection) the same way;
 //!   a vertical swipe scrolls the column.
@@ -28,10 +30,9 @@ use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::{DefinedClass, MainThreadMarker};
 use objc2_app_kit::{
-    NSAnimatablePropertyContainer, NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua,
-    NSAutoresizingMaskOptions, NSColor, NSFont, NSFontWeightBold, NSFontWeightSemibold, NSImage,
-    NSImageView, NSLineBreakMode, NSTextAlignment, NSTextField, NSView, NSVisualEffectBlendingMode,
-    NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
+    NSAnimatablePropertyContainer, NSAutoresizingMaskOptions, NSColor, NSFont, NSFontWeightBold,
+    NSFontWeightSemibold, NSImage, NSImageView, NSLineBreakMode, NSTextAlignment, NSTextField,
+    NSView,
 };
 use objc2_core_image::CIFilter;
 use objc2_foundation::{
@@ -42,7 +43,7 @@ use objc2_quartz_core::CACurrentMediaTime;
 use yatt_core::{Status, TaskId};
 
 use crate::classes::{
-    CanvasMsg, CanvasView, Fill, FillView, FlippedView, OverlayView, Scroll, Swipe,
+    CanvasMsg, CanvasView, Fill, FillView, FlippedView, OverlayView, Scroll, SheenView, Swipe,
 };
 use crate::model::{CardSnap, ColumnSnap, UiEvent, format_duration, moves_into};
 use crate::motion;
@@ -110,16 +111,13 @@ enum Layout {
 #[derive(Clone, PartialEq)]
 enum Look {
     Solid,
-    Glass,
-    /// Leading a dragged selection: glass, blurred content, the target column written on it.
+    /// Leading a dragged selection: content blurred, the target column written on it.
     Lifted(String),
 }
 
 struct Card {
     view: Retained<FlippedView>,
     face: Retained<FillView>,
-    glass: Retained<NSVisualEffectView>,
-    frost: Retained<FillView>,
     content: Retained<FlippedView>,
     icon: Retained<NSImageView>,
     dots: Retained<NSTextField>,
@@ -491,7 +489,7 @@ impl Board {
         view.setWantsLayer(true);
         if let Some(layer) = view.layer() {
             layer.setShadowColor(Some(&NSColor::blackColor().CGColor()));
-            layer.setShadowOpacity(0.12);
+            layer.setShadowOpacity(0.08);
             layer.setShadowRadius(6.0);
             layer.setShadowOffset(NSSize::new(0.0, -2.0));
         }
@@ -510,26 +508,12 @@ impl Board {
         face.setAutoresizingMask(fill_mask);
 
         // Real blur of whatever is behind the card inside the window.
-        let glass = NSVisualEffectView::new(mtm);
+        let glass = style::card_blur(mtm);
         glass.setFrame(bounds);
         glass.setAutoresizingMask(fill_mask);
-        glass.setMaterial(NSVisualEffectMaterial::Popover);
-        glass.setBlendingMode(NSVisualEffectBlendingMode::WithinWindow);
-        glass.setState(NSVisualEffectState::Active);
-        // The clip's glass is light frosted in any system appearance.
-        glass.setAppearance(
-            NSAppearance::appearanceNamed(unsafe { NSAppearanceNameAqua }).as_deref(),
-        );
-        glass.setWantsLayer(true);
-        if let Some(layer) = glass.layer() {
-            style::round(&layer, style::CARD_RADIUS);
-            layer.setMasksToBounds(true);
-        }
-        glass.setAlphaValue(0.0);
-        let frost = FillView::new(mtm, Fill::Frost);
-        frost.setFrame(bounds);
-        frost.setAutoresizingMask(fill_mask);
-        frost.setAlphaValue(0.0);
+        let sheen = SheenView::new(mtm, style::CARD_RADIUS);
+        sheen.setFrame(bounds);
+        sheen.setAutoresizingMask(fill_mask);
 
         let content = FlippedView::new(mtm, bounds);
         content.setAutoresizingMask(fill_mask);
@@ -578,14 +562,14 @@ impl Board {
 
         let label = text_label(mtm, "", 22.0, unsafe { NSFontWeightSemibold });
         label.setAlignment(NSTextAlignment::Center);
-        label.setTextColor(Some(&style::glass_text()));
+        label.setTextColor(Some(&style::text(hue)));
         label.setFrame(NSRect::new(
             NSPoint::new(8.0, (CARD_H - 30.0) / 2.0),
             NSSize::new(CARD_W - 16.0, 30.0),
         ));
         label.setAlphaValue(0.0);
 
-        for v in [&*face as &NSView, &glass, &frost, &content, &label] {
+        for v in [&*glass as &NSView, &face, &sheen, &content, &label] {
             view.addSubview(v);
         }
         self.canvas.addSubview(&view);
@@ -593,8 +577,6 @@ impl Board {
         let mut card = Card {
             view,
             face,
-            glass,
-            frost,
             content,
             icon,
             dots,
@@ -607,7 +589,7 @@ impl Board {
             tracking: false,
             selected: false,
             body: Body::at(0.0, 0.0),
-            look: Look::Glass,
+            look: Look::Lifted(String::new()),
             badge_text: String::new(),
             z: 0.0,
             removing: false,
@@ -669,23 +651,22 @@ impl Board {
             let n = ids.len();
             match layouts[ci] {
                 Layout::Stack { fanned } if fanned && n > 1 => {
-                    // Around a ring centred on the stack, kept clear of the canvas top.
+                    // A rosette round the stack's centre, kept clear of the canvas top.
                     let a = self.stack_anchor(ci);
-                    let radius = 0.46 * w;
-                    let reach = radius * 0.9 + 0.5 * (w * w + h * h).sqrt();
+                    let reach = physics::fan_radius(n, w) + 0.5 * (w * w + h * h).sqrt();
                     let centre = (a.0 + w / 2.0, (a.1 + h / 2.0).max(reach + 8.0));
                     for (i, id) in ids.iter().enumerate() {
                         let Some(card) = cards.get_mut(id) else {
                             continue;
                         };
-                        let (dx, dy, deg) = physics::fan(i, n, radius);
+                        let (dx, dy, deg) = physics::fan(i, n, w);
                         card.body
                             .target(centre.0 + dx - w / 2.0, centre.1 + dy - h / 2.0, deg);
                         card.body.spring = physics::PILE;
                         let hovered = hover == Some(*id);
                         card.z = if hovered { 500.0 } else { (n - i) as f64 };
                         card.target_scale = if hovered { HOVER_SCALE } else { 1.0 };
-                        card.set_look(if hovered { Look::Glass } else { Look::Solid }, true);
+                        card.set_look(Look::Solid, true);
                         card.set_badge("");
                     }
                 }
@@ -700,8 +681,7 @@ impl Board {
                         card.body.spring = physics::PILE;
                         card.z = (n - i) as f64;
                         card.target_scale = scale;
-                        let top = i == 0 && n > 1;
-                        card.set_look(if top { Look::Glass } else { Look::Solid }, true);
+                        card.set_look(Look::Solid, true);
                         let badge = card.badge_text.clone();
                         card.set_badge(if i == 0 { &badge } else { "" });
                     }
@@ -1313,14 +1293,14 @@ impl Card {
     /// A deeper shadow while held.
     fn set_raised(&self, on: bool) {
         if let Some(layer) = self.view.layer() {
-            layer.setShadowOpacity(if on { 0.24 } else { 0.12 });
+            layer.setShadowOpacity(if on { 0.2 } else { 0.08 });
             layer.setShadowRadius(if on { 16.0 } else { 6.0 });
             layer.setShadowOffset(NSSize::new(0.0, if on { -8.0 } else { -2.0 }));
         }
     }
 
     fn set_badge(&self, text: &str) {
-        let show = !text.is_empty() && self.look != Look::Solid;
+        let show = !text.is_empty();
         self.badge.setStringValue(&NSString::from_str(text));
         let w = self.badge.fittingSize().width + 18.0;
         let frame = NSRect::new(NSPoint::new((CARD_W - w) / 2.0, 9.0), NSSize::new(w, 18.0));
@@ -1333,25 +1313,23 @@ impl Card {
         self.badge_bg.setHidden(!show);
     }
 
-    /// Switches between the pastel face and frosted glass, cross-fading when `animated`.
+    /// Blurs the content and shows the target label while leading a drag,
+    /// cross-fading when `animated`.
     fn set_look(&mut self, look: Look, animated: bool) {
         if self.look == look {
             return;
         }
-        let glass = look != Look::Solid;
         let lifted = matches!(look, Look::Lifted(_));
         if let Look::Lifted(text) = &look {
             self.label.setStringValue(&NSString::from_str(text));
         }
-        let text_color = if glass {
-            style::glass_text()
-        } else {
-            style::text(self.hue)
-        };
-        for l in [&self.dots, &self.time, &self.title, &self.badge] {
-            l.setTextColor(Some(&text_color));
+        let ink = style::text(self.hue);
+        for l in [&self.time, &self.title, &self.badge] {
+            l.setTextColor(Some(&ink));
         }
-        self.icon.setContentTintColor(Some(&text_color));
+        self.dots
+            .setTextColor(Some(&ink.colorWithAlphaComponent(0.45)));
+        self.icon.setContentTintColor(Some(&ink));
         self.time.setAlphaValue(0.75);
         let filters: Retained<NSArray<CIFilter>> = if lifted {
             blur_filter().map_or_else(NSArray::new, |f| NSArray::from_retained_slice(&[f]))
@@ -1359,26 +1337,11 @@ impl Card {
             NSArray::new()
         };
         self.content.setContentFilters(&filters);
-
-        let (face, glass_a, label) = (
-            if glass { 0.0 } else { 1.0 },
-            if glass { 1.0 } else { 0.0 },
-            if lifted { 1.0 } else { 0.0 },
-        );
-        let content = if lifted { 0.45 } else { 1.0 };
-        let views = (
-            self.face.clone(),
-            self.glass.clone(),
-            self.frost.clone(),
-            self.label.clone(),
-            self.content.clone(),
-        );
+        let (label, content) = if lifted { (1.0, 0.45) } else { (0.0, 1.0) };
+        let views = (self.label.clone(), self.content.clone());
         animate(animated, motion::GLASS_SECS, move || {
-            views.0.animator().setAlphaValue(face);
-            views.1.animator().setAlphaValue(glass_a);
-            views.2.animator().setAlphaValue(glass_a);
-            views.3.animator().setAlphaValue(label);
-            views.4.animator().setAlphaValue(content);
+            views.0.animator().setAlphaValue(label);
+            views.1.animator().setAlphaValue(content);
         });
         self.look = look;
     }

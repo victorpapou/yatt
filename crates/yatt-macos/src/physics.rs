@@ -128,28 +128,28 @@ pub fn pile(i: usize) -> (f64, f64) {
     (8.0 * i, 1.0 - 0.06 * i)
 }
 
-/// Fan rotations in degrees (positive = clockwise), top card first: about −45° on
-/// top to +20° at the bottom.
-pub fn fan_angles(n: usize) -> Vec<f64> {
-    if n <= 1 {
-        return vec![0.0; n];
-    }
-    let sweep = (13.0 * (n - 1) as f64).min(65.0);
-    let top = -sweep * 0.7;
-    let step = sweep / (n - 1) as f64;
-    (0..n).map(|i| top + step * i as f64).collect()
+/// How far a fanned card's centre sits from the stack's centre: the rosette
+/// opens wider as it holds more cards.
+pub fn fan_radius(n: usize, w: f64) -> f64 {
+    w * (0.30 + 0.022 * n as f64).min(0.48)
 }
 
-/// Fanned stack: the `i`-th card's centre relative to the stack's centre (y down)
-/// and its rotation. The cards spread around a ring in stack order, starting just
-/// right of the top and going clockwise, turning progressively as they go.
-pub fn fan(i: usize, n: usize, radius: f64) -> (f64, f64, f64) {
+/// Fanned stack (a rosette), fitted to the reference: the `i`-th card's centre
+/// relative to the stack's centre (y down) and its rotation in degrees (positive =
+/// clockwise). Cards go clockwise round the centre from just left of the top, each
+/// turned a little further than the one before; the more cards, the further round
+/// they go (about 250° for three, 315° from eight on) and the finer the turn steps.
+pub fn fan(i: usize, n: usize, w: f64) -> (f64, f64, f64) {
     if n <= 1 {
         return (0.0, 0.0, 0.0);
     }
-    let step = (300.0 / (n - 1) as f64).min(58.0);
-    let t = (-80.0 + step * i as f64).to_radians();
-    (radius * t.cos(), radius * 0.9 * t.sin(), fan_angles(n)[i])
+    let gaps = (n - 1) as f64;
+    let sweep = (125.0 * gaps).min(315.0);
+    let turn = (37.0 * gaps).min(105.0);
+    let t = i as f64 / gaps;
+    let at = (-95.0 + sweep * t).to_radians();
+    let r = fan_radius(n, w);
+    (r * at.cos(), r * at.sin(), -0.68 * turn + turn * t)
 }
 
 /// Where a card dropped with its centre at `y` lands in a list whose first slot
@@ -228,19 +228,18 @@ mod tests {
     }
 
     #[test]
-    fn fan_spans_minus_45_to_plus_20_for_six_cards() {
-        let a = fan_angles(6);
-        assert!((a[0] + 45.5).abs() < 0.01);
-        assert!((a[5] - 19.5).abs() < 0.01);
-        assert_eq!(fan_angles(1), vec![0.0]);
-    }
-
-    #[test]
     fn fan_spreads_around_the_ring_and_trail_shrinks() {
-        let (x0, y0, r0) = fan(0, 6, 100.0);
-        let (_, y3, _) = fan(3, 6, 100.0);
-        assert!(y0 < 0.0 && x0 > 0.0 && r0 < -40.0);
-        assert!(y3 > 0.0);
+        // Three cards: top, lower right, left; turning from about −50° to +24°.
+        let (x0, y0, r0) = fan(0, 3, 230.0);
+        let (x1, y1, _) = fan(1, 3, 230.0);
+        let (x2, _, r2) = fan(2, 3, 230.0);
+        assert!(y0 < 0.0 && x0.abs() < 10.0 && (r0 + 50.3).abs() < 0.5);
+        assert!(x1 > 0.0 && y1 > 0.0);
+        assert!(x2 < 0.0 && (r2 - 24.0).abs() < 0.5);
+        // Nine cards turn in finer steps and spread further out.
+        let (_, _, a) = fan(0, 9, 230.0);
+        let (_, _, b) = fan(1, 9, 230.0);
+        assert!(b - a < 15.0 && fan_radius(9, 230.0) > fan_radius(3, 230.0));
         assert!(trail_scale(1) < 1.0 && trail_scale(3) < trail_scale(1));
         assert_eq!(pile(5), pile(3));
     }

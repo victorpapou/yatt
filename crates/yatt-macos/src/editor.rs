@@ -27,6 +27,8 @@ pub struct NotesEditor {
     ready: Rc<Cell<bool>>,
     /// Content to load once the page is ready.
     pending: Rc<RefCell<Option<String>>>,
+    /// Text colour (CSS) to apply once the page is ready.
+    ink: Rc<RefCell<Option<String>>>,
     _handler: Retained<ScriptHandler>,
 }
 
@@ -34,15 +36,20 @@ impl NotesEditor {
     pub fn new(mtm: MainThreadMarker, on_msg: impl Fn(EditorMsg) + 'static) -> Self {
         let ready = Rc::new(Cell::new(false));
         let pending: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        let ink: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
         let config = unsafe { WKWebViewConfiguration::new(mtm) };
         let view = unsafe {
             WKWebView::initWithFrame_configuration(WKWebView::alloc(mtm), NSRect::ZERO, &config)
         };
         let handler = {
             let (ready, pending, view) = (ready.clone(), pending.clone(), view.clone());
+            let ink = ink.clone();
             ScriptHandler::new(mtm, move |msg| {
                 if msg == "ready" {
                     ready.set(true);
+                    if let Some(css) = ink.borrow().as_ref() {
+                        eval(&view, &set_ink_js(css));
+                    }
                     if let Some(md) = pending.borrow_mut().take() {
                         eval(&view, &set_markdown_js(&md));
                     }
@@ -73,6 +80,7 @@ impl NotesEditor {
             view,
             ready,
             pending,
+            ink,
             _handler: handler,
         }
     }
@@ -82,6 +90,14 @@ impl NotesEditor {
             eval(&self.view, &set_markdown_js(md));
         } else {
             *self.pending.borrow_mut() = Some(md.to_string());
+        }
+    }
+
+    /// Draws the notes in `css` (a colour) on a light page, to sit on a card's tint.
+    pub fn set_ink(&self, css: &str) {
+        *self.ink.borrow_mut() = Some(css.to_string());
+        if self.ready.get() {
+            eval(&self.view, &set_ink_js(css));
         }
     }
 
@@ -117,6 +133,15 @@ impl NotesEditor {
             )
         };
     }
+}
+
+fn set_ink_js(css: &str) -> String {
+    let rule = js_string(&format!(".ProseMirror {{ color: {css}; }}"));
+    format!(
+        "document.documentElement.style.colorScheme = 'light';\
+         (document.getElementById('ink') || document.head.appendChild(\
+         Object.assign(document.createElement('style'), {{ id: 'ink' }}))).textContent = {rule};"
+    )
 }
 
 fn eval(view: &WKWebView, js: &str) {

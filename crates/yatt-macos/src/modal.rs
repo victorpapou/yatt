@@ -20,11 +20,12 @@ use objc2_foundation::{NSPoint, NSRect, NSSize, NSString, NSTimer, ns_string};
 use objc2_quartz_core::CACurrentMediaTime;
 use yatt_core::{Status, TaskId};
 
-use crate::classes::{ActionTarget, Fill, FillView, FlippedView};
+use crate::classes::{ActionTarget, Fill, FillView, FlippedView, SheenView};
 use crate::editor::{EditorMsg, NotesEditor};
 use crate::model::{CardSnap, UiEvent, format_duration};
 use crate::motion;
 use crate::physics::{self, Body};
+use crate::style;
 use crate::window::{Sink, animate};
 
 const ENTRY_LINES: usize = 4;
@@ -32,6 +33,8 @@ const ENTRY_LINES: usize = 4;
 pub struct Modal {
     pub dim: Retained<FillView>,
     pub panel: Retained<FillView>,
+    /// The card's material, so the panel is the card grown big: blur, tint, sheen.
+    face: Retained<FillView>,
     content: Retained<FlippedView>,
     title: Retained<NSTextField>,
     stats: Retained<NSTextField>,
@@ -152,17 +155,30 @@ impl Modal {
 
         let panel = FillView::new(mtm, Fill::Panel);
         panel.setHidden(true);
+        // Clicks on the panel stay on it instead of reaching the backdrop.
+        *panel.ivars().on_click.borrow_mut() = Some(Box::new(|| {}));
+        let fill_mask = objc2_app_kit::NSAutoresizingMaskOptions::ViewWidthSizable
+            | objc2_app_kit::NSAutoresizingMaskOptions::ViewHeightSizable;
+        let glass = style::card_blur(mtm);
+        let face = FillView::new(
+            mtm,
+            Fill::Card {
+                hue: 0,
+                tracking: false,
+                selected: false,
+            },
+        );
+        let sheen = SheenView::new(mtm, style::CARD_RADIUS);
         let content = FlippedView::new(mtm, NSRect::ZERO);
         content.setWantsLayer(true);
         if let Some(layer) = content.layer() {
             layer.setMasksToBounds(true);
-            layer.setCornerRadius(16.0);
+            style::round(&layer, style::CARD_RADIUS);
         }
-        content.setAutoresizingMask(
-            objc2_app_kit::NSAutoresizingMaskOptions::ViewWidthSizable
-                | objc2_app_kit::NSAutoresizingMaskOptions::ViewHeightSizable,
-        );
-        panel.addSubview(&content);
+        for v in [&*glass as &NSView, &face, &sheen, &content] {
+            v.setAutoresizingMask(fill_mask);
+            panel.addSubview(v);
+        }
 
         let title = NSTextField::textFieldWithString(ns_string!(""), mtm);
         title.setFont(Some(&NSFont::systemFontOfSize_weight(20.0, unsafe {
@@ -280,6 +296,7 @@ impl Modal {
         Self {
             dim,
             panel,
+            face,
             morph,
             content,
             title,
@@ -442,12 +459,20 @@ impl Modal {
             snap.pomodoros
         );
         self.stats.setStringValue(&NSString::from_str(&stats));
-        let color = if snap.tracking {
-            NSColor::controlAccentColor()
-        } else {
-            NSColor::secondaryLabelColor()
-        };
-        self.stats.setTextColor(Some(&color));
+        // The card's own colours, so nothing changes as it grows into the panel.
+        let hue = style::hue_of(snap.id);
+        self.face.set_fill(Fill::Card {
+            hue,
+            tracking: snap.tracking,
+            selected: false,
+        });
+        let ink = style::text(hue);
+        self.title.setTextColor(Some(&ink));
+        self.stats
+            .setTextColor(Some(&ink.colorWithAlphaComponent(0.75)));
+        self.entries
+            .setTextColor(Some(&ink.colorWithAlphaComponent(0.75)));
+        self.editor.set_ink(&style::text_css(hue));
         let entries = if snap.entries.is_empty() {
             "Записей времени пока нет".to_string()
         } else {
