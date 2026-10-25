@@ -36,10 +36,10 @@ use objc2::rc::Retained;
 use objc2::runtime::{NSObjectProtocol, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker};
 use objc2_app_kit::{
-    NSAnimatablePropertyContainer, NSAutoresizingMaskOptions, NSEvent, NSFont, NSFontWeightBold,
-    NSFontWeightMedium, NSFontWeightSemibold, NSLineBreakMode, NSScrollElasticity, NSScrollView,
-    NSScrollerStyle, NSTextAlignment, NSTextField, NSView, NSViewBoundsDidChangeNotification,
-    NSViewLayerContentsRedrawPolicy, NSWindowOrderingMode,
+    NSAnimatablePropertyContainer, NSAutoresizingMaskOptions, NSCursor, NSEvent, NSFont,
+    NSFontWeightBold, NSFontWeightMedium, NSFontWeightSemibold, NSLineBreakMode,
+    NSScrollElasticity, NSScrollView, NSScrollerStyle, NSTextAlignment, NSTextField, NSView,
+    NSViewBoundsDidChangeNotification, NSViewLayerContentsRedrawPolicy, NSWindowOrderingMode,
 };
 use objc2_core_image::CIFilter;
 use objc2_foundation::{
@@ -1421,6 +1421,9 @@ impl Board {
             CanvasMsg::Scroll(s) => self.on_scroll(s),
             CanvasMsg::Hover(p) => {
                 let id = p.and_then(|p| self.hit(p));
+                if p.is_some() {
+                    self.show_cursor(id);
+                }
                 if self.drag.borrow().is_none() && self.hover.replace(id) != id {
                     self.retarget();
                     self.kick();
@@ -1574,6 +1577,27 @@ impl Board {
         );
     }
 
+    /// The pointer over the canvas: a pointing hand over a fanned card (a click
+    /// picks it), an open hand over any other card (it can be taken), closed while
+    /// carrying one, the arrow elsewhere.
+    fn show_cursor(&self, over: Option<TaskId>) {
+        let cursor = if self.drag.borrow().is_some() {
+            NSCursor::closedHandCursor()
+        } else if let Some(id) = over {
+            let fanned = self
+                .column_of(id)
+                .is_some_and(|c| self.layouts.get()[c] == (Layout::Stack { fanned: true }));
+            if fanned {
+                NSCursor::pointingHandCursor()
+            } else {
+                NSCursor::openHandCursor()
+            }
+        } else {
+            NSCursor::arrowCursor()
+        };
+        cursor.set();
+    }
+
     /// Folds the fan unless a second click comes quickly: a double-click on the fan
     /// opens the card. The wait is short whatever the system's double-click
     /// interval (often 0.5–0.8 s), or the fold would feel like it missed the click.
@@ -1710,6 +1734,7 @@ impl Board {
             };
             let changed = drag.target != target;
             let moved = changed || drag.index != index;
+            NSCursor::closedHandCursor().set();
             drag.target = target;
             drag.index = index;
             (changed, moved)
@@ -1733,6 +1758,8 @@ impl Board {
         };
         (self.on_target)(None);
         self.report_perf(drag.ids.len());
+        // Released over the card it carried: ready to take it again.
+        NSCursor::openHandCursor().set();
         if drag.group && drag.target.is_some() {
             *self.landing.borrow_mut() = Some(Landing {
                 ids: drag.ids.clone(),
@@ -2041,14 +2068,14 @@ fn follow_path(
     now: f64,
     overlay_dy: f64,
 ) {
-    let keep = now - physics::trail_delay(ids.len()) - 0.1;
+    let keep = now - physics::trail_delay(ids.len(), ids.len()) - 0.1;
     let old = path.partition_point(|p| p.0 < keep).saturating_sub(1);
     path.drain(..old);
     for (i, id) in ids.iter().enumerate().skip(from.max(1)) {
         let Some(card) = cards.get_mut(id) else {
             continue;
         };
-        let Some((x, y)) = physics::path_at(path, now - physics::trail_delay(i)) else {
+        let Some((x, y)) = physics::path_at(path, now - physics::trail_delay(i, ids.len())) else {
             continue;
         };
         let y = y + physics::trail(i).0;

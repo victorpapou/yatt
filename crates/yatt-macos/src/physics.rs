@@ -45,9 +45,21 @@ pub const MORPH: Spring = Spring::new(260.0, 1.0);
 pub const ROTATION: Spring = Spring::new(500.0, 0.8);
 
 /// How much later than the one ahead each follower of a dragged group replays
-/// the lead's path, and how far apart they land after the drop, in seconds; the
-/// first one has no delay. The one place to tune the tail.
-pub const TRAIL_DELAY: f64 = 0.055;
+/// the lead's path, in seconds, the first one included: for a group of two,
+/// three, and from five on (four is between). Small groups get longer steps, so
+/// the tail reads about as long whatever the size. The one place to tune it.
+pub const TRAIL_DELAYS: (f64, f64, f64) = (0.10, 0.08, 0.055);
+
+/// The delay step for a dragged group of `n` cards.
+pub fn trail_step(n: usize) -> f64 {
+    let (two, three, many) = TRAIL_DELAYS;
+    match n {
+        0..=2 => two,
+        3 => three,
+        4 => (three + many) / 2.0,
+        _ => many,
+    }
+}
 /// Followers drawn under the lead of a dragged group; the rest hide until the drop.
 pub const TRAIL_SHOWN: usize = 8;
 /// Each drawn follower is this much smaller than the one ahead (never below
@@ -62,10 +74,11 @@ pub fn trail(i: usize) -> (f64, f64) {
     (0.0, (1.0 - TRAIL_SHRINK * i).max(0.6))
 }
 
-/// How long ago the lead was where the `i`-th follower (1-based) is now: a plain
-/// delay on the lead's own path, no springs between the cards.
-pub fn trail_delay(i: usize) -> f64 {
-    i.max(1).saturating_sub(1) as f64 * TRAIL_DELAY
+/// How long ago the lead was where the `i`-th follower (1-based) of a group of
+/// `n` is now: a plain delay on the lead's own path, the same step for each, no
+/// springs between the cards.
+pub fn trail_delay(i: usize, n: usize) -> f64 {
+    i as f64 * trail_step(n)
 }
 
 /// Where the lead was at time `t`, from its recorded path `(time, x, y)` (oldest
@@ -316,12 +329,15 @@ mod tests {
 
     #[test]
     fn the_tail_replays_the_leads_path_later() {
-        // No delay for the first follower, then the same step for each next one.
-        assert_eq!(trail_delay(1), 0.0);
-        assert!((trail_delay(2) - TRAIL_DELAY).abs() < 1e-12);
-        assert!((trail_delay(3) - 2.0 * TRAIL_DELAY).abs() < 1e-12);
+        // The same step for every follower, the first one included; longer steps
+        // for small groups.
+        let step = trail_step(6);
+        assert!((trail_delay(1, 6) - step).abs() < 1e-12);
+        assert!((trail_delay(3, 6) - 3.0 * step).abs() < 1e-12);
+        assert!((0.09..=0.11).contains(&trail_delay(1, 2)));
+        assert!(trail_step(2) > trail_step(3) && trail_step(3) > trail_step(5));
         // The same step all the way down a long tail.
-        assert!((trail_delay(9) - 8.0 * TRAIL_DELAY).abs() < 1e-12);
+        assert!((trail_delay(9, 10) - 9.0 * trail_step(10)).abs() < 1e-12);
         // The lead's path, sampled: interpolated, held at either end.
         let path = [(0.0, 0.0, 0.0), (0.1, 100.0, 10.0), (0.2, 100.0, 30.0)];
         assert_eq!(path_at(&path, 0.05), Some((50.0, 5.0)));

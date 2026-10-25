@@ -549,7 +549,14 @@ define_class!(
 
         #[unsafe(method(mouseMoved:))]
         fn mouse_moved(&self, event: &NSEvent) {
-            self.send(CanvasMsg::Hover(Some(self.local(event))));
+            // Over something drawn above the canvas (the capsule, a chip, the
+            // panel) the pointer is that view's: it keeps its own cursor.
+            let on_top = self.window().and_then(|w| w.contentView()).and_then(|content| {
+                let frame = unsafe { content.superview() }.unwrap_or(content.clone());
+                frame.hitTest(frame.convertPoint_fromView(event.locationInWindow(), None))
+            });
+            let ours = on_top.is_some_and(|v| std::ptr::eq::<NSView>(&*v, self.as_ref()));
+            self.send(CanvasMsg::Hover(ours.then(|| self.local(event))));
         }
 
         #[unsafe(method(mouseExited:))]
