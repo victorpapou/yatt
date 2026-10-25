@@ -89,15 +89,12 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             let top = centre(lead);
             frames("fan-open", lead, &|f| {
                 if f == 0 {
-                    window.demo_pointer(DemoPointer::Down { at: top, shift: false, cmd: false });
-                    window.demo_pointer(DemoPointer::Up(top));
+                    window.demo_scroll_at(top, 10.0);
                 }
             });
-            let empty = (window.demo_column_x(2), 600.0);
             frames("fan-fold", lead, &|f| {
                 if f == 0 {
-                    window.demo_pointer(DemoPointer::Down { at: empty, shift: false, cmd: false });
-                    window.demo_pointer(DemoPointer::Up(empty));
+                    window.demo_scroll_at(top, -10.0);
                 }
             });
             window.demo_toggle_stack();
@@ -157,7 +154,7 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             window.demo_toggle_stack();
             wait(700).await;
             if let Some(&top) = ids(cx, 0).first() {
-                window.demo_real_click(centre(top), 1);
+                window.demo_scroll_at(centre(top), 10.0);
             }
             for _ in 0..6 {
                 wait(40).await;
@@ -234,11 +231,11 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             drag(mid, (window.demo_column_x(1), 200.0), 90).await;
             window.demo_pointer(DemoPointer::Up((window.demo_column_x(1), 200.0)));
             wait(1200).await;
-            // Fold the board into stacks and click the biggest one open.
+            // Fold the board into stacks and scroll the biggest one open.
             window.demo_toggle_stack();
             wait(1500).await;
             if let Some(&top) = ids(cx, 0).first() {
-                window.demo_real_click(centre(top), 1);
+                window.demo_scroll_at(centre(top), 10.0);
                 wait(1200).await;
                 shot("perf-fan");
             }
@@ -380,15 +377,13 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
         }
         wait(400).await;
         if let Some(&top) = ids(cx, 0).first() {
-            window.demo_real_click(centre(top), 1);
+            window.demo_scroll_at(centre(top), 10.0);
             wait(700).await;
             shot("8c-big-fan");
-            if let Some(&id) = ids(cx, 0).get(3) {
-                window.demo_real_click(centre(id), 1);
-            }
+            window.demo_scroll_at(centre(top), -10.0);
             wait(350).await;
             eprintln!(
-                "demo: after a click on the big fan it is {}",
+                "demo: after scrolling up over the big fan it is {}",
                 if window.demo_is_fanned() {
                     "OPEN (wrong)"
                 } else {
@@ -418,7 +413,7 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
         window.demo_toggle_stack();
         wait(150).await;
         if let Some(&top) = ids(cx, 1).first() {
-            window.demo_real_click(centre(top), 1);
+            window.demo_scroll_at(centre(top), 10.0);
             let mut at = 0;
             for (ms, name) in [
                 (100, "8d-fan-0.1s"),
@@ -438,7 +433,7 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
         }
         if let Some(&top) = ids(cx, 1).first() {
             let at = centre(top);
-            click(at, false, false);
+            window.demo_scroll_at(at, 10.0);
             wait(150).await;
             let first = ids(cx, 1);
             if let Some(&id) = first.get(1) {
@@ -476,13 +471,11 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
                     if ids(cx, 0).contains(&one) { "landed in Бэклог" } else { "DID NOT MOVE (wrong)" }
                 );
             }
-            // A second, real click (through hit-testing) on a fanned card folds the fan.
-            if let Some(&id) = first.get(1) {
-                window.demo_real_click(centre(id), 2);
-            }
+            // Scrolling up over it folds the fan.
+            window.demo_scroll_at(at, -10.0);
             wait(350).await;
             eprintln!(
-                "demo: after the second click the fan is {}",
+                "demo: after scrolling up the fan is {}",
                 if window.demo_is_fanned() {
                     "OPEN (wrong)"
                 } else {

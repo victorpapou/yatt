@@ -108,11 +108,14 @@ tabular digits, tracked +0.15, at 50%.
   shows outside the lead at rest. The selection ring is off while dragging. The
   column opens one card's room for the whole group, which lands together,
   keeping the stacking order it flew in until the last card is down.
-- A fan opens as a short wave (each card up to 12 ms after the one before, 60 ms
-  in all), its cards swinging into their angles. Nothing fades: the stack's own
-  cards, hidden ones included, are whole from the first frame, lying under the
-  pile, and fly out from there; folding, they fly back under it and only then
+- A fan opens alive, as in the reference: the stack's own cards fly apart as a
+  wave (each up to 35 ms after the one before, 150 ms in all) on a bouncy spring
+  that overshoots by about a quarter and springs back, settled in about 0.55 s,
+  each swinging into its angle. Nothing fades: hidden cards are whole from the
+  first frame under the pile; folding, they fly back under it and only then
   leave the render tree.
+- Scrolling down over a stack fans it out, scrolling up folds it; any number of
+  stacks can stand fanned. A click on a card, in a stack or a fan, opens it.
 - A fan is the swatch layout of the reference frames
   (docs/reference/tima/swatch): from the newest card, just right of the top and
   turned about −70°, the cards wind clockwise round one centre about 40° apart

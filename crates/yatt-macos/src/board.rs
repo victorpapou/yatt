@@ -68,8 +68,8 @@ const ROW_OVERSCAN: f64 = 0.5;
 const LANDING_MAX_SECS: f64 = 2.0;
 /// Room a fan keeps from the canvas's sides, when it has room.
 const FAN_MARGIN: f64 = 8.0;
-/// The most a click on a fan waits for a second one before folding, in seconds.
-const FAN_FOLD_DELAY: f64 = 0.22;
+/// How far a scroll over a stack must go (points) to fan it out or fold it.
+const FAN_SCROLL: f64 = 2.0;
 /// A fanned card under the pointer grows a little, keeping its place in the order.
 const HOVER_SCALE: f64 = 1.03;
 /// The new-task field's text inset from the capsule's left edge.
@@ -144,7 +144,6 @@ struct Card {
     face: Retained<FillView>,
     content: Retained<FlippedView>,
     icon: Retained<NSView>,
-    dots: Retained<NSTextField>,
     time: Retained<NSTextField>,
     title: Retained<NSTextField>,
     label: Retained<NSTextField>,
@@ -267,10 +266,6 @@ pub struct Board {
     last_tick: Cell<f64>,
     /// `YATT_PERF`: frame intervals and tick times (seconds) during a drag.
     perf: RefCell<Option<Vec<(f64, f64)>>>,
-    /// Folds a fan after a single click, unless a double-click follows.
-    unfan_timer: RefCell<Option<Retained<NSTimer>>>,
-    /// When a fan last folded, to let the rest of a double-click pass.
-    folded_at: Cell<f64>,
     /// Tells the window which column to tint while dragging.
     on_target: Box<dyn Fn(Option<usize>)>,
 }
@@ -331,8 +326,6 @@ impl Board {
             timer: RefCell::new(None),
             last_tick: Cell::new(0.0),
             perf: RefCell::new(std::env::var_os("YATT_PERF").map(|_| Vec::new())),
-            unfan_timer: RefCell::new(None),
-            folded_at: Cell::new(f64::NEG_INFINITY),
             on_target: Box::new(on_target),
         });
         // Scrolling (momentum and rubber band included) shows the rows coming near.
@@ -589,6 +582,15 @@ impl Board {
         ))
     }
 
+    /// Development aid: a scroll of `down` points over `at` (canvas coordinates).
+    pub fn demo_scroll_at(self: &Rc<Self>, at: (f64, f64), down: f64) {
+        self.on_scroll(Scroll {
+            event: None,
+            at: NSPoint::new(at.0, at.1),
+            down,
+        });
+    }
+
     /// Development aid: selects exactly these cards.
     pub fn demo_select(self: &Rc<Self>, ids: &[TaskId]) {
         *self.selected.borrow_mut() = ids.iter().copied().collect();
@@ -797,7 +799,6 @@ impl Board {
         let Face {
             content,
             icon,
-            dots,
             time,
             title,
         } = card_face(mtm, snap.id, &snap.title, hue);
@@ -839,7 +840,7 @@ impl Board {
         }
         // The text only: the glyph is a layer of its own, whose picture AppKit
         // must not take over (it would drop it).
-        for v in [&*time as &NSView, &title, &dots] {
+        for v in [&*time as &NSView, &title] {
             v.setLayerContentsRedrawPolicy(policy);
         }
 
@@ -849,7 +850,6 @@ impl Board {
             face,
             content,
             icon,
-            dots,
             time,
             title,
             label,
@@ -1611,58 +1611,37 @@ impl Board {
     }
 
     /// A plain click: fan a folded stack, open a card, or clear on empty board.
-    fn click(self: &Rc<Self>, id: Option<TaskId>, clicks: isize) {
+    /// A plain click: opens the card (a stack's or a fan's too: the fan is only a
+    /// way of looking at the stack), or clears the selection on empty board.
+    fn click(self: &Rc<Self>, id: Option<TaskId>, _clicks: isize) {
         let Some(id) = id else {
-            // On empty board a click folds a fan at once and clears the selection.
-            self.cancel_unfan();
-            if self.unfan() {
-                self.folded_at.set(CACurrentMediaTime());
-                self.retarget();
-                self.kick();
-            }
             self.clear_selection();
             return;
         };
-        let col = self.column_of(id);
-        let mut layouts = self.layouts.get();
-        // In a fanned stack a click folds it back and a double-click opens the card.
-        // The first click of a double waits out the double-click interval, so the
-        // fan stays put for the second one.
-        if layouts.contains(&Layout::Stack { fanned: true }) {
-            // The click that fanned the stack out and the next one also add up to a
-            // double-click; only a double-click made on the fan opens the card.
-            let first_on_fan = self.unfan_timer.borrow().is_some();
-            if physics::fan_click_opens(clicks, first_on_fan) {
-                self.cancel_unfan();
-                self.selected.borrow_mut().clear();
-                self.retarget();
-                (self.sink)(UiEvent::ToggleExpand(id));
-            } else {
-                self.unfan_soon();
-            }
-            return;
-        }
-        // The second click of a double whose first folded the fan: done already.
-        if clicks >= 2
-            && CACurrentMediaTime() - self.folded_at.get() < NSEvent::doubleClickInterval()
-        {
-            return;
-        }
-        if let Some(ci) = col
-            && layouts[ci] == (Layout::Stack { fanned: false })
-            && self.order.borrow()[ci].len() > 1
-        {
-            layouts[ci] = Layout::Stack { fanned: true };
-            self.layouts.set(layouts);
-            self.fan_clicked.set(Some(CACurrentMediaTime()));
-            self.retarget();
-            self.kick();
-            return;
-        }
         self.selected.borrow_mut().clear();
         self.anchor.set(Some(id));
         self.retarget();
         (self.sink)(UiEvent::ToggleExpand(id));
+    }
+
+    /// Fans out a stack (`open`) or folds it back, one column on its own; any
+    /// number of stacks can stand fanned at once.
+    fn set_fanned(self: &Rc<Self>, ci: usize, open: bool) {
+        let mut layouts = self.layouts.get();
+        let want = Layout::Stack { fanned: open };
+        if !matches!(layouts[ci], Layout::Stack { .. }) || layouts[ci] == want {
+            return;
+        }
+        if open && self.order.borrow()[ci].len() < 2 {
+            return;
+        }
+        layouts[ci] = want;
+        self.layouts.set(layouts);
+        if open {
+            self.fan_clicked.set(Some(CACurrentMediaTime()));
+        }
+        self.retarget();
+        self.kick();
     }
 
     /// `YATT_PERF`: prints the frame times of the drag that just ended.
@@ -1688,54 +1667,17 @@ impl Board {
         );
     }
 
-    /// The pointer over the canvas: a pointing hand over a fanned card (a click
-    /// picks it), an open hand over any other card (it can be taken), closed while
-    /// carrying one, the arrow elsewhere.
+    /// The pointer over the canvas: an open hand over a card (it can be taken),
+    /// closed while carrying one, the arrow elsewhere.
     fn show_cursor(&self, over: Option<TaskId>) {
         let cursor = if self.drag.borrow().is_some() {
             NSCursor::closedHandCursor()
-        } else if let Some(id) = over {
-            let fanned = self
-                .column_of(id)
-                .is_some_and(|c| self.layouts.get()[c] == (Layout::Stack { fanned: true }));
-            if fanned {
-                NSCursor::pointingHandCursor()
-            } else {
-                NSCursor::openHandCursor()
-            }
+        } else if over.is_some() {
+            NSCursor::openHandCursor()
         } else {
             NSCursor::arrowCursor()
         };
         cursor.set();
-    }
-
-    /// Folds the fan unless a second click comes quickly: a double-click on the fan
-    /// opens the card. The wait is short whatever the system's double-click
-    /// interval (often 0.5–0.8 s), or the fold would feel like it missed the click.
-    fn unfan_soon(self: &Rc<Self>) {
-        self.cancel_unfan();
-        let weak = Rc::downgrade(self);
-        let block = RcBlock::new(move |_timer: NonNull<NSTimer>| {
-            if let Some(b) = weak.upgrade() {
-                b.unfan_timer.borrow_mut().take();
-                if b.unfan() {
-                    b.folded_at.set(CACurrentMediaTime());
-                    b.retarget();
-                    b.kick();
-                }
-            }
-        });
-        let interval = NSEvent::doubleClickInterval().min(FAN_FOLD_DELAY);
-        let timer = unsafe {
-            NSTimer::scheduledTimerWithTimeInterval_repeats_block(interval, false, &block)
-        };
-        *self.unfan_timer.borrow_mut() = Some(timer);
-    }
-
-    fn cancel_unfan(&self) {
-        if let Some(t) = self.unfan_timer.borrow_mut().take() {
-            t.invalidate();
-        }
     }
 
     /// Folds fanned stacks back. Returns true when one was fanned.
@@ -1777,10 +1719,22 @@ impl Board {
     /// Scrolling is native: a column's scroll view gets the events. A two-finger
     /// swipe that starts sideways over a card drags it instead; until that is
     /// decided the events are held, then replayed to the scroll view if it scrolls.
-    /// Trackpad and wheel scrolling is the column's own: every event goes to its
-    /// native scroll view. (Cards are dragged with the pointer only.)
+    /// Trackpad and wheel scrolling: over a list it is the column's own (its
+    /// native scroll view); over a stack, scrolling down fans it out and
+    /// scrolling up folds it back.
     fn on_scroll(self: &Rc<Self>, s: Scroll) {
-        self.forward(self.column_at(s.at.x), s.event.as_deref());
+        let col = self.column_at(s.at.x);
+        if let Some(ci) = col
+            && matches!(self.layouts.get()[ci], Layout::Stack { .. })
+        {
+            if s.down > FAN_SCROLL {
+                self.set_fanned(ci, true);
+            } else if s.down < -FAN_SCROLL {
+                self.set_fanned(ci, false);
+            }
+            return;
+        }
+        self.forward(col, s.event.as_deref());
     }
 
     fn begin_drag(self: &Rc<Self>, id: TaskId, start: NSPoint, p: NSPoint) {
@@ -1975,7 +1929,7 @@ impl Card {
             part.setFrame(bounds);
         }
         self.content.setFrame(bounds);
-        for v in [&*self.icon as &NSView, &self.time, &self.dots, &self.face] {
+        for v in [&*self.icon as &NSView, &self.time, &self.face] {
             v.setAlphaValue(1.0);
         }
     }
@@ -2092,7 +2046,7 @@ impl Card {
                 NSSize::new(CARD_W, CARD_H),
             ));
             self.content.setBoundsSize(NSSize::new(CARD_W, CARD_H));
-            for v in [&*self.icon as &NSView, &self.time, &self.dots, &self.face] {
+            for v in [&*self.icon as &NSView, &self.time, &self.face] {
                 v.setAlphaValue(t);
             }
             return;
@@ -2215,7 +2169,6 @@ pub(crate) const TITLE_Y: f64 = CARD_H - 31.0;
 pub(crate) struct Face {
     pub content: Retained<FlippedView>,
     pub icon: Retained<NSView>,
-    pub dots: Retained<NSTextField>,
     pub time: Retained<NSTextField>,
     pub title: Retained<NSTextField>,
 }
@@ -2234,13 +2187,7 @@ pub(crate) fn card_face(mtm: MainThreadMarker, id: TaskId, title: &str, hue: usi
         NSSize::new(16.0, 16.0),
     ));
 
-    let dots = text_label(mtm, "···", 13.0, unsafe { NSFontWeightMedium });
-    dots.setAlignment(NSTextAlignment::Right);
-    dots.setFrame(NSRect::new(
-        NSPoint::new(CARD_W - 44.0, 10.0),
-        NSSize::new(30.0, 18.0),
-    ));
-    dots.setTextColor(Some(&ink.colorWithAlphaComponent(0.3)));
+    // No "···": nothing on a card that does not do something.
 
     // Meta: small, medium weight, tabular digits, opened up a touch and well
     // below the title in contrast, so the two never compete.
@@ -2267,13 +2214,12 @@ pub(crate) fn card_face(mtm: MainThreadMarker, id: TaskId, title: &str, hue: usi
     set_title(&title_label, title);
     let title = title_label;
 
-    for v in [&*icon as &NSView, &dots, &time, &title] {
+    for v in [&*icon as &NSView, &time, &title] {
         content.addSubview(v);
     }
     Face {
         content,
         icon,
-        dots,
         time,
         title,
     }

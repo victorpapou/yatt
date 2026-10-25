@@ -499,6 +499,9 @@ pub struct Scroll {
     /// The trackpad or wheel event itself, for handing on to a column's scroll view.
     pub event: Option<Retained<NSEvent>>,
     pub at: NSPoint,
+    /// How far it scrolls down the page, in points (negative: up), as the
+    /// user's scrolling setting has it.
+    pub down: f64,
 }
 
 pub struct CanvasIvars {
@@ -599,9 +602,11 @@ define_class!(
 
         #[unsafe(method(scrollWheel:))]
         fn scroll_wheel(&self, event: &NSEvent) {
+            let k = if event.hasPreciseScrollingDeltas() { 1.0 } else { 16.0 };
             self.send(CanvasMsg::Scroll(Scroll {
                 event: Some(event.retain()),
                 at: self.local(event),
+                down: -event.scrollingDeltaY() * k,
             }));
         }
     }

@@ -30,9 +30,10 @@ impl Spring {
 pub const SETTLE: Spring = Spring::new(380.0, 1.0);
 /// Settling into a stack or a list slot.
 pub const PILE: Spring = SETTLE;
-/// A stack opening into its fan: a little brisker, as a wave ([`fan_wave`]); the
-/// cards swing into their angles.
-pub const FAN_OPEN: Spring = Spring::new(560.0, 1.0);
+/// A stack opening into its fan: alive and bouncy, as in the reference clip; the
+/// cards fly apart, overshoot their places by about a quarter and spring back,
+/// settled in about 0.55 s, as a wave ([`fan_wave`]).
+pub const FAN_OPEN: Spring = Spring::new(220.0, 0.4);
 /// A fan folding back into its stack: quicker.
 pub const FAN_FOLD: Spring = Spring::new(800.0, 1.0);
 
@@ -46,10 +47,10 @@ pub const SWING_PER_SPEED: f64 = 0.003;
 pub const SWING_MAX: f64 = 7.0;
 
 /// When the `i`-th card of a fan of `n` starts to move as the fan opens, in
-/// seconds: a wave through the fan, at most 12 ms apart and 60 ms in all
+/// seconds: a wave through the fan, at most 35 ms apart and 150 ms in all
 /// whatever the count.
 pub fn fan_wave(i: usize, n: usize) -> f64 {
-    let step = (0.06 / n.max(1) as f64).min(0.012);
+    let step = (0.15 / n.max(1) as f64).min(0.035);
     i as f64 * step
 }
 /// The lead of a dragged group: nearly attached, a touch of lag.
@@ -391,13 +392,6 @@ pub fn fan_fit(n: usize, card: (f64, f64), room: (f64, f64)) -> (usize, f64) {
     }
 }
 
-/// A plain click on a fanned stack: true opens the card (the second click of a
-/// double-click whose first click also landed on the fan), false folds the fan.
-/// A double-click that started by fanning the stack out does not count.
-pub fn fan_click_opens(clicks: isize, first_click_was_on_fan: bool) -> bool {
-    clicks >= 2 && first_click_was_on_fan
-}
-
 /// Left edge of a `card_w` wide card centred on a column at `x` that is `w` wide.
 pub fn centred_left(x: f64, w: f64, card_w: f64) -> f64 {
     (x + (w - card_w) / 2.0).round()
@@ -416,8 +410,8 @@ mod tests {
     #[test]
     fn the_fan_opens_as_a_short_wave() {
         assert_eq!(fan_wave(0, 8), 0.0);
-        assert!(fan_wave(1, 3) <= 0.012 + 1e-12);
-        assert!(fan_wave(19, 20) <= 0.06 + 1e-12);
+        assert!(fan_wave(1, 3) <= 0.035 + 1e-12);
+        assert!(fan_wave(19, 20) <= 0.15 + 1e-12);
         assert!(fan_wave(5, 8) > fan_wave(4, 8));
     }
 
@@ -682,15 +676,5 @@ mod tests {
         }
         // A wide column needs no shrinking for a few cards.
         assert_eq!(fan_fit(3, card, (800.0, 800.0)), (3, 1.0));
-    }
-
-    #[test]
-    fn second_click_folds_the_fan_unless_it_is_a_real_double_click() {
-        // The click that fanned the stack plus the next one make clickCount 2: fold.
-        assert!(!fan_click_opens(2, false));
-        // A single click on the fan folds it.
-        assert!(!fan_click_opens(1, true));
-        // Two clicks both on the fan open the card.
-        assert!(fan_click_opens(2, true));
     }
 }

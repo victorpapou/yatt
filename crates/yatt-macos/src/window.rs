@@ -476,6 +476,12 @@ impl MainWindow {
         self.ui.cards.demo_card_state(id)
     }
 
+    /// Development aid: a scroll of `down` points over `at`: over a stack,
+    /// down fans it out and up folds it.
+    pub fn demo_scroll_at(&self, at: (f64, f64), down: f64) {
+        self.ui.cards.demo_scroll_at(at, down);
+    }
+
     /// Development aid: selects exactly these cards.
     pub fn demo_select(&self, ids: &[TaskId]) {
         self.ui.cards.demo_select(ids);
