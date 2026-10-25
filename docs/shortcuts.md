@@ -16,7 +16,7 @@ editor takes them before the board ever sees them.
 | ⌘C / ⌘X / ⌘V | Copy / cut / paste the selected cards (pasted text makes one card per line) | Text | Text |
 | ⌘A | Select every card in the focused column (or the board) | Select the text | Select the notes |
 | ⌫ / ⌦ | Delete the selected cards (one undo step) | Delete characters | Delete characters |
-| Fingers or wheel down / up over a stack (either scrolling setting) | Fan it out / fold it | — | — |
+| Fingers or wheel down / up over a stack (either scrolling setting) | Fan it out / fold it, following the fingers (140 pt for all the way; a fling goes at once; let go part way and it opens or folds, whichever is nearer, after 0.25 s) | — | — |
 | Click on a card (list, stack or fan) | Open it | — | — |
 | Esc | Clear the selection; fold the fans | End editing | Close the task panel |
 | ⌘. | Stop the timer | Stop the timer | Stop the timer |

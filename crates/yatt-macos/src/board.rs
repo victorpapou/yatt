@@ -68,8 +68,6 @@ const ROW_OVERSCAN: f64 = 0.5;
 const LANDING_MAX_SECS: f64 = 2.0;
 /// Room a fan keeps from the canvas's sides, when it has room.
 const FAN_MARGIN: f64 = 8.0;
-/// How far a scroll over a stack must go (points) to fan it out or fold it.
-const FAN_SCROLL: f64 = 2.0;
 /// A fanned card under the pointer grows a little, keeping its place in the order.
 const HOVER_SCALE: f64 = 1.03;
 /// The new-task field's text inset from the capsule's left edge.
@@ -238,6 +236,10 @@ pub struct Board {
     order: RefCell<[Vec<TaskId>; 3]>,
     cards: RefCell<HashMap<TaskId, Card>>,
     layouts: Cell<[Layout; 3]>,
+    /// How open each column's stack is while a scroll drives it (0 folded, 1
+    /// fanned), and when that scroll last moved it (media time).
+    open_p: Cell<[f64; 3]>,
+    scrubbed: Cell<[f64; 3]>,
     /// Selected cards, and the one a ⇧-click range starts from.
     selected: RefCell<HashSet<TaskId>>,
     anchor: Cell<Option<TaskId>>,
@@ -310,6 +312,8 @@ impl Board {
             order: RefCell::new(Default::default()),
             cards: RefCell::new(HashMap::new()),
             layouts: Cell::new([Layout::List; 3]),
+            open_p: Cell::new([0.0; 3]),
+            scrubbed: Cell::new([0.0; 3]),
             selected: RefCell::new(HashSet::new()),
             anchor: Cell::new(None),
             press: RefCell::new(None),
@@ -937,7 +941,11 @@ impl Board {
                 .collect();
             let n = ids.len();
             match layouts[ci] {
-                Layout::Stack { fanned } if fanned && n > 1 => {
+                Layout::Stack { fanned } if (fanned || self.open_p.get()[ci] > 0.0) && n > 1 => {
+                    // Part open while a scroll drives it: every card on the
+                    // straight way from its pile place to its fan place.
+                    let p = if fanned { 1.0 } else { self.open_p.get()[ci] };
+                    let a = self.stack_anchor(ci);
                     // The swatch fan of the reference, newest card on top, shrunk
                     // as a whole (angles unchanged) to fit its column and the board's
                     // height, and centred on the column below the chips.
@@ -971,6 +979,23 @@ impl Board {
                             (0.0, 0.0, 0.0)
                         };
                         let at = (centre.0 + dx - w / 2.0, centre.1 + dy - h / 2.0, deg);
+                        if p < 1.0 {
+                            let (py, ps) = physics::pile(i);
+                            let mix = |a: f64, b: f64| a + (b - a) * p;
+                            let to = if shown {
+                                (mix(a.0, at.0), mix(a.1 + py, at.1), mix(0.0, at.2))
+                            } else {
+                                parked.insert(*id);
+                                (a.0, a.1 + py, 0.0)
+                            };
+                            self.send_home(card, Space::Canvas, to);
+                            card.body.spring = physics::FAN_RADIAL;
+                            card.set_muted(i > 0 && p < 0.15);
+                            card.z = (n - i) as f64;
+                            card.target_scale = if shown { mix(ps, scale) } else { ps };
+                            card.set_look(Look::Solid, true);
+                            continue;
+                        }
                         // A new place: the cards set off as a short wave.
                         let moved =
                             (card.body.tx - at.0).abs() > 2.0 || (card.body.ty - at.1).abs() > 2.0;
@@ -1263,6 +1288,17 @@ impl Board {
 
     fn tick(self: &Rc<Self>) {
         let now = CACurrentMediaTime();
+        // A part-open fan left alone opens or folds, whichever is nearer.
+        let mut part = false;
+        for (ci, p) in self.open_p.get().into_iter().enumerate() {
+            if p > 0.0 && p < 1.0 {
+                if now - self.scrubbed.get()[ci] > physics::FAN_SNAP_IDLE {
+                    self.set_fanned(ci, physics::fan_snap(p));
+                } else {
+                    part = true;
+                }
+            }
+        }
         let dt = match self.fixed_dt.take() {
             Some(dt) => dt,
             None => (now - self.last_tick.replace(now)).clamp(0.0, 1.0 / 30.0),
@@ -1332,7 +1368,7 @@ impl Board {
         }
         drop(fans);
 
-        let mut moving = dragging;
+        let mut moving = dragging || part;
         let drag_ids = self.dragged();
         let started = now;
         for card in cards.values_mut() {
@@ -1662,7 +1698,11 @@ impl Board {
     fn set_fanned(self: &Rc<Self>, ci: usize, open: bool) {
         let mut layouts = self.layouts.get();
         let want = Layout::Stack { fanned: open };
-        if !matches!(layouts[ci], Layout::Stack { .. }) || layouts[ci] == want {
+        let mut p = self.open_p.get();
+        let part = p[ci] > 0.0 && p[ci] < 1.0;
+        p[ci] = if open { 1.0 } else { 0.0 };
+        self.open_p.set(p);
+        if !matches!(layouts[ci], Layout::Stack { .. }) || (layouts[ci] == want && !part) {
             return;
         }
         if open && self.order.borrow()[ci].len() < 2 {
@@ -1760,10 +1800,30 @@ impl Board {
         if let Some(ci) = col
             && matches!(self.layouts.get()[ci], Layout::Stack { .. })
         {
-            if s.down > FAN_SCROLL {
+            // The fan follows the fingers, part open on the way; a fling goes
+            // all the way.
+            if self.order.borrow()[ci].len() < 2 || s.down == 0.0 {
+                return;
+            }
+            let fanned = self.layouts.get()[ci] == (Layout::Stack { fanned: true });
+            let from = if fanned { 1.0 } else { self.open_p.get()[ci] };
+            let p = physics::fan_scrub(from, s.down);
+            if p >= 1.0 {
                 self.set_fanned(ci, true);
-            } else if s.down < -FAN_SCROLL {
+            } else if p <= 0.0 {
                 self.set_fanned(ci, false);
+            } else {
+                let mut layouts = self.layouts.get();
+                layouts[ci] = Layout::Stack { fanned: false };
+                self.layouts.set(layouts);
+                let mut ps = self.open_p.get();
+                ps[ci] = p;
+                self.open_p.set(ps);
+                let mut at = self.scrubbed.get();
+                at[ci] = CACurrentMediaTime();
+                self.scrubbed.set(at);
+                self.retarget();
+                self.kick();
             }
             return;
         }

@@ -88,8 +88,9 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             };
             let top = centre(lead);
             frames("fan-open", lead, &|f| {
-                if f == 0 {
-                    window.demo_scroll_at(top, 10.0);
+                // Fingers down over the stack, 7 pt a frame: the fan follows.
+                if f < 20 {
+                    window.demo_scroll_at(top, 7.0);
                 }
             });
             // A new card dropped into the open fan: the old top card (now the
@@ -107,7 +108,7 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             });
             frames("fan-fold", lead, &|f| {
                 if f == 0 {
-                    window.demo_scroll_at(top, -10.0);
+                    window.demo_scroll_at(top, -60.0);
                 }
             });
             window.demo_toggle_stack();
@@ -167,7 +168,7 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             window.demo_toggle_stack();
             wait(700).await;
             if let Some(&top) = ids(cx, 0).first() {
-                window.demo_scroll_at(centre(top), 10.0);
+                window.demo_scroll_at(centre(top), 60.0);
             }
             for _ in 0..6 {
                 wait(40).await;
@@ -248,7 +249,7 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             window.demo_toggle_stack();
             wait(1500).await;
             if let Some(&top) = ids(cx, 0).first() {
-                window.demo_scroll_at(centre(top), 10.0);
+                window.demo_scroll_at(centre(top), 60.0);
                 wait(1200).await;
                 shot("perf-fan");
             }
@@ -390,10 +391,10 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
         }
         wait(400).await;
         if let Some(&top) = ids(cx, 0).first() {
-            window.demo_scroll_at(centre(top), 10.0);
+            window.demo_scroll_at(centre(top), 60.0);
             wait(700).await;
             shot("8c-big-fan");
-            window.demo_scroll_at(centre(top), -10.0);
+            window.demo_scroll_at(centre(top), -60.0);
             wait(350).await;
             eprintln!(
                 "demo: after scrolling up over the big fan it is {}",
@@ -426,7 +427,7 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
         window.demo_toggle_stack();
         wait(150).await;
         if let Some(&top) = ids(cx, 1).first() {
-            window.demo_scroll_at(centre(top), 10.0);
+            window.demo_scroll_at(centre(top), 60.0);
             let mut at = 0;
             for (ms, name) in [
                 (100, "8d-fan-0.1s"),
@@ -446,7 +447,7 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
         }
         if let Some(&top) = ids(cx, 1).first() {
             let at = centre(top);
-            window.demo_scroll_at(at, 10.0);
+            window.demo_scroll_at(at, 60.0);
             wait(150).await;
             let first = ids(cx, 1);
             if let Some(&id) = first.get(1) {
@@ -485,7 +486,7 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
                 );
             }
             // Scrolling up over it folds the fan.
-            window.demo_scroll_at(at, -10.0);
+            window.demo_scroll_at(at, -60.0);
             wait(350).await;
             eprintln!(
                 "demo: after scrolling up the fan is {}",

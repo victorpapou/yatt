@@ -443,6 +443,29 @@ impl Body {
     }
 }
 
+/// How far the fingers go down over a stack (points) to fan it all the way out:
+/// the fan follows the scroll, a slow scroll leaving it part open.
+pub const FAN_SCRUB: f64 = 140.0;
+/// A scroll step this big (points in one event) is a fling: the fan goes all
+/// the way at once, in its direction.
+pub const FAN_FLING: f64 = 40.0;
+/// A part-open fan left alone this long (seconds) opens or folds, whichever is
+/// nearer.
+pub const FAN_SNAP_IDLE: f64 = 0.25;
+
+/// How open a stack is (0 folded, 1 fanned) after a scroll of `down` points.
+pub fn fan_scrub(open: f64, down: f64) -> f64 {
+    if down.abs() >= FAN_FLING {
+        return if down > 0.0 { 1.0 } else { 0.0 };
+    }
+    (open + down / FAN_SCRUB).clamp(0.0, 1.0)
+}
+
+/// Where a part-open fan left alone goes: open when past half.
+pub fn fan_snap(open: f64) -> bool {
+    open > 0.5
+}
+
 /// An angle brought into −π..π.
 fn wrap(a: f64) -> f64 {
     (a + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI
@@ -752,6 +775,23 @@ mod tests {
         for b in &cards {
             assert!(b.at_rest(), "{b:?}");
         }
+    }
+
+    #[test]
+    fn the_fan_follows_the_scroll() {
+        let p = fan_scrub(0.0, 14.0);
+        assert!((p - 0.1).abs() < 1e-9, "{p}");
+        let mut p = 0.0;
+        for _ in 0..5 {
+            p = fan_scrub(p, 7.0);
+        }
+        assert!((p - 0.25).abs() < 1e-9 && !fan_snap(p));
+        assert_eq!(fan_scrub(0.9, 30.0), 1.0);
+        assert_eq!(fan_scrub(p, -20.0), 0.25 - 20.0 / FAN_SCRUB);
+        assert!(fan_snap(0.6));
+        // A fling goes all the way.
+        assert_eq!(fan_scrub(0.1, 60.0), 1.0);
+        assert_eq!(fan_scrub(0.9, -60.0), 0.0);
     }
 
     #[test]

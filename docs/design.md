@@ -121,8 +121,12 @@ tabular digits, tracked +0.15, at 50%.
   ±2.5° round, fixed by its id, `FAN_JITTER`). Nothing fades: hidden cards are
   whole from the first frame under the pile; folding (critically damped, about
   0.3 s) they fly back under it and only then leave the render tree.
-- Scrolling down over a stack fans it out, scrolling up folds it; any number of
-  stacks can stand fanned. A click on a card, in a stack or a fan, opens it.
+- Scrolling down over a stack fans it out, scrolling up folds it, and the blob
+  follows the fingers: 140 pt of scroll for all the way, each card on the
+  straight way from its pile place to its fan place (springs on top, so it
+  stays soft); a fling (40 pt in one event) goes all the way at once; left
+  part open for 0.25 s it opens or folds, whichever is nearer. The column
+  never scrolls under a stack. Any number of stacks can stand fanned. A click on a card, in a stack or a fan, opens it.
 - A fan is the swatch layout of the reference frames
   (docs/reference/tima/swatch): from the newest card, just right of the top and
   turned about −70°, the cards wind clockwise round one centre about 40° apart
