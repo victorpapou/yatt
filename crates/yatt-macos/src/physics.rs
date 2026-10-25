@@ -48,7 +48,7 @@ pub const ROTATION: Spring = Spring::new(500.0, 0.8);
 /// the lead's path, in seconds, the first one included: for a group of two,
 /// three, and from five on (four is between). Small groups get longer steps, so
 /// the tail reads about as long whatever the size. The one place to tune it.
-pub const TRAIL_DELAYS: (f64, f64, f64) = (0.10, 0.08, 0.055);
+pub const TRAIL_DELAYS: (f64, f64, f64) = (0.08, 0.06, 0.04);
 
 /// The delay step for a dragged group of `n` cards.
 pub fn trail_step(n: usize) -> f64 {
@@ -334,7 +334,7 @@ mod tests {
         let step = trail_step(6);
         assert!((trail_delay(1, 6) - step).abs() < 1e-12);
         assert!((trail_delay(3, 6) - 3.0 * step).abs() < 1e-12);
-        assert!((0.09..=0.11).contains(&trail_delay(1, 2)));
+        assert!((0.07..=0.09).contains(&trail_delay(1, 2)));
         assert!(trail_step(2) > trail_step(3) && trail_step(3) > trail_step(5));
         // The same step all the way down a long tail.
         assert!((trail_delay(9, 10) - 9.0 * trail_step(10)).abs() < 1e-12);
