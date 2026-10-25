@@ -2,13 +2,15 @@
 //! against the views it already has: cards are kept per task id, updated in place
 //! and moved with animations, so reorders and column moves stay smooth.
 //!
-//! Layout: a header with the timer, then the board split into three columns by
+//! Layout: the timer row in a native toolbar unified with the titlebar (a
+//! progress ring, the digits, the phase, the controls), then the board split into
+//! three columns by
 //! full-height 1 px dividers. Each column's title and count sit in a glass chip in
 //! the column's colour, floating over the cards; one header button switches the
 //! whole board between lists and stacks.
 //! The new-task field floats over the bottom of the board as a glass capsule.
-//! A click on a card opens the task modal (`modal.rs`); minimal mode shrinks the
-//! window to the timer alone.
+//! A click on a card opens the task modal (`modal.rs`); minimal mode hides the
+//! toolbar and shrinks the window to the timer row alone, at a larger size.
 
 use std::cell::{Cell, RefCell};
 use std::ptr::NonNull;
@@ -21,23 +23,25 @@ use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, sel};
 use objc2_app_kit::{
     NSAnimatablePropertyContainer, NSAnimationContext, NSApplication, NSAutoresizingMaskOptions,
     NSBackingStoreType, NSBezelStyle, NSButton, NSColor, NSControlSize, NSEvent,
-    NSEventModifierFlags, NSFloatingWindowLevel, NSFocusRingType, NSFont, NSFontWeightMedium,
-    NSFontWeightRegular, NSFontWeightSemibold, NSImage, NSLineBreakMode, NSNormalWindowLevel,
-    NSProgressIndicator, NSProgressIndicatorStyle, NSTextAlignment, NSTextField, NSView, NSWindow,
-    NSWindowStyleMask, NSWindowTitleVisibility,
+    NSEventModifierFlags, NSEventType, NSFloatingWindowLevel, NSFocusRingType, NSFont,
+    NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold, NSImage, NSLineBreakMode,
+    NSNormalWindowLevel, NSTextAlignment, NSTextField, NSToolbar, NSToolbarDisplayMode,
+    NSToolbarItem, NSView, NSWindow, NSWindowOrderingMode, NSWindowStyleMask,
+    NSWindowTitleVisibility, NSWindowToolbarStyle,
 };
+use objc2_core_graphics::CGMutablePath;
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString, ns_string};
 use objc2_quartz_core::{
-    CAMediaTiming, CAMediaTimingFunction, CATransition, kCAMediaTimingFunctionEaseOut,
-    kCATransitionFade, kCATransitionFromTop, kCATransitionPush,
+    CAMediaTiming, CAMediaTimingFunction, CAShapeLayer, CATransition, kCALineCapRound,
+    kCAMediaTimingFunctionEaseOut, kCATransitionFade, kCATransitionFromTop, kCATransitionPush,
 };
 use yatt_core::{Status, TaskId};
 
 use crate::board::{Board, ColumnGeom};
 pub use crate::board::{DemoPhase, DemoPointer};
 use crate::classes::{
-    ActionTarget, FieldDelegate, Fill, FillView, FlippedView, PassView, RootView, WindowDelegate,
-    editing_text,
+    ActionTarget, FieldDelegate, Fill, FillView, FlippedView, PassView, RootView, ToolbarDelegate,
+    WindowDelegate, editing_text,
 };
 use crate::modal::Modal;
 use crate::model::{Snapshot, TimerSnap, UiEvent, format_clock};
@@ -46,7 +50,12 @@ use crate::style;
 
 pub type Sink = Rc<dyn Fn(UiEvent)>;
 
-const HEADER_H: f64 = 112.0;
+/// Height of the timer row in the toolbar.
+const TOOLBAR_H: f64 = 40.0;
+/// The progress ring: diameter and stroke, in the toolbar and in minimal mode.
+const RING_D: f64 = 22.0;
+const RING_D_MINI: f64 = 34.0;
+const RING_LINE: f64 = 3.0;
 const PAD: f64 = 16.0;
 /// Column chips: height and distance from the top of the board.
 const CHIP_H: f64 = 20.0;
@@ -55,8 +64,10 @@ const CHIP_TOP: f64 = 12.0;
 const CAPSULE_H: f64 = 44.0;
 const CAPSULE_MAX_W: f64 = 460.0;
 const CAPSULE_BOTTOM: f64 = 22.0;
-const DIGIT_W: f64 = 28.0;
-const COLON_W: f64 = 14.0;
+/// The clock's digits in minimal mode: font size, digit and colon widths, height.
+const DIGITS_MINI: (f64, f64, f64, f64) = (46.0, 28.0, 14.0, 56.0);
+/// The same in the toolbar.
+const DIGITS_BAR: (f64, f64, f64, f64) = (24.0, 19.0, 10.0, 32.0);
 /// Minimal mode: just the timer.
 const MINI_SIZE: (f64, f64) = (300.0, 136.0);
 
@@ -70,6 +81,11 @@ struct Ui {
     root: Retained<RootView>,
     sink: Sink,
     header: Header,
+    toolbar: Retained<NSToolbar>,
+    /// The toolbar's one item, holding the header's view outside minimal mode.
+    timer_item: Retained<NSToolbarItem>,
+    /// Height of the titlebar with the toolbar: where the board starts.
+    top_inset: Cell<f64>,
     /// Everything below the header; hidden in minimal mode.
     board: Retained<FlippedView>,
     header_rule: Retained<FillView>,
@@ -103,7 +119,7 @@ struct Header {
     mini: Retained<NSButton>,
     /// Lists or stacks, for the whole board.
     stack: Retained<NSButton>,
-    progress: Retained<NSProgressIndicator>,
+    ring: Ring,
     minimal: Cell<bool>,
 }
 
@@ -152,7 +168,26 @@ impl MainWindow {
 
         let mut retained: Vec<Retained<AnyObject>> = Vec::new();
         let header = Header::new(mtm, &sink, &mut retained);
-        root.addSubview(&header.view);
+        // The timer row lives in a native toolbar, unified with the titlebar.
+        let timer_item = NSToolbarItem::initWithItemIdentifier(
+            NSToolbarItem::alloc(mtm),
+            ns_string!("yatt.timer"),
+        );
+        timer_item.setView(Some(&header.view));
+        #[allow(deprecated)]
+        {
+            timer_item.setMinSize(NSSize::new(420.0, TOOLBAR_H));
+            timer_item.setMaxSize(NSSize::new(10_000.0, TOOLBAR_H));
+        }
+        let toolbar =
+            NSToolbar::initWithIdentifier(NSToolbar::alloc(mtm), ns_string!("yatt.toolbar"));
+        let toolbar_delegate = ToolbarDelegate::new(mtm, timer_item.clone());
+        toolbar.setDelegate(Some(ProtocolObject::from_ref(&*toolbar_delegate)));
+        toolbar.setDisplayMode(NSToolbarDisplayMode::IconOnly);
+        toolbar.setAllowsUserCustomization(false);
+        window.setToolbar(Some(&toolbar));
+        window.setToolbarStyle(NSWindowToolbarStyle::Unified);
+        retained.push(Retained::into_super(Retained::into_super(toolbar_delegate)));
 
         let board = FlippedView::new(mtm, NSRect::ZERO);
         root.addSubview(&board);
@@ -215,6 +250,9 @@ impl MainWindow {
             root,
             sink: sink.clone(),
             header,
+            toolbar,
+            timer_item,
+            top_inset: Cell::new(52.0),
             board,
             header_rule,
             dividers,
@@ -306,6 +344,37 @@ impl MainWindow {
         self.ui.window.setFrame_display(frame, true);
     }
 
+    /// Development aid: a real click at `at` (canvas coordinates), sent through the
+    /// window like a mouse click, so it goes through hit-testing. `clicks` is the
+    /// click count the event carries.
+    pub fn demo_real_click(&self, at: (f64, f64), clicks: isize) {
+        let canvas = &self.ui.cards.canvas;
+        let p = canvas.convertPoint_toView(NSPoint::new(at.0, at.1), None);
+        let window = &self.ui.window;
+        let number = window.windowNumber();
+        for kind in [NSEventType::LeftMouseDown, NSEventType::LeftMouseUp] {
+            let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+                kind,
+                p,
+                NSEventModifierFlags::empty(),
+                objc2_quartz_core::CACurrentMediaTime(),
+                number,
+                None,
+                0,
+                clicks,
+                1.0,
+            );
+            if let Some(event) = event {
+                window.sendEvent(&event);
+            }
+        }
+    }
+
+    /// Development aid: true while a stack is fanned out.
+    pub fn demo_is_fanned(&self) -> bool {
+        self.ui.cards.is_fanned()
+    }
+
     /// Development aid: the board's list/stack toggle.
     pub fn demo_toggle_stack(&self) {
         self.ui.toggle_stack();
@@ -325,9 +394,11 @@ impl MainWindow {
     /// Draws the window's content into a PNG, without screen-recording permission.
     /// Web content (the notes editor) does not show up; native views do.
     pub fn capture_png(&self, path: &str) -> bool {
-        let Some(view) = self.ui.window.contentView() else {
+        let Some(content) = self.ui.window.contentView() else {
             return false;
         };
+        // The frame view holds the toolbar too.
+        let view = unsafe { content.superview() }.unwrap_or(content);
         let bounds = view.bounds();
         let Some(rep) = view.bitmapImageRepForCachingDisplayInRect(bounds) else {
             return false;
@@ -488,24 +559,26 @@ impl Ui {
     fn layout(&self) {
         let bounds = self.root.bounds();
         let size = bounds.size;
-        let header_h = if self.minimal.get() {
-            size.height
-        } else {
-            HEADER_H
-        };
-        self.header.view.setFrame(NSRect::new(
-            NSPoint::ZERO,
-            NSSize::new(size.width, header_h),
-        ));
-        self.header.layout(size.width, size.height);
         self.modal.layout(bounds);
         if self.minimal.get() {
+            self.header.view.setFrame(NSRect::new(NSPoint::ZERO, size));
+            self.header.layout(size.width, size.height);
             return;
         }
+        let row = self.header.view.frame().size;
+        self.header.layout(row.width, row.height);
 
-        let board_h = (size.height - HEADER_H).max(100.0);
+        // The board starts where the toolbar ends (the content runs under it).
+        // `contentLayoutRect` lags behind while the window resizes; between
+        // toolbar changes the inset stays the same, so an odd reading is ignored.
+        let inset = size.height - self.window.contentLayoutRect().size.height;
+        if inset > 20.0 && inset < TOOLBAR_H + 40.0 {
+            self.top_inset.set(inset);
+        }
+        let top = self.top_inset.get();
+        let board_h = (size.height - top).max(100.0);
         self.board.setFrame(NSRect::new(
-            NSPoint::new(0.0, HEADER_H),
+            NSPoint::new(0.0, top),
             NSSize::new(size.width, board_h),
         ));
         self.header_rule
@@ -579,6 +652,16 @@ impl Ui {
             self.minimal.set(true);
             self.header.minimal.set(true);
             self.board.setHidden(true);
+            // The timer row leaves the toolbar for the window itself.
+            self.toolbar.setVisible(false);
+            self.timer_item.setView(None);
+            self.header.view.removeFromSuperview();
+            self.root.addSubview_positioned_relativeTo(
+                &self.header.view,
+                NSWindowOrderingMode::Below,
+                Some(&self.modal.dim),
+            );
+            self.header.reset_clock();
             self.window
                 .setMinSize(NSSize::new(MINI_SIZE.0, MINI_SIZE.1));
             // Keep the top-left corner where it is.
@@ -595,6 +678,10 @@ impl Ui {
         } else {
             self.minimal.set(false);
             self.header.minimal.set(false);
+            self.header.view.removeFromSuperview();
+            self.timer_item.setView(Some(&self.header.view));
+            self.toolbar.setVisible(true);
+            self.header.reset_clock();
             self.window.setLevel(NSNormalWindowLevel);
             self.window.setFrame_display_animate(
                 self.saved_frame.get(),
@@ -657,9 +744,8 @@ impl Ui {
         }
         if let Some(id) = open {
             let to = self.card_rect_in_root(id);
-            // The card shows again under the shrinking panel, so its text is there
-            // the whole way down.
-            self.cards.reveal(id);
+            // The panel shrinks back onto the card with the card's text on it; the
+            // card itself shows again when the panel lies exactly on it.
             let weak = Rc::downgrade(self);
             self.modal.close(to, self.cards.card_angle(id), move || {
                 if let Some(ui) = weak.upgrade() {
@@ -714,7 +800,7 @@ impl Header {
                 )
             };
             b.setBezelStyle(NSBezelStyle::Push);
-            b.setControlSize(NSControlSize::Large);
+            b.setControlSize(NSControlSize::Regular);
             view.addSubview(&b);
             retained.push(Retained::into_super(Retained::into_super(target)));
             b
@@ -738,13 +824,16 @@ impl Header {
         stack.setWantsLayer(true);
         view.addSubview(&stack);
 
-        let progress = NSProgressIndicator::new(mtm);
-        progress.setStyle(NSProgressIndicatorStyle::Bar);
-        progress.setIndeterminate(false);
-        progress.setMinValue(0.0);
-        progress.setMaxValue(1.0);
-        progress.setControlSize(NSControlSize::Small);
-        view.addSubview(&progress);
+        let ring = Ring::new(mtm);
+        view.addSubview(&ring.view);
+        // Outside minimal mode the toolbar sizes the row: the controls keep to the
+        // right edge and the texts take up what is left.
+        for b in [&primary, &stopwatch, &skip, &stop, &mini, &stack] {
+            b.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinXMargin);
+        }
+        for t in [&phase, &tasks] {
+            t.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
+        }
 
         let header = Self {
             view,
@@ -759,7 +848,7 @@ impl Header {
             stop,
             mini,
             stack,
-            progress,
+            ring,
             minimal: Cell::new(false),
         };
         header.update_mini_icon();
@@ -812,68 +901,99 @@ impl Header {
         }
         self.tasks.setHidden(minimal);
         self.stack.setHidden(minimal);
-        self.stack.setFrame(NSRect::new(
-            NSPoint::new(width - 62.0, 4.0),
-            NSSize::new(24.0, 22.0),
-        ));
-        self.mini.setFrame(NSRect::new(
-            NSPoint::new(width - 34.0, 4.0),
-            NSSize::new(24.0, 22.0),
-        ));
         if minimal {
+            // Under the traffic lights: the ring, then the big digits, the phase
+            // under them, the main button on the right.
             let top = 30.0;
-            self.digits_box.setFrame(NSRect::new(
-                NSPoint::new(PAD, top),
-                NSSize::new(digits_w.max(1.0), 56.0),
+            let (_, _, _, dh) = DIGITS_MINI;
+            self.ring.view.setFrame(NSRect::new(
+                NSPoint::new(PAD, top + (dh - RING_D_MINI) / 2.0),
+                NSSize::new(RING_D_MINI, RING_D_MINI),
             ));
+            self.ring.layout();
+            let dx = PAD + RING_D_MINI + 10.0;
+            self.digits_box.setFrame(NSRect::new(
+                NSPoint::new(dx, top),
+                NSSize::new(digits_w.max(1.0), dh),
+            ));
+            self.phase
+                .setFont(Some(&NSFont::systemFontOfSize_weight(15.0, unsafe {
+                    NSFontWeightSemibold
+                })));
             self.phase.setFrame(NSRect::new(
-                NSPoint::new(PAD + 2.0, top + 58.0),
+                NSPoint::new(PAD + 2.0, top + dh + 2.0),
                 NSSize::new(width - 2.0 * PAD - 110.0, 20.0),
             ));
-            let w = self.primary.fittingSize().width.max(96.0);
-            self.primary.setFrame(NSRect::new(
-                NSPoint::new(width - PAD - w, top + 12.0),
-                NSSize::new(w, 32.0),
+            self.mini.setFrame(NSRect::new(
+                NSPoint::new(width - 34.0, 4.0),
+                NSSize::new(24.0, 22.0),
             ));
-            self.progress.setFrame(NSRect::new(
-                NSPoint::new(PAD, height - 12.0),
-                NSSize::new(width - 2.0 * PAD, 6.0),
+            let w = self.primary.fittingSize().width.max(88.0);
+            self.primary.setFrame(NSRect::new(
+                NSPoint::new(width - PAD - w, top + (dh - 28.0) / 2.0),
+                NSSize::new(w, 28.0),
             ));
             return;
         }
-        let top = 34.0;
-        self.digits_box.setFrame(NSRect::new(
-            NSPoint::new(PAD + 4.0, top),
-            NSSize::new(digits_w.max(1.0), 56.0),
+        // One toolbar row, everything on its centre line: ring, digits, phase over
+        // the tasks, then the controls on the right.
+        let mid = height / 2.0;
+        let (_, _, _, dh) = DIGITS_BAR;
+        self.ring.view.setFrame(NSRect::new(
+            NSPoint::new(0.0, mid - RING_D / 2.0),
+            NSSize::new(RING_D, RING_D),
         ));
-        let text_x = PAD + 4.0 + digits_w + 18.0;
+        self.ring.layout();
+        let dx = RING_D + 8.0;
+        self.digits_box.setFrame(NSRect::new(
+            NSPoint::new(dx, mid - dh / 2.0),
+            NSSize::new(digits_w.max(1.0), dh),
+        ));
+        self.stack.setFrame(NSRect::new(
+            NSPoint::new(width - 56.0, mid - 11.0),
+            NSSize::new(24.0, 22.0),
+        ));
+        self.mini.setFrame(NSRect::new(
+            NSPoint::new(width - 28.0, mid - 11.0),
+            NSSize::new(24.0, 22.0),
+        ));
         let buttons = [&self.primary, &self.stopwatch, &self.skip, &self.stop];
-        let mut x = width - PAD;
+        let mut x = width - 68.0;
         for b in buttons.iter().rev() {
             if b.isHidden() {
                 continue;
             }
-            let w = b.fittingSize().width.max(96.0);
+            let w = b.fittingSize().width.max(84.0);
             x -= w;
             b.setFrame(NSRect::new(
-                NSPoint::new(x, top + 12.0),
-                NSSize::new(w, 32.0),
+                NSPoint::new(x, mid - 14.0),
+                NSSize::new(w, 28.0),
             ));
-            x -= 8.0;
+            x -= 6.0;
         }
-        let text_w = (x - text_x - 8.0).max(60.0);
+        let text_x = dx + digits_w + 14.0;
+        let text_w = (x - text_x - 8.0).max(40.0);
+        self.phase
+            .setFont(Some(&NSFont::systemFontOfSize_weight(13.0, unsafe {
+                NSFontWeightSemibold
+            })));
         self.phase.setFrame(NSRect::new(
-            NSPoint::new(text_x, top + 10.0),
-            NSSize::new(text_w, 20.0),
+            NSPoint::new(text_x, mid - 17.0),
+            NSSize::new(text_w, 17.0),
         ));
         self.tasks.setFrame(NSRect::new(
-            NSPoint::new(text_x, top + 32.0),
-            NSSize::new(text_w, 16.0),
+            NSPoint::new(text_x, mid + 1.0),
+            NSSize::new(text_w, 15.0),
         ));
-        self.progress.setFrame(NSRect::new(
-            NSPoint::new(PAD, HEADER_H - 16.0),
-            NSSize::new(width - 2.0 * PAD, 6.0),
-        ));
+    }
+
+    /// Drops the clock's digits, so the next update builds them at the size of
+    /// the current mode.
+    fn reset_clock(&self) {
+        for d in self.digits.borrow_mut().drain(..) {
+            d.removeFromSuperview();
+        }
+        self.shown_clock.borrow_mut().clear();
     }
 
     fn update(&self, t: &TimerSnap) {
@@ -886,7 +1006,7 @@ impl Header {
         self.stopwatch.setHidden(!t.can_start_stopwatch);
         self.skip.setHidden(!t.can_skip);
         self.stop.setHidden(!t.can_stop);
-        self.progress.setDoubleValue(t.progress as f64);
+        self.ring.set(t.progress as f64);
         let size = self.view.frame().size;
         self.layout(size.width, size.height);
     }
@@ -904,21 +1024,26 @@ impl Header {
             for d in digits.drain(..) {
                 d.removeFromSuperview();
             }
+            let (size, digit_w, colon_w, h) = if self.minimal.get() {
+                DIGITS_MINI
+            } else {
+                DIGITS_BAR
+            };
             let mut x = 0.0;
             for ch in &chars {
                 let w = if ch.is_ascii_digit() {
-                    DIGIT_W
+                    digit_w
                 } else {
-                    COLON_W
+                    colon_w
                 };
-                let d = label(mtm, &ch.to_string(), 46.0, unsafe { NSFontWeightMedium });
+                let d = label(mtm, &ch.to_string(), size, unsafe { NSFontWeightMedium });
                 d.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(
-                    46.0,
+                    size,
                     unsafe { NSFontWeightMedium },
                 )));
                 d.setAlignment(NSTextAlignment::Center);
                 d.setWantsLayer(true);
-                d.setFrame(NSRect::new(NSPoint::new(x, 0.0), NSSize::new(w, 56.0)));
+                d.setFrame(NSRect::new(NSPoint::new(x, 0.0), NSSize::new(w, h)));
                 self.digits_box.addSubview(&d);
                 digits.push(d);
                 x += w;
@@ -951,6 +1076,68 @@ impl Header {
             }
         }
         *shown = clock.to_string();
+    }
+}
+
+/// The phase's progress as a ring: a faint track and an accent arc that grows
+/// clockwise from the top. Its layers are its own, so the arc eases over.
+struct Ring {
+    view: Retained<FlippedView>,
+    track: Retained<CAShapeLayer>,
+    arc: Retained<CAShapeLayer>,
+}
+
+impl Ring {
+    fn new(mtm: MainThreadMarker) -> Self {
+        let view = FlippedView::new(mtm, NSRect::ZERO);
+        view.setWantsLayer(true);
+        let track = CAShapeLayer::new();
+        let arc = CAShapeLayer::new();
+        for (layer, color) in [
+            (&track, NSColor::labelColor().colorWithAlphaComponent(0.12)),
+            (&arc, NSColor::controlAccentColor()),
+        ] {
+            layer.setFillColor(None);
+            layer.setStrokeColor(Some(&color.CGColor()));
+            layer.setLineWidth(RING_LINE);
+            layer.setLineCap(unsafe { kCALineCapRound });
+            if let Some(host) = view.layer() {
+                host.addSublayer(layer);
+            }
+        }
+        arc.setStrokeEnd(0.0);
+        Self { view, track, arc }
+    }
+
+    /// Fits the circle to the view's current size.
+    fn layout(&self) {
+        let d = self.view.frame().size.width;
+        let path = CGMutablePath::new();
+        let r = (d - RING_LINE) / 2.0;
+        // The view is flipped, so going from −90° with growing angles runs
+        // clockwise from the top.
+        unsafe {
+            CGMutablePath::add_arc(
+                Some(&path),
+                std::ptr::null(),
+                d / 2.0,
+                d / 2.0,
+                r.max(0.0),
+                -std::f64::consts::FRAC_PI_2,
+                3.0 * std::f64::consts::FRAC_PI_2,
+                false,
+            );
+        }
+        motion::quietly(|| {
+            for layer in [&self.track, &self.arc] {
+                layer.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(d, d)));
+                layer.setPath(Some(&path));
+            }
+        });
+    }
+
+    fn set(&self, progress: f64) {
+        self.arc.setStrokeEnd(progress.clamp(0.0, 1.0));
     }
 }
 

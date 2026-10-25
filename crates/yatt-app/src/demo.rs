@@ -72,6 +72,12 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
         wait(700).await;
         window.demo_new_task("Срочное", true);
         wait(900).await;
+        // Every task gets notes and a picture of its own.
+        let all: Vec<TaskId> = (0..3).flat_map(|c| ids(cx, c)).collect();
+        for (i, id) in all.iter().enumerate() {
+            sink(UiEvent::SetNotes(*id, notes(i)));
+        }
+        wait(200).await;
         shot("2-list");
 
         // A plain drag: the top backlog card into "В работе", under "Срочное".
@@ -140,6 +146,38 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
         window.demo_toggle_stack();
         wait(600).await;
         shot("8-stack");
+        // A big backlog: its fan wraps onto an inner ring instead of overflowing.
+        let start = all.len() + 10;
+        let mut k = 0;
+        while ids(cx, 0).len() < 11 && k < 12 {
+            sink(UiEvent::NewTask {
+                title: format!("Задача {}", k + 1),
+                status: Status::Backlog,
+            });
+            k += 1;
+        }
+        wait(300).await;
+        for (i, id) in ids(cx, 0).iter().enumerate() {
+            sink(UiEvent::SetNotes(*id, notes(start + i)));
+        }
+        wait(400).await;
+        if let Some(&top) = ids(cx, 0).first() {
+            window.demo_real_click(centre(top), 1);
+            wait(700).await;
+            shot("8c-big-fan");
+            if let Some(&id) = ids(cx, 0).get(3) {
+                window.demo_real_click(centre(id), 1);
+            }
+            wait(350).await;
+            eprintln!(
+                "demo: after a click on the big fan it is {}",
+                if window.demo_is_fanned() {
+                    "OPEN (wrong)"
+                } else {
+                    "folded"
+                }
+            );
+        }
         // A wide window: every stack must stay on its column's centre line.
         window.demo_resize(1800.0, 900.0);
         wait(500).await;
@@ -155,6 +193,29 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
         shot("8b-stack-wide");
         window.demo_resize(1100.0, 720.0);
         wait(500).await;
+        // Lists to stacks and a click on a stack straight away: the slivers must
+        // never show over the top card, all the way through the fan opening.
+        window.demo_toggle_stack();
+        wait(900).await;
+        window.demo_toggle_stack();
+        wait(150).await;
+        if let Some(&top) = ids(cx, 1).first() {
+            window.demo_real_click(centre(top), 1);
+            let mut at = 0;
+            for (ms, name) in [
+                (100, "8d-fan-0.1s"),
+                (250, "8d-fan-0.25s"),
+                (500, "8d-fan-0.5s"),
+                (1000, "8d-fan-1s"),
+                (2000, "8d-fan-2s"),
+            ] {
+                wait(ms - at).await;
+                at = ms;
+                shot(name);
+            }
+            click((window.demo_column_x(0), 640.0), false, false);
+            wait(600).await;
+        }
         if let Some(&top) = ids(cx, 1).first() {
             let at = centre(top);
             click(at, false, false);
@@ -166,8 +227,20 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             wait(450).await;
             shot("9-fan");
             window.demo_pointer(DemoPointer::Hover(None));
-            click((window.demo_column_x(0), 600.0), false, false);
-            wait(500).await;
+            // A second, real click (through hit-testing) on a fanned card folds the fan.
+            if let Some(&id) = first.get(1) {
+                window.demo_real_click(centre(id), 2);
+            }
+            wait(350).await;
+            eprintln!(
+                "demo: after the second click the fan is {}",
+                if window.demo_is_fanned() {
+                    "OPEN (wrong)"
+                } else {
+                    "folded"
+                }
+            );
+            shot("9b-fan-folded");
             let at = centre(top);
             window.demo_pointer(DemoPointer::Down {
                 at,
@@ -183,30 +256,113 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             window.demo_pointer(DemoPointer::Up(end));
             wait(700).await;
             window.demo_toggle_stack();
+            wait(900).await;
         }
 
         // The task modal and timer-only mode.
         sink(UiEvent::StartPause);
         if let Some(&id) = ids(cx, 2).first() {
-            sink(UiEvent::SetNotes(
-                id,
-                "## План\n\n- стекло\n- **физика**".into(),
-            ));
+            // Three frames on the way open, the panel at rest, three on the way back.
             click(centre(id), false, false);
-            wait(120).await;
-            shot("11-morph");
+            for (ms, name) in [(30, "11a-open"), (50, "11b-open"), (70, "11c-open")] {
+                wait(ms).await;
+                shot(name);
+            }
             wait(800).await;
             shot("12-modal");
             window.debug_print_editor();
             sink(UiEvent::ToggleExpand(id));
+            for (ms, name) in [(30, "12a-close"), (50, "12b-close"), (70, "12c-close")] {
+                wait(ms).await;
+                shot(name);
+            }
             wait(700).await;
+            shot("12d-closed");
         }
         window.toggle_minimal();
         wait(800).await;
         shot("13-minimal");
         window.toggle_minimal();
         wait(800).await;
+
+        // A big group dragged slowly across the board, for YATT_PERF timings.
+        let backlog = ids(cx, 0);
+        if backlog.len() >= 8 {
+            click(centre(backlog[0]), false, true);
+            for &id in &backlog[1..8] {
+                click(centre(id), false, true);
+            }
+            wait(300).await;
+            let from = centre(backlog[0]);
+            window.demo_pointer(DemoPointer::Down {
+                at: from,
+                shift: false,
+                cmd: false,
+            });
+            let mid = (window.demo_column_x(2), 300.0);
+            drag(from, mid, 60).await;
+            shot("14-big-group");
+            drag(mid, (window.demo_column_x(1), 200.0), 60).await;
+            window.demo_pointer(DemoPointer::Up((window.demo_column_x(1), 200.0)));
+            wait(900).await;
+        }
         eprintln!("demo: finished");
     })
     .detach();
+}
+
+/// The `i`-th demo task's notes: a few lines of its own and a picture.
+fn notes(i: usize) -> String {
+    const TEXTS: [&str; 12] = [
+        "## План\n\n- стекло\n- **физика**",
+        "Пружины: `k` и `ζ`, пару значений на пробу.",
+        "- [ ] шапка\n- [ ] таймер\n- [ ] прогресс",
+        "> Бесшовность: тот же элемент, без подмен.",
+        "Сетка колонок, отступы 16 pt.",
+        "Проверить на трекпаде **двумя пальцами**.",
+        "### Вопросы\n\n1. Сколько карточек в стопке?\n2. Куда падает тень?",
+        "Ссылки на референсы в `docs/reference`.",
+        "Снять видео перетаскивания, *медленно*.",
+        "- шрифт 15/20\n- мета 11, трекинг +0.15",
+        "Сравнить блюр 4 и 6 pt на светлом фоне.",
+        "Созвон в четверг, показать веер.",
+    ];
+    format!(
+        "{}\n\n![Набросок {}]({})",
+        TEXTS[i % TEXTS.len()],
+        i + 1,
+        picture(i)
+    )
+}
+
+/// A small picture of its own for the `i`-th demo task: a gradient with a few
+/// soft shapes, as an SVG data URL that markdown notes can show.
+fn picture(i: usize) -> String {
+    // Hues a golden angle apart, so no two tasks share colours.
+    let a = (i * 137 + 200) % 360;
+    let b = (a + 50) % 360;
+    let shapes: String = (0..3 + i % 3)
+        .map(|k| {
+            let (x, y, r) = (
+                40 + (k * 97 + i * 53) % 320,
+                30 + (k * 61 + i * 29) % 140,
+                18 + (k * 13 + i * 7) % 36,
+            );
+            format!("<circle cx='{x}' cy='{y}' r='{r}' fill='white' fill-opacity='0.35'/>")
+        })
+        .collect();
+    let svg = format!(
+        "<svg xmlns='http://www.w3.org/2000/svg' width='400' height='200'>\
+         <defs><linearGradient id='g' x2='1' y2='1'>\
+         <stop offset='0' stop-color='hsl({a},70%,62%)'/><stop offset='1' stop-color='hsl({b},70%,52%)'/>\
+         </linearGradient></defs><rect width='400' height='200' fill='url(#g)'/>{shapes}</svg>"
+    );
+    let encoded: String = svg
+        .bytes()
+        .map(|c| match c {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'.' | b'_' => (c as char).to_string(),
+            _ => format!("%{c:02X}"),
+        })
+        .collect();
+    format!("data:image/svg+xml,{encoded}")
 }

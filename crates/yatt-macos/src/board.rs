@@ -1,25 +1,30 @@
 //! The cards, laid out and moved on springs ([`crate::physics`]) stepped by a
 //! display-rate timer while anything moves.
 //!
-//! - Each column is a plain list by default, scrolling on its own. A toggle in the
-//!   column header collapses it into a stack like the reference clip
-//!   (docs/reference/card-motion.md): the top card carries an "ещё N" badge, the
-//!   next ones peek out below it as slivers. A click fans the stack out into a
+//! - Each column is a plain list by default in its own native scroll view (rubber
+//!   band, momentum, scroller), the cards in its document view. A header button
+//!   collapses the board into stacks like the reference clip
+//!   (docs/reference/card-motion.md): the top card shows its text, the next
+//!   ones peek out below it as slivers. A click fans the stack out into a
 //!   rosette whose spread grows with the count; the card under the pointer lifts.
 //!   Dragging the folded stack takes it whole.
 //! - Every card is tinted glass: a blur of what is behind, the card's colour over
-//!   it, a 1 px light rim, a soft white glow over a faint dark shadow.
+//!   it, a 1 px dark edge shadow (no stroke) and a soft white glow.
 //! - Click opens a card, ⌘-click toggles it in the selection, ⇧-click selects a
 //!   range within the column.
 //! - Dragging one card is a plain drag: it follows the pointer and the list makes
 //!   room. Dragging a selection blurs the pressed card's content and writes the
-//!   target column on it; the other selected cards trail it on softer springs,
-//!   each smaller than the one ahead.
+//!   target column and the count on it; the other selected cards follow right
+//!   under it on stiff springs, almost at once.
 //! - A two-finger swipe across a card drags it (or the selection) the same way;
 //!   a vertical swipe scrolls the column.
 //!
-//! The canvas takes all pointer input and hit-tests the cards itself, so a card
-//! can move onto the overlay above the column headers while it is dragged.
+//! The canvas takes all pointer input and hit-tests the cards itself, handing
+//! scroll gestures on to the column's scroll view. Stacks and fans sit on the canvas
+//! (a fan is wider than its column). A card that changes home (dragged, moved to
+//! another column, or switching between list and stack) rides the overlay above
+//! everything and lands in its new home once it comes to rest, so it is never
+//! clipped on the way.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -32,7 +37,7 @@ use objc2::{DefinedClass, MainThreadMarker};
 use objc2_app_kit::{
     NSAnimatablePropertyContainer, NSAutoresizingMaskOptions, NSEvent, NSFont, NSFontWeightBold,
     NSFontWeightMedium, NSFontWeightSemibold, NSImage, NSImageView, NSLineBreakMode,
-    NSTextAlignment, NSTextField, NSView,
+    NSScrollElasticity, NSScrollView, NSScrollerStyle, NSTextAlignment, NSTextField, NSView,
 };
 use objc2_core_image::CIFilter;
 use objc2_foundation::{NSArray, NSPoint, NSRect, NSSize, NSString, NSTimer};
@@ -50,8 +55,10 @@ use crate::window::{Sink, animate};
 
 /// Pixels the pointer (or fingers) must travel before a press becomes a drag.
 const DRAG_THRESHOLD: f64 = 4.0;
-/// Where a trailing card rests relative to the one ahead of it: up and to the right.
-const TRAIN_OFFSET: (f64, f64) = (20.0, -35.0);
+/// Room a fan keeps from the canvas's sides.
+const FAN_MARGIN: f64 = 8.0;
+/// The most a click on a fan waits for a second one before folding, in seconds.
+const FAN_FOLD_DELAY: f64 = 0.22;
 /// A fanned card under the pointer grows a little, keeping its place in the order.
 const HOVER_SCALE: f64 = 1.03;
 /// The new-task field's text inset from the capsule's left edge.
@@ -65,8 +72,6 @@ const LIST_GAP: f64 = 10.0;
 const PITCH: f64 = CARD_H + LIST_GAP;
 /// Room left under the last card for the new-task field floating over the board.
 const LIST_BOTTOM: f64 = 96.0;
-/// How far a list can be pulled past either end.
-const OVERSCROLL: f64 = 120.0;
 /// Dragging this close to the top or bottom edge scrolls the column.
 const AUTOSCROLL_EDGE: f64 = 56.0;
 const AUTOSCROLL_SPEED: f64 = 700.0;
@@ -104,6 +109,21 @@ pub struct ColumnGeom {
     pub w: f64,
 }
 
+/// Which view a card's view sits in; its body is in that view's coordinates (the
+/// overlay's are the canvas's).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+enum Space {
+    Canvas,
+    Doc(usize),
+    Overlay,
+}
+
+/// A column's native scroll view and the document view its list cards live in.
+struct Column {
+    scroll: Retained<NSScrollView>,
+    doc: Retained<FlippedView>,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Layout {
     List,
@@ -113,8 +133,12 @@ enum Layout {
 #[derive(Clone, PartialEq)]
 enum Look {
     Solid,
-    /// Leading a dragged selection: content blurred, the target column written on it.
-    Lifted(String),
+    /// Leading a dragged group: content blurred, the target column written on it
+    /// and, under it, how many cards are coming along.
+    Lifted {
+        column: String,
+        count: usize,
+    },
 }
 
 struct Card {
@@ -125,19 +149,19 @@ struct Card {
     dots: Retained<NSTextField>,
     time: Retained<NSTextField>,
     title: Retained<NSTextField>,
-    badge_bg: Retained<FillView>,
-    badge: Retained<NSTextField>,
     label: Retained<NSTextField>,
+    /// "3 задачи" under the label while leading a group drag.
+    count: Retained<NSTextField>,
     hue: usize,
     tracking: bool,
     selected: bool,
     body: Body,
     look: Look,
-    badge_text: String,
     z: f64,
     removing: bool,
-    /// On the overlay above the column headers instead of the clipped canvas.
-    lifted: bool,
+    /// Where the view is now, and where it belongs once it comes to rest.
+    space: Space,
+    home: Space,
     /// Flying in from the new-task field.
     flying: bool,
     /// Drawn scale about the centre, easing towards `target_scale`.
@@ -145,10 +169,16 @@ struct Card {
     target_scale: f64,
     /// Text hidden: behind the top card of a stack.
     muted: bool,
+    /// Riding under the lead of a group drag: no blur of its own, drawn from a
+    /// cached bitmap.
+    light: bool,
     /// The blur and the tint, sized to the card by hand while it grows.
     parts: [Retained<NSView>; 2],
     /// Growing from the new-task capsule: progress 0…1 and the capsule's size.
     grow: Option<(f64, NSSize)>,
+    /// The size the edge layers were last laid out for.
+    shadow_size: Cell<(f64, f64)>,
+    edges: style::Edges,
 }
 
 struct Press {
@@ -195,6 +225,9 @@ pub struct Board {
     /// The canvas's top edge in overlay coordinates.
     overlay_dy: Cell<f64>,
     sink: Sink,
+    cols: [Column; 3],
+    /// Trackpad events held while a gesture decides between scrolling and dragging.
+    held: RefCell<Vec<Retained<NSEvent>>>,
     statuses: [Status; 3],
     titles: RefCell<[String; 3]>,
     geom: Cell<[ColumnGeom; 3]>,
@@ -202,17 +235,14 @@ pub struct Board {
     order: RefCell<[Vec<TaskId>; 3]>,
     cards: RefCell<HashMap<TaskId, Card>>,
     layouts: Cell<[Layout; 3]>,
-    scroll: Cell<[f64; 3]>,
     /// Selected cards, and the one a ⇧-click range starts from.
     selected: RefCell<HashSet<TaskId>>,
     anchor: Cell<Option<TaskId>>,
     press: RefCell<Option<Press>>,
     drag: RefCell<Option<Drag>>,
     gesture: Cell<Gesture>,
-    /// Fingers on the trackpad: an overscrolled list waits for them to lift.
-    fingers: Cell<bool>,
-    /// The card order last applied to the views, and which of them were lifted.
-    stacking: RefCell<(Vec<TaskId>, Vec<bool>)>,
+    /// The card order last applied to the views, and where each sat.
+    stacking: RefCell<Vec<(TaskId, Space)>>,
     /// The card under the pointer, for the glass highlight in a fanned stack.
     hover: Cell<Option<TaskId>>,
     /// The card standing in for the open task modal, kept invisible.
@@ -222,8 +252,12 @@ pub struct Board {
     spawn: Cell<Option<(NSRect, Status)>>,
     timer: RefCell<Option<Retained<NSTimer>>>,
     last_tick: Cell<f64>,
+    /// `YATT_PERF`: frame intervals and tick times (seconds) during a drag.
+    perf: RefCell<Option<Vec<(f64, f64)>>>,
     /// Folds a fan after a single click, unless a double-click follows.
     unfan_timer: RefCell<Option<Retained<NSTimer>>>,
+    /// When a fan last folded, to let the rest of a double-click pass.
+    folded_at: Cell<f64>,
     /// Tells the window which column to tint while dragging.
     on_target: Box<dyn Fn(Option<usize>)>,
 }
@@ -238,12 +272,29 @@ impl Board {
         canvas.setClipsToBounds(true);
         let overlay = OverlayView::new(mtm);
         overlay.setClipsToBounds(false);
+        let cols = [0, 1, 2].map(|_| {
+            let scroll = NSScrollView::new(mtm);
+            scroll.setDrawsBackground(false);
+            scroll.setHasVerticalScroller(true);
+            scroll.setHasHorizontalScroller(false);
+            scroll.setAutohidesScrollers(true);
+            scroll.setScrollerStyle(NSScrollerStyle::Overlay);
+            scroll.setVerticalScrollElasticity(NSScrollElasticity::Allowed);
+            scroll.setHorizontalScrollElasticity(NSScrollElasticity::None);
+            scroll.contentView().setDrawsBackground(false);
+            let doc = FlippedView::new(mtm, NSRect::ZERO);
+            scroll.setDocumentView(Some(&doc));
+            canvas.addSubview(&scroll);
+            Column { scroll, doc }
+        });
         let board = Rc::new(Self {
             mtm,
             canvas,
             overlay,
             overlay_dy: Cell::new(0.0),
             sink,
+            cols,
+            held: RefCell::new(Vec::new()),
             statuses: Status::ALL,
             titles: RefCell::new(Default::default()),
             geom: Cell::new(Default::default()),
@@ -251,20 +302,20 @@ impl Board {
             order: RefCell::new(Default::default()),
             cards: RefCell::new(HashMap::new()),
             layouts: Cell::new([Layout::List; 3]),
-            scroll: Cell::new([0.0; 3]),
             selected: RefCell::new(HashSet::new()),
             anchor: Cell::new(None),
             press: RefCell::new(None),
             drag: RefCell::new(None),
             gesture: Cell::new(Gesture::Idle),
-            fingers: Cell::new(false),
             hover: Cell::new(None),
             stacking: RefCell::new(Default::default()),
             hidden: Cell::new(None),
             spawn: Cell::new(None),
             timer: RefCell::new(None),
             last_tick: Cell::new(0.0),
+            perf: RefCell::new(std::env::var_os("YATT_PERF").map(|_| Vec::new())),
             unfan_timer: RefCell::new(None),
+            folded_at: Cell::new(f64::NEG_INFINITY),
             on_target: Box::new(on_target),
         });
         let weak = Rc::downgrade(&board);
@@ -281,8 +332,11 @@ impl Board {
         self.geom.set(geom);
         self.height.set(height);
         self.overlay_dy.set(overlay_dy);
-        for ci in 0..3 {
-            self.scroll_column(ci, 0.0);
+        for (c, g) in self.cols.iter().zip(geom) {
+            c.scroll.setFrame(NSRect::new(
+                NSPoint::new(g.x, 0.0),
+                NSSize::new(g.w, height),
+            ));
         }
         self.retarget();
         // A resize moves the columns under the cards: put the cards there now
@@ -292,6 +346,9 @@ impl Board {
             if !dragged.contains(id) && !card.flying {
                 card.body.settle();
                 card.apply_frame(overlay_dy);
+                if card.space == Space::Overlay {
+                    land(card, self);
+                }
             }
         }
         self.kick();
@@ -311,14 +368,8 @@ impl Board {
             }
         }
         for (ci, col) in columns.iter().enumerate() {
-            let n = col.cards.len();
             for (i, snap) in col.cards.iter().enumerate() {
                 seen.insert(snap.id);
-                let badge = if i == 0 && n > 1 {
-                    format!("ещё {}", n - 1)
-                } else {
-                    String::new()
-                };
                 let exists = self.cards.borrow().contains_key(&snap.id);
                 if !exists {
                     let mut card = self.make_card(snap);
@@ -330,10 +381,14 @@ impl Board {
                         card.body = Body::at(r.origin.x, r.origin.y);
                         card.flying = true;
                         card.grow = Some((0.0, r.size));
-                        card.lift(&self.overlay);
+                        card.space = Space::Overlay;
+                        self.overlay.addSubview(&card.view);
                     } else {
                         let (x, y) = self.slot(ci, i);
                         card.body = Body::at(x, y - 8.0);
+                        card.space = self.home_of(ci);
+                        card.home = card.space;
+                        self.parent(card.space).addSubview(&card.view);
                         card.view.setAlphaValue(0.0);
                         let view = card.view.clone();
                         animate(true, motion::APPEAR_SECS, move || {
@@ -344,7 +399,7 @@ impl Board {
                 }
                 if let Some(card) = self.cards.borrow_mut().get_mut(&snap.id) {
                     card.removing = false;
-                    card.update(snap, badge);
+                    card.update(snap);
                 }
             }
         }
@@ -359,9 +414,6 @@ impl Board {
         for id in gone {
             self.remove_card(id);
         }
-        for ci in 0..3 {
-            self.scroll_column(ci, 0.0);
-        }
         self.retarget();
         self.kick();
     }
@@ -375,8 +427,9 @@ impl Board {
     /// The card's frame on the canvas, unrotated, where it is headed.
     pub fn card_rect(&self, id: TaskId) -> Option<NSRect> {
         self.cards.borrow().get(&id).map(|c| {
+            let (ox, oy) = self.offset(c.space);
             NSRect::new(
-                NSPoint::new(c.body.tx, c.body.ty),
+                NSPoint::new(c.body.tx + ox, c.body.ty + oy),
                 NSSize::new(CARD_W, CARD_H),
             )
         })
@@ -399,17 +452,9 @@ impl Board {
         self.cards.borrow().get(&id).map_or(0.0, |c| c.body.tr)
     }
 
-    /// Brings a card hidden for the modal back in step with the panel closing on it.
-    pub fn reveal(&self, id: TaskId) {
-        if self.hidden.get() == Some(id) {
-            self.hidden.set(None);
-        }
-        if let Some(c) = self.cards.borrow().get(&id) {
-            let view = c.view.clone();
-            animate(true, motion::MODAL_CLOSE_SECS, move || {
-                view.animator().setAlphaValue(1.0)
-            });
-        }
+    /// True while some stack is fanned out.
+    pub fn is_fanned(&self) -> bool {
+        self.layouts.get().contains(&Layout::Stack { fanned: true })
     }
 
     pub fn is_stacked(&self) -> bool {
@@ -424,7 +469,6 @@ impl Board {
             Layout::Stack { fanned: false }
         };
         self.layouts.set([layout; 3]);
-        self.scroll.set([0.0; 3]);
         self.retarget();
         self.kick();
     }
@@ -465,6 +509,7 @@ impl Board {
             DemoPointer::Up(at) => CanvasMsg::Up(pt(at)),
             DemoPointer::Hover(at) => CanvasMsg::Hover(at.map(pt)),
             DemoPointer::Swipe { at, finger, phase } => CanvasMsg::Scroll(Scroll {
+                event: None,
                 at: pt(at),
                 finger,
                 scroll: -finger.1,
@@ -500,10 +545,7 @@ impl Board {
     /// Where the `i`-th card of a column sits, ignoring drags.
     fn slot(&self, ci: usize, i: usize) -> (f64, f64) {
         match self.layouts.get()[ci] {
-            Layout::List => (
-                self.list_x(ci),
-                LIST_TOP + i as f64 * PITCH - self.scroll.get()[ci],
-            ),
+            Layout::List => (self.list_x(ci), LIST_TOP + i as f64 * PITCH),
             Layout::Stack { .. } => {
                 let a = self.stack_anchor(ci);
                 (a.0, a.1 + physics::pile(i).0)
@@ -511,9 +553,44 @@ impl Board {
         }
     }
 
+    /// A list card's left edge in its column's document view.
     fn list_x(&self, ci: usize) -> f64 {
-        let g = self.geom.get()[ci];
-        physics::centred_left(g.x, g.w, CARD_W)
+        physics::centred_left(0.0, self.geom.get()[ci].w, CARD_W)
+    }
+
+    /// Where a column's cards live: its scroll view's document as a list, the
+    /// canvas as a stack.
+    fn home_of(&self, ci: usize) -> Space {
+        match self.layouts.get()[ci] {
+            Layout::List => Space::Doc(ci),
+            Layout::Stack { .. } => Space::Canvas,
+        }
+    }
+
+    fn parent(&self, space: Space) -> &NSView {
+        match space {
+            Space::Canvas => &self.canvas,
+            Space::Doc(ci) => &self.cols[ci].doc,
+            Space::Overlay => &self.overlay,
+        }
+    }
+
+    /// Where a space's origin is on the canvas (the overlay shares the canvas's).
+    fn offset(&self, space: Space) -> (f64, f64) {
+        match space {
+            Space::Doc(ci) => {
+                let p = self
+                    .canvas
+                    .convertPoint_fromView(NSPoint::ZERO, Some(&self.cols[ci].doc));
+                (p.x, p.y)
+            }
+            _ => (0.0, 0.0),
+        }
+    }
+
+    /// A column's scroll offset (negative or past the end while rubber-banding).
+    fn scrolled(&self, ci: usize) -> f64 {
+        self.cols[ci].scroll.contentView().bounds().origin.y
     }
 
     /// Top-left of a stack's top card, centred in the column.
@@ -532,8 +609,6 @@ impl Board {
         // Scaling shrinks the frame and keeps card-sized bounds; the parts must not
         // follow the frame, or they would shrink twice.
         view.setAutoresizesSubviews(false);
-        // No dark shadow: overlapping cards would stack it up into a smudge. The
-        // face's soft white glow is the only edge.
         view.setWantsLayer(true);
         let fill_mask = NSAutoresizingMaskOptions::ViewWidthSizable
             | NSAutoresizingMaskOptions::ViewHeightSizable;
@@ -554,64 +629,39 @@ impl Board {
         glass.setFrame(bounds);
         glass.setAutoresizingMask(fill_mask);
 
-        let content = FlippedView::new(mtm, bounds);
+        let Face {
+            content,
+            icon,
+            dots,
+            time,
+            title,
+        } = card_face(mtm, snap.id, &snap.title, hue);
         content.setAutoresizingMask(fill_mask);
-        content.setWantsLayer(true);
-        content.setLayerUsesCoreImageFilters(true);
 
-        let icon = NSImageView::new(mtm);
-        icon.setImage(
-            NSImage::imageWithSystemSymbolName_accessibilityDescription(
-                &NSString::from_str(style::glyph_of(snap.id)),
-                None,
-            )
-            .as_deref(),
-        );
-        icon.setFrame(NSRect::new(
-            NSPoint::new(14.0, 13.0),
-            NSSize::new(18.0, 18.0),
-        ));
-        let dots = text_label(mtm, "···", 13.0, unsafe { NSFontWeightBold });
-        dots.setAlignment(NSTextAlignment::Right);
-        dots.setFrame(NSRect::new(
-            NSPoint::new(CARD_W - 44.0, 9.0),
-            NSSize::new(30.0, 18.0),
-        ));
-        let time = text_label(mtm, "", 11.0, unsafe { NSFontWeightSemibold });
-        time.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(
-            11.0,
-            unsafe { NSFontWeightSemibold },
-        )));
-        time.setFrame(NSRect::new(
-            NSPoint::new(14.0, CARD_H - 44.0),
-            NSSize::new(CARD_W - 28.0, 15.0),
-        ));
-        let title = text_label(mtm, &snap.title, 14.0, unsafe { NSFontWeightSemibold });
-        title.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
-        title.setFrame(NSRect::new(
-            NSPoint::new(14.0, CARD_H - 29.0),
-            NSSize::new(CARD_W - 28.0, 18.0),
-        ));
-        let badge_bg = FillView::new(mtm, Fill::Badge);
-        let badge = text_label(mtm, "", 11.0, unsafe { NSFontWeightMedium });
-        badge.setAlignment(NSTextAlignment::Center);
-        for v in [&*icon as &NSView, &dots, &time, &title, &badge_bg, &badge] {
-            content.addSubview(v);
-        }
-
+        // While leading a group drag: the target column, and how many cards come along.
         let label = text_label(mtm, "", 22.0, unsafe { NSFontWeightSemibold });
         label.setAlignment(NSTextAlignment::Center);
         label.setTextColor(Some(&style::text(hue)));
-        label.setFrame(NSRect::new(
-            NSPoint::new(8.0, (CARD_H - 30.0) / 2.0),
-            NSSize::new(CARD_W - 16.0, 30.0),
-        ));
         label.setAlphaValue(0.0);
+        let count = text_label(mtm, "", 13.0, unsafe { NSFontWeightMedium });
+        count.setAlignment(NSTextAlignment::Center);
+        count.setTextColor(Some(&style::text(hue).colorWithAlphaComponent(0.7)));
+        count.setAlphaValue(0.0);
 
-        for v in [&*glass as &NSView, &face, &content, &label] {
+        // The edge: the outline under everything, the white inner shadow over the
+        // tint and under the text.
+        let edges = style::Edges::new(mtm);
+        for v in [
+            &*edges.outer,
+            &glass,
+            &face,
+            &edges.inner,
+            &content,
+            &label,
+            &count,
+        ] {
             view.addSubview(v);
         }
-        self.canvas.addSubview(&view);
 
         let parts = [glass.clone(), Retained::into_super(face.clone())];
         let mut card = Card {
@@ -622,24 +672,29 @@ impl Board {
             dots,
             time,
             title,
-            badge_bg,
-            badge,
             label,
+            count,
             hue,
             tracking: false,
             selected: false,
             body: Body::at(0.0, 0.0),
-            look: Look::Lifted(String::new()),
-            badge_text: String::new(),
+            look: Look::Lifted {
+                column: String::new(),
+                count: 0,
+            },
             z: 0.0,
             removing: false,
-            lifted: false,
+            space: Space::Canvas,
+            home: Space::Canvas,
             flying: false,
             scale: 1.0,
             target_scale: 1.0,
             muted: false,
+            light: false,
             parts,
             grow: None,
+            shadow_size: Cell::new((0.0, 0.0)),
+            edges,
         };
         card.set_look(Look::Solid, false);
         card
@@ -679,7 +734,6 @@ impl Board {
         let drag_ids = drag.as_ref().map(|d| d.ids.clone()).unwrap_or_default();
         let order = self.order.borrow().clone();
         let layouts = self.layouts.get();
-        let scroll = self.scroll.get();
         let selected = self.selected.borrow();
         let hover = self.hover.get();
         let mut cards = self.cards.borrow_mut();
@@ -695,22 +749,37 @@ impl Board {
             match layouts[ci] {
                 Layout::Stack { fanned } if fanned && n > 1 => {
                     // A rosette round the stack's centre, kept clear of the canvas top.
+                    // A big one, on two rings, also keeps clear of the window's sides.
                     let a = self.stack_anchor(ci);
                     let reach = physics::fan_radius(n, w) + 0.5 * (w * w + h * h).sqrt();
-                    let centre = (a.0 + w / 2.0, (a.1 + h / 2.0).max(reach + LIST_TOP));
+                    let canvas_w = self.canvas.frame().size.width;
+                    let (lo, hi) = (reach + FAN_MARGIN, canvas_w - reach - FAN_MARGIN);
+                    let cx = a.0 + w / 2.0;
+                    let cx = if n <= physics::RING {
+                        cx
+                    } else if lo <= hi {
+                        cx.clamp(lo, hi)
+                    } else {
+                        canvas_w / 2.0
+                    };
+                    let centre = (cx, (a.1 + h / 2.0).max(reach + LIST_TOP));
                     for (i, id) in ids.iter().enumerate() {
                         let Some(card) = cards.get_mut(id) else {
                             continue;
                         };
                         let (dx, dy, deg) = physics::fan(i, n, w);
-                        card.body
-                            .target(centre.0 + dx - w / 2.0, centre.1 + dy - h / 2.0, deg);
+                        let at = (centre.0 + dx - w / 2.0, centre.1 + dy - h / 2.0, deg);
+                        self.send_home(card, Space::Canvas, at);
                         card.body.spring = physics::PILE;
                         card.set_muted(false);
-                        card.z = (n - i) as f64;
+                        // The inner ring sits on top, or the outer one would cover it.
+                        card.z = if i >= physics::RING {
+                            100.0 + (n - i) as f64
+                        } else {
+                            (n - i) as f64
+                        };
                         card.target_scale = if hover == Some(*id) { HOVER_SCALE } else { 1.0 };
                         card.set_look(Look::Solid, true);
-                        card.set_badge("");
                     }
                 }
                 Layout::Stack { .. } => {
@@ -720,24 +789,35 @@ impl Board {
                             continue;
                         };
                         let (dy, scale) = physics::pile(i);
-                        card.body.target(a.0, a.1 + dy, 0.0);
+                        self.send_home(card, Space::Canvas, (a.0, a.1 + dy, 0.0));
                         // Only the top card's text; the rest show as coloured slivers.
                         card.set_muted(i > 0);
                         card.body.spring = physics::PILE;
                         card.z = (n - i) as f64;
                         card.target_scale = scale;
                         card.set_look(Look::Solid, true);
-                        let badge = card.badge_text.clone();
-                        card.set_badge(if i == 0 { &badge } else { "" });
                     }
                 }
                 Layout::List => {
                     // Make room where the dragged cards would land.
                     let gap = match drag.as_ref() {
-                        Some(d) if d.target == Some(ci) => Some((d.index, d.ids.len())),
+                        // One card's room, however many come: they land as a stack.
+                        Some(d) if d.target == Some(ci) => Some((d.index, 1)),
                         _ => None,
                     };
                     let x = self.list_x(ci);
+                    // The document is as tall as the list (room for the gap included).
+                    let slots = n + gap.map_or(0, |(_, k)| k);
+                    let doc_h =
+                        (LIST_TOP + slots as f64 * PITCH + LIST_BOTTOM).max(self.height.get());
+                    let doc = &self.cols[ci].doc;
+                    if doc.frame().size.height != doc_h
+                        || doc.frame().size.width != self.geom.get()[ci].w
+                    {
+                        motion::quietly(|| {
+                            doc.setFrameSize(NSSize::new(self.geom.get()[ci].w, doc_h))
+                        });
+                    }
                     for (i, id) in ids.iter().enumerate() {
                         let Some(card) = cards.get_mut(id) else {
                             continue;
@@ -746,14 +826,13 @@ impl Board {
                             Some((at, k)) if i >= at => i + k,
                             _ => i,
                         };
-                        card.body
-                            .target(x, LIST_TOP + slot as f64 * PITCH - scroll[ci], 0.0);
+                        let y = LIST_TOP + slot as f64 * PITCH;
+                        self.send_home(card, Space::Doc(ci), (x, y, 0.0));
                         card.set_muted(false);
                         card.body.spring = physics::SLOT;
                         card.z = 1.0;
                         card.target_scale = 1.0;
                         card.set_look(Look::Solid, true);
-                        card.set_badge("");
                     }
                 }
             }
@@ -770,54 +849,94 @@ impl Board {
                 };
                 card.z = 1000.0 - i as f64;
                 card.set_muted(false);
-                card.target_scale = if drag.group {
-                    physics::trail_scale(i)
-                } else {
-                    1.0
-                };
-                card.set_badge("");
+                card.target_scale = 1.0;
                 if i == 0 {
                     card.body.spring = physics::LEAD;
                     let look = if drag.group {
-                        Look::Lifted(label.clone())
+                        Look::Lifted {
+                            column: label.clone(),
+                            count: drag.ids.len(),
+                        }
                     } else {
                         Look::Solid
                     };
                     card.set_look(look, true);
                 } else {
-                    card.body.spring = physics::follower(i);
+                    card.body.spring = physics::follower(i, drag.ids.len());
                     card.set_look(Look::Solid, true);
+                    // Under the lead, the lead's blur is the whole group's.
+                    card.set_light(true);
                 }
             }
         }
 
+        let followers: HashSet<TaskId> = drag
+            .as_ref()
+            .map(|d| d.ids.iter().skip(1).copied().collect())
+            .unwrap_or_default();
         for (id, card) in cards.iter_mut() {
+            if !followers.contains(id) {
+                card.set_light(false);
+            }
             if card.flying {
                 card.body.spring = physics::FLY;
                 card.z = 900.0;
             }
-            card.set_selected(selected.contains(id));
+            // The selection ring shows while choosing, not while dragging.
+            card.set_selected(drag.is_none() && selected.contains(id));
         }
         self.restack(&cards);
     }
 
-    /// Orders the canvas's and the overlay's subviews by each card's `z`. Layer
-    /// zPosition alone does not hold once a view has been moved between them.
+    /// Points a card at its place `(x, y, degrees)` in `home`'s coordinates. A card
+    /// away from home flies there on the overlay (in canvas coordinates) and lands
+    /// once it is at rest.
+    fn send_home(&self, card: &mut Card, home: Space, (x, y, deg): (f64, f64, f64)) {
+        card.home = home;
+        if card.space != home && card.space != Space::Overlay {
+            relocate(card, Space::Overlay, self);
+        }
+        let (ox, oy) = if card.space == home {
+            (0.0, 0.0)
+        } else {
+            self.offset(home)
+        };
+        card.body.target(x + ox, y + oy, deg);
+    }
+
+    /// Orders each parent's subviews by the cards' `z`. Layer zPosition alone does
+    /// not hold once a view has moved between parents.
     fn restack(&self, cards: &HashMap<TaskId, Card>) {
         let mut sorted: Vec<(&TaskId, &Card)> = cards.iter().collect();
         sorted.sort_by(|a, b| a.1.z.total_cmp(&b.1.z).then(a.0.cmp(b.0)));
-        let order: Vec<TaskId> = sorted.iter().map(|(id, _)| **id).collect();
-        let lifted: Vec<bool> = sorted.iter().map(|(_, c)| c.lifted).collect();
-        let key = (order, lifted);
+        let key: Vec<(TaskId, Space)> = sorted.iter().map(|(id, c)| (**id, c.space)).collect();
         if *self.stacking.borrow() == key {
             return;
         }
-        for (parent, on_overlay) in [(&*self.canvas as &NSView, false), (&self.overlay, true)] {
-            let views: Vec<Retained<NSView>> = sorted
-                .iter()
-                .filter(|(_, c)| c.lifted == on_overlay)
-                .map(|(_, c)| Retained::into_super(c.view.clone()))
-                .collect();
+        let spaces = [
+            Space::Canvas,
+            Space::Doc(0),
+            Space::Doc(1),
+            Space::Doc(2),
+            Space::Overlay,
+        ];
+        for space in spaces {
+            // The columns' scroll views stay at the bottom of the canvas.
+            let mut views: Vec<Retained<NSView>> = if space == Space::Canvas {
+                self.cols
+                    .iter()
+                    .map(|c| Retained::into_super(c.scroll.clone()))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            views.extend(
+                sorted
+                    .iter()
+                    .filter(|(_, c)| c.space == space)
+                    .map(|(_, c)| Retained::into_super(c.view.clone())),
+            );
+            let parent = self.parent(space);
             motion::quietly(|| parent.setSubviews(&NSArray::from_retained_slice(&views)));
         }
         *self.stacking.borrow_mut() = key;
@@ -848,23 +967,28 @@ impl Board {
         let dt = (now - self.last_tick.replace(now)).clamp(0.0, 1.0 / 30.0);
         let reduce = motion::reduce_motion();
         self.autoscroll(dt);
-        let springing = self.spring_back(dt);
         let dragging = self.drag.borrow().is_some();
         let overlay_dy = self.overlay_dy.get();
         let mut cards = self.cards.borrow_mut();
 
         if let Some(drag) = self.drag.borrow().as_ref() {
-            let mut ahead: Option<(f64, f64)> = None;
+            // The lead chases the pointer; every other card of the group chases the
+            // lead itself on a very stiff spring, so it stays exactly under it.
+            let pointer = (drag.cursor.0 - drag.grab.0, drag.cursor.1 - drag.grab.1);
+            let lead = drag
+                .ids
+                .first()
+                .and_then(|id| cards.get(id))
+                .map(|c| (c.body.x, c.body.y));
             for (i, id) in drag.ids.iter().enumerate() {
                 let Some(card) = cards.get_mut(id) else {
                     continue;
                 };
-                let (tx, ty) = match ahead {
-                    None => (drag.cursor.0 - drag.grab.0, drag.cursor.1 - drag.grab.1),
-                    Some((x, y)) => (x + TRAIN_OFFSET.0, y + TRAIN_OFFSET.1),
+                let (tx, ty) = match (i, lead) {
+                    (0, _) | (_, None) => pointer,
+                    (_, Some(at)) => at,
                 };
                 if drag.group {
-                    // The lead chases the pointer; each trailing card chases the one ahead.
                     let max = if i == 0 {
                         physics::LEAD_MAX_TILT
                     } else {
@@ -876,12 +1000,12 @@ impl Board {
                     card.body.target(tx, ty, 0.0);
                     card.body.settle();
                 }
-                ahead = Some((card.body.x, card.body.y));
             }
         }
 
-        let mut moving = dragging || springing;
+        let mut moving = dragging;
         let drag_ids = self.dragged();
+        let started = now;
         for card in cards.values_mut() {
             if reduce && !dragging {
                 card.body.settle();
@@ -921,15 +1045,46 @@ impl Board {
             }
             card.apply_frame(overlay_dy);
         }
-        // Landed cards go back under the column headers.
+        // The first follower of a group has no lag at all: it rides on the lead.
+        if let Some(d) = self.drag.borrow().as_ref()
+            && d.group
+            && let [lead, first, ..] = d.ids[..]
+            && let Some(b) = cards.get(&lead).map(|c| c.body)
+            && let Some(card) = cards.get_mut(&first)
+        {
+            card.body = Body {
+                spring: card.body.spring,
+                ..b
+            };
+            card.apply_frame(overlay_dy);
+        }
+        // Cards that came to rest away from home land there, but only once every
+        // card on its way to the same home has: one that landed early would drop
+        // under those still on the overlay and show behind cards it should cover.
+        let busy: HashSet<Space> = cards
+            .iter()
+            .filter(|(id, c)| {
+                c.space == Space::Overlay
+                    && (c.flying || drag_ids.contains(id) || !c.body.at_rest())
+            })
+            .map(|(_, c)| c.home)
+            .collect();
         for (id, card) in cards.iter_mut() {
-            if card.lifted && !card.flying && !drag_ids.contains(id) && card.body.at_rest() {
-                card.land(&self.canvas);
+            if card.space == Space::Overlay
+                && !card.flying
+                && !drag_ids.contains(id)
+                && card.body.at_rest()
+                && !busy.contains(&card.home)
+            {
+                land(card, self);
                 card.apply_frame(overlay_dy);
             }
         }
         self.restack(&cards);
         drop(cards);
+        if dragging && let Some(perf) = self.perf.borrow_mut().as_mut() {
+            perf.push((dt, CACurrentMediaTime() - started));
+        }
         if !moving && let Some(timer) = self.timer.borrow_mut().take() {
             timer.invalidate();
         }
@@ -956,96 +1111,19 @@ impl Board {
         } else {
             return;
         };
-        if self.scroll_column(ci, speed.clamp(-1.0, 1.0) * AUTOSCROLL_SPEED * dt) {
+        let scroll = &self.cols[ci].scroll;
+        let clip = scroll.contentView();
+        let max = (self.cols[ci].doc.frame().size.height - clip.bounds().size.height).max(0.0);
+        let from = self.scrolled(ci);
+        let to = (from + speed.clamp(-1.0, 1.0) * AUTOSCROLL_SPEED * dt).clamp(0.0, max);
+        if to != from {
+            clip.scrollToPoint(NSPoint::new(0.0, to));
+            scroll.reflectScrolledClipView(&clip);
             let cursor = self.drag.borrow().as_ref().map(|d| d.cursor);
             if let Some((x, y)) = cursor {
                 self.drag_to(NSPoint::new(x, y));
             }
         }
-    }
-
-    /// Scrolls a list column by `delta` (clamped), moving its cards with it right away.
-    /// Returns true when it moved.
-    fn scroll_column(&self, ci: usize, delta: f64) -> bool {
-        if self.layouts.get()[ci] != Layout::List {
-            return self.set_scroll(ci, 0.0);
-        }
-        let new = (self.scroll.get()[ci] + delta).clamp(0.0, self.scroll_max(ci));
-        self.set_scroll(ci, new)
-    }
-
-    /// How far a list column can scroll.
-    fn scroll_max(&self, ci: usize) -> f64 {
-        let n = self.order.borrow()[ci].len();
-        (LIST_TOP + n as f64 * PITCH + LIST_BOTTOM - self.height.get()).max(0.0)
-    }
-
-    /// Trackpad scrolling: past either end the list follows the fingers with growing
-    /// resistance, and springs back once they lift ([`Self::spring_back`]).
-    fn scroll_elastic(self: &Rc<Self>, ci: usize, delta: f64) {
-        if self.layouts.get()[ci] != Layout::List {
-            return;
-        }
-        let (s, max) = (self.scroll.get()[ci], self.scroll_max(ci));
-        let outside = |v: f64| (v < 0.0 && delta < 0.0) || (v > max && delta > 0.0);
-        let delta = if outside(s + delta) {
-            // The further out, the stiffer.
-            let over = if s < 0.0 { -s } else { (s - max).max(0.0) };
-            delta * 0.4 * (1.0 - over / OVERSCROLL).max(0.0)
-        } else {
-            delta
-        };
-        self.set_scroll(ci, (s + delta).clamp(-OVERSCROLL, max + OVERSCROLL));
-        self.kick();
-    }
-
-    /// Eases overscrolled columns back into range once no fingers are on the
-    /// trackpad. Returns true while any is still moving.
-    fn spring_back(&self, dt: f64) -> bool {
-        if self.fingers.get() {
-            return false;
-        }
-        let mut moving = false;
-        for ci in 0..3 {
-            let (s, max) = (self.scroll.get()[ci], self.scroll_max(ci));
-            let target = s.clamp(0.0, max);
-            if s == target {
-                continue;
-            }
-            let mut new = s + (target - s) * (1.0 - (-dt * 14.0).exp());
-            if (new - target).abs() < 0.3 {
-                new = target;
-            }
-            self.set_scroll(ci, new);
-            moving = true;
-        }
-        moving
-    }
-
-    /// Sets a column's scroll offset, moving its cards with it right away. Returns
-    /// true when it moved.
-    fn set_scroll(&self, ci: usize, new: f64) -> bool {
-        let mut scroll = self.scroll.get();
-        let d = new - scroll[ci];
-        scroll[ci] = new;
-        self.scroll.set(scroll);
-        if d == 0.0 {
-            return false;
-        }
-        let drag_ids = self.dragged();
-        let overlay_dy = self.overlay_dy.get();
-        let mut cards = self.cards.borrow_mut();
-        for id in &self.order.borrow()[ci] {
-            if drag_ids.contains(id) {
-                continue;
-            }
-            if let Some(card) = cards.get_mut(id) {
-                card.body.y -= d;
-                card.body.ty -= d;
-                card.apply_frame(overlay_dy);
-            }
-        }
-        true
     }
 
     // ---- input ----
@@ -1143,7 +1221,13 @@ impl Board {
     /// A plain click: fan a folded stack, open a card, or clear on empty board.
     fn click(self: &Rc<Self>, id: Option<TaskId>, clicks: isize) {
         let Some(id) = id else {
+            // On empty board a click folds a fan at once and clears the selection.
             self.cancel_unfan();
+            if self.unfan() {
+                self.folded_at.set(CACurrentMediaTime());
+                self.retarget();
+                self.kick();
+            }
             self.clear_selection();
             return;
         };
@@ -1153,7 +1237,10 @@ impl Board {
         // The first click of a double waits out the double-click interval, so the
         // fan stays put for the second one.
         if layouts.contains(&Layout::Stack { fanned: true }) {
-            if clicks >= 2 {
+            // The click that fanned the stack out and the next one also add up to a
+            // double-click; only a double-click made on the fan opens the card.
+            let first_on_fan = self.unfan_timer.borrow().is_some();
+            if physics::fan_click_opens(clicks, first_on_fan) {
                 self.cancel_unfan();
                 self.selected.borrow_mut().clear();
                 self.retarget();
@@ -1161,6 +1248,12 @@ impl Board {
             } else {
                 self.unfan_soon();
             }
+            return;
+        }
+        // The second click of a double whose first folded the fan: done already.
+        if clicks >= 2
+            && CACurrentMediaTime() - self.folded_at.get() < NSEvent::doubleClickInterval()
+        {
             return;
         }
         if let Some(ci) = col
@@ -1179,7 +1272,31 @@ impl Board {
         (self.sink)(UiEvent::ToggleExpand(id));
     }
 
-    /// Folds the fan once the double-click interval has passed without a second click.
+    /// `YATT_PERF`: prints the frame times of the drag that just ended.
+    fn report_perf(&self, cards: usize) {
+        let Some(perf) = self.perf.borrow_mut().as_mut().map(std::mem::take) else {
+            return;
+        };
+        if perf.len() < 2 {
+            return;
+        }
+        let mut gaps: Vec<f64> = perf.iter().skip(1).map(|p| p.0 * 1000.0).collect();
+        gaps.sort_by(f64::total_cmp);
+        let mean = gaps.iter().sum::<f64>() / gaps.len() as f64;
+        let p95 = gaps[(gaps.len() * 95 / 100).min(gaps.len() - 1)];
+        let late = gaps.iter().filter(|g| **g > 1000.0 / 55.0).count();
+        let tick = perf.iter().map(|p| p.1 * 1000.0).sum::<f64>() / perf.len() as f64;
+        eprintln!(
+            "perf: drag of {cards} cards ({}): {} frames, interval mean {mean:.1} ms, \
+             p95 {p95:.1} ms, {late} over 18 ms; tick {tick:.2} ms",
+            if style::real_glass() { "glass" } else { "blur" },
+            perf.len()
+        );
+    }
+
+    /// Folds the fan unless a second click comes quickly: a double-click on the fan
+    /// opens the card. The wait is short whatever the system's double-click
+    /// interval (often 0.5–0.8 s), or the fold would feel like it missed the click.
     fn unfan_soon(self: &Rc<Self>) {
         self.cancel_unfan();
         let weak = Rc::downgrade(self);
@@ -1187,12 +1304,13 @@ impl Board {
             if let Some(b) = weak.upgrade() {
                 b.unfan_timer.borrow_mut().take();
                 if b.unfan() {
+                    b.folded_at.set(CACurrentMediaTime());
                     b.retarget();
                     b.kick();
                 }
             }
         });
-        let interval = NSEvent::doubleClickInterval();
+        let interval = NSEvent::doubleClickInterval().min(FAN_FOLD_DELAY);
         let timer = unsafe {
             NSTimer::scheduledTimerWithTimeInterval_repeats_block(interval, false, &block)
         };
@@ -1224,25 +1342,35 @@ impl Board {
         self.cards
             .borrow()
             .iter()
-            .filter(|(_, c)| !c.removing && c.contains(p))
+            .filter(|(_, c)| {
+                let (ox, oy) = self.offset(c.space);
+                !c.removing && c.contains(NSPoint::new(p.x - ox, p.y - oy))
+            })
             .max_by(|a, b| a.1.z.total_cmp(&b.1.z))
             .map(|(id, _)| *id)
     }
 
+    /// Hands a trackpad or wheel event to a column's native scroll view.
+    fn forward(&self, ci: Option<usize>, event: Option<&NSEvent>) {
+        if let (Some(ci), Some(event)) = (ci, event)
+            && self.layouts.get()[ci] == Layout::List
+        {
+            self.cols[ci].scroll.scrollWheel(event);
+        }
+    }
+
+    /// Scrolling is native: a column's scroll view gets the events. A two-finger
+    /// swipe that starts sideways over a card drags it instead; until that is
+    /// decided the events are held, then replayed to the scroll view if it scrolls.
     fn on_scroll(self: &Rc<Self>, s: Scroll) {
         let col = self.column_at(s.at.x);
-        if s.swipe == Swipe::Ended {
-            self.fingers.set(false);
-            self.kick();
-        }
+        let event = s.event.as_deref();
         match (s.swipe, self.gesture.get()) {
-            (Swipe::None, _) => {
-                if let Some(ci) = col {
-                    self.scroll_column(ci, s.scroll);
-                }
-            }
+            (Swipe::None, _) => self.forward(col, event),
             (Swipe::Began, _) => {
-                self.fingers.set(true);
+                let mut held = self.held.borrow_mut();
+                held.clear();
+                held.extend(s.event.clone());
                 self.gesture.set(Gesture::Deciding {
                     at: s.at,
                     finger: s.finger,
@@ -1250,6 +1378,7 @@ impl Board {
                 });
             }
             (Swipe::Changed, Gesture::Deciding { at, finger, scroll }) => {
+                self.held.borrow_mut().extend(s.event.clone());
                 let finger = (finger.0 + s.finger.0, finger.1 + s.finger.1);
                 let scroll = scroll + s.scroll;
                 if finger.0.hypot(finger.1) < DRAG_THRESHOLD * 1.5 {
@@ -1259,6 +1388,7 @@ impl Board {
                 let sideways = finger.0.abs() > finger.1.abs();
                 match self.hit(at) {
                     Some(id) if sideways => {
+                        self.held.borrow_mut().clear();
                         let cursor = (at.x + finger.0, at.y + finger.1);
                         self.begin_drag(id, at, NSPoint::new(cursor.0, cursor.1));
                         self.drag_to(NSPoint::new(cursor.0, cursor.1));
@@ -1266,17 +1396,16 @@ impl Board {
                     }
                     _ => {
                         let ci = self.column_at(at.x);
-                        if let Some(ci) = ci {
-                            self.scroll_elastic(ci, scroll);
+                        let held: Vec<_> = self.held.borrow_mut().drain(..).collect();
+                        for e in &held {
+                            self.forward(ci, Some(e));
                         }
                         self.gesture.set(Gesture::Scrolling(ci));
                     }
                 }
             }
-            (Swipe::Changed | Swipe::Coasting, Gesture::Scrolling(ci)) => {
-                if let Some(ci) = ci {
-                    self.scroll_elastic(ci, s.scroll);
-                }
+            (Swipe::Changed | Swipe::Ended | Swipe::Coasting, Gesture::Scrolling(ci)) => {
+                self.forward(ci, event)
             }
             (Swipe::Changed, Gesture::Dragging(c)) => {
                 let cursor = (c.0 + s.finger.0, c.1 + s.finger.1);
@@ -1287,12 +1416,16 @@ impl Board {
                 self.drop_at(NSPoint::new(c.0, c.1));
                 self.gesture.set(Gesture::Spent);
             }
-            (Swipe::Ended, Gesture::Deciding { .. }) => self.gesture.set(Gesture::Idle),
-            (Swipe::Coasting, Gesture::Idle) => {
-                if let Some(ci) = col {
-                    self.scroll_elastic(ci, s.scroll);
+            (Swipe::Ended, Gesture::Deciding { at, .. }) => {
+                let ci = self.column_at(at.x);
+                let held: Vec<_> = self.held.borrow_mut().drain(..).collect();
+                for e in &held {
+                    self.forward(ci, Some(e));
                 }
+                self.forward(ci, event);
+                self.gesture.set(Gesture::Idle);
             }
+            (Swipe::Coasting, Gesture::Idle) => self.forward(col, event),
             _ => {}
         }
     }
@@ -1311,17 +1444,17 @@ impl Board {
                 ids.extend(o.iter().filter(|x| **x != id && selected.contains(x)));
             }
         }
-        let Some(body) = self.cards.borrow().get(&id).map(|c| c.body) else {
-            return;
-        };
         {
             let mut cards = self.cards.borrow_mut();
             for x in &ids {
                 if let Some(card) = cards.get_mut(x) {
-                    card.lift(&self.overlay);
+                    relocate(card, Space::Overlay, self);
                 }
             }
         }
+        let Some(body) = self.cards.borrow().get(&id).map(|c| c.body) else {
+            return;
+        };
         *self.press.borrow_mut() = None;
         let group = ids.len() > 1;
         *self.drag.borrow_mut() = Some(Drag {
@@ -1346,7 +1479,7 @@ impl Board {
                         .iter()
                         .filter(|id| !drag.ids.contains(id))
                         .count();
-                    let centre = p.y - drag.grab.1 + CARD_H / 2.0 + self.scroll.get()[ci];
+                    let centre = p.y - drag.grab.1 + CARD_H / 2.0 - self.offset(Space::Doc(ci)).1;
                     physics::insert_index(centre + LIST_GAP / 2.0, LIST_TOP, PITCH, n)
                 }
                 _ => 0,
@@ -1369,6 +1502,7 @@ impl Board {
             return;
         };
         (self.on_target)(None);
+        self.report_perf(drag.ids.len());
         if let Some(col) = drag.target {
             let before = self.order.borrow()[col].clone();
             // The cards land in the order they had on the board, whichever one led.
@@ -1397,23 +1531,11 @@ impl Board {
 }
 
 impl Card {
-    fn update(&mut self, snap: &CardSnap, badge: String) {
-        self.title.setStringValue(&NSString::from_str(&snap.title));
-        let notes = if snap.notes.trim().is_empty() {
-            ""
-        } else {
-            "  ·  ✎"
-        };
-        let time = format!(
-            "{}{}{}",
-            if snap.tracking { "● " } else { "" },
-            format_duration(snap.total_ms),
-            notes
-        );
-        self.time.setStringValue(&NSString::from_str(&time));
+    fn update(&mut self, snap: &CardSnap) {
+        set_title(&self.title, &snap.title);
+        set_meta(&self.time, &time_text(snap));
         self.tracking = snap.tracking;
         self.refill();
-        self.badge_text = badge;
     }
 
     fn set_selected(&mut self, on: bool) {
@@ -1431,69 +1553,18 @@ impl Card {
         });
     }
 
-    /// Moves the card onto the overlay, above the column headers.
-    fn lift(&mut self, overlay: &OverlayView) {
-        if !self.lifted {
-            self.lifted = true;
-            motion::quietly(|| {
-                self.view.removeFromSuperview();
-                overlay.addSubview(&self.view);
-            });
-        }
-    }
-
-    /// Back onto the canvas, under the headers and clipped to it.
-    fn land(&mut self, canvas: &CanvasView) {
-        if self.lifted {
-            self.lifted = false;
-            motion::quietly(|| {
-                self.view.removeFromSuperview();
-                canvas.addSubview(&self.view);
-            });
-        }
-    }
-
-    fn set_badge(&self, text: &str) {
-        let show = !text.is_empty();
-        if self.badge.stringValue().to_string() == text && self.badge.isHidden() != show {
-            return;
-        }
-        // The pill and its count ease over instead of jumping.
-        motion::soften(&self.content);
-        self.badge.setStringValue(&NSString::from_str(text));
-        let w = self.badge.fittingSize().width + 18.0;
-        let frame = NSRect::new(NSPoint::new((CARD_W - w) / 2.0, 9.0), NSSize::new(w, 18.0));
-        self.badge_bg.setFrame(frame);
-        self.badge.setFrame(NSRect::new(
-            NSPoint::new(frame.origin.x, 10.0),
-            NSSize::new(w, 16.0),
-        ));
-        self.badge.setHidden(!show);
-        self.badge_bg.setHidden(!show);
-    }
-
     /// Blurs the content and shows the target label while leading a drag,
     /// cross-fading when `animated`.
     fn set_look(&mut self, look: Look, animated: bool) {
         if self.look == look {
             return;
         }
-        let lifted = matches!(look, Look::Lifted(_));
-        if let Look::Lifted(text) = &look {
-            self.label.setStringValue(&NSString::from_str(text));
+        let lifted = matches!(look, Look::Lifted { .. });
+        if let Look::Lifted { column, count } = &look {
+            self.label.setStringValue(&NSString::from_str(column));
+            self.count
+                .setStringValue(&NSString::from_str(&tasks_count(*count)));
         }
-        let ink = style::text(self.hue);
-        // Dark tones of the hue at reduced opacity, as in the reference.
-        self.title
-            .setTextColor(Some(&ink.colorWithAlphaComponent(0.85)));
-        self.time
-            .setTextColor(Some(&ink.colorWithAlphaComponent(0.6)));
-        self.badge
-            .setTextColor(Some(&ink.colorWithAlphaComponent(0.6)));
-        self.dots
-            .setTextColor(Some(&ink.colorWithAlphaComponent(0.35)));
-        self.icon
-            .setContentTintColor(Some(&ink.colorWithAlphaComponent(0.85)));
         let filters: Retained<NSArray<CIFilter>> = if lifted {
             style::gaussian(LIFT_BLUR)
                 .map_or_else(NSArray::new, |f| NSArray::from_retained_slice(&[f]))
@@ -1506,10 +1577,11 @@ impl Card {
             (false, true) => (0.0, 0.0),
             (false, false) => (0.0, 1.0),
         };
-        let views = (self.label.clone(), self.content.clone());
+        let views = (self.label.clone(), self.content.clone(), self.count.clone());
         animate(animated, motion::GLASS_SECS, move || {
             views.0.animator().setAlphaValue(label);
             views.1.animator().setAlphaValue(content);
+            views.2.animator().setAlphaValue(label);
         });
         self.look = look;
     }
@@ -1524,6 +1596,25 @@ impl Card {
         self.content.setFrame(bounds);
         for v in [&*self.icon as &NSView, &self.time, &self.dots, &self.face] {
             v.setAlphaValue(1.0);
+        }
+    }
+
+    /// A follower of a group drag sheds its own blur (the lead's covers it) and is
+    /// drawn from a cached bitmap; back home it gets the blur back.
+    fn set_light(&mut self, on: bool) {
+        if self.light == on {
+            return;
+        }
+        self.light = on;
+        let glass = self.parts[0].clone();
+        animate(true, motion::GLASS_SECS, move || {
+            glass.animator().setAlphaValue(if on { 0.0 } else { 1.0 })
+        });
+        if let Some(layer) = self.view.layer() {
+            if on && let Some(window) = self.view.window() {
+                layer.setRasterizationScale(window.backingScaleFactor());
+            }
+            layer.setShouldRasterize(on);
         }
     }
 
@@ -1542,7 +1633,11 @@ impl Card {
     /// Places the view; on the overlay the canvas's offset is added.
     fn apply_frame(&self, overlay_dy: f64) {
         let b = &self.body;
-        let dy = if self.lifted { overlay_dy } else { 0.0 };
+        let dy = if self.space == Space::Overlay {
+            overlay_dy
+        } else {
+            0.0
+        };
         if let Some((t, from)) = self.grow {
             // Capsule → card: the frame grows, the typed text (now the title) slides
             // to its place, the colour and the rest of the card fade in.
@@ -1555,10 +1650,11 @@ impl Card {
             for part in &self.parts {
                 part.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(w, h)));
             }
+            self.cut_shadows(w, h);
             // Where the title sits so that it covers the text in the field.
             let start = (
-                FIELD_TEXT_X - 14.0,
-                (from.height - 20.0) / 2.0 + 1.0 - (CARD_H - 29.0),
+                FIELD_TEXT_X - TEXT_X,
+                (from.height - 20.0) / 2.0 + 1.0 - TITLE_Y,
             );
             self.content.setFrame(NSRect::new(
                 NSPoint::new(lerp(start.0, 0.0), lerp(start.1, 0.0)),
@@ -1571,7 +1667,13 @@ impl Card {
             return;
         }
         let s = self.scale;
-        let (w, h) = (CARD_W * s, CARD_H * s);
+        // Jelly: a little longer along the way the card moves, thinner across it.
+        let (sx, sy) = if self.light {
+            (1.0, 1.0)
+        } else {
+            physics::squash(b.vx, b.vy)
+        };
+        let (w, h) = (CARD_W * s * sx, CARD_H * s * sy);
         self.view.setFrameCenterRotation(0.0);
         self.view.setFrame(NSRect::new(
             NSPoint::new(b.x + (CARD_W - w) / 2.0, b.y + dy + (CARD_H - h) / 2.0),
@@ -1586,14 +1688,27 @@ impl Card {
         for part in &self.parts {
             part.setFrame(local);
         }
+        self.cut_shadows(w, h);
         self.content.setFrame(local);
         self.content.setBoundsSize(NSSize::new(CARD_W, CARD_H));
+        // The column label a touch above the middle, the count under it.
         self.label.setFrame(NSRect::new(
-            NSPoint::new(8.0 * s, (h - 30.0 * s) / 2.0),
+            NSPoint::new(8.0 * s, h / 2.0 - 24.0 * s),
             NSSize::new(w - 16.0 * s, 30.0 * s),
+        ));
+        self.count.setFrame(NSRect::new(
+            NSPoint::new(8.0 * s, h / 2.0 + 6.0 * s),
+            NSSize::new(w - 16.0 * s, 16.0 * s),
         ));
         // The canvas is flipped, so AppKit's positive rotation already reads clockwise.
         self.view.setFrameCenterRotation(b.r);
+    }
+
+    /// Fits the edge layers to a `w` × `h` card, when its size has changed.
+    fn cut_shadows(&self, w: f64, h: f64) {
+        if self.shadow_size.replace((w, h)) != (w, h) {
+            self.edges.layout(w, h);
+        }
     }
 
     /// Point-in-card test that respects the card's rotation.
@@ -1605,6 +1720,154 @@ impl Card {
         let (lx, ly) = (dx * t.cos() - dy * t.sin(), dx * t.sin() + dy * t.cos());
         lx.abs() <= self.scale * CARD_W / 2.0 && ly.abs() <= self.scale * CARD_H / 2.0
     }
+}
+
+/// Moves a card's view to another parent, keeping it where it is on screen.
+fn relocate(card: &mut Card, to: Space, board: &Board) {
+    if card.space == to {
+        return;
+    }
+    let (ax, ay) = board.offset(card.space);
+    let (bx, by) = board.offset(to);
+    let (dx, dy) = (ax - bx, ay - by);
+    let b = &mut card.body;
+    b.x += dx;
+    b.tx += dx;
+    b.y += dy;
+    b.ty += dy;
+    let parent = board.parent(to);
+    motion::quietly(|| {
+        card.view.removeFromSuperview();
+        parent.addSubview(&card.view);
+    });
+    card.space = to;
+    card.apply_frame(board.overlay_dy.get());
+}
+
+/// A card at rest on the overlay goes into its home view.
+fn land(card: &mut Card, board: &Board) {
+    let home = card.home;
+    relocate(card, home, board);
+}
+
+/// Card text layout: left inset, and where the meta line and the title sit.
+pub(crate) const TEXT_X: f64 = 14.0;
+pub(crate) const META_Y: f64 = CARD_H - 47.0;
+pub(crate) const TITLE_Y: f64 = CARD_H - 31.0;
+
+/// A card's text: glyph top-left, `···` top-right, then the meta line over a bold
+/// title near the bottom, all in dark tones of the card's hue. The board's cards
+/// and the task panel's opening and closing face are built from the same.
+pub(crate) struct Face {
+    pub content: Retained<FlippedView>,
+    pub icon: Retained<NSImageView>,
+    pub dots: Retained<NSTextField>,
+    pub time: Retained<NSTextField>,
+    pub title: Retained<NSTextField>,
+}
+
+pub(crate) fn card_face(mtm: MainThreadMarker, id: TaskId, title: &str, hue: usize) -> Face {
+    let ink = style::text(hue);
+    let content = FlippedView::new(mtm, NSRect::new(NSPoint::ZERO, NSSize::new(CARD_W, CARD_H)));
+    content.setWantsLayer(true);
+    content.setLayerUsesCoreImageFilters(true);
+
+    let icon = NSImageView::new(mtm);
+    icon.setImage(
+        NSImage::imageWithSystemSymbolName_accessibilityDescription(
+            &NSString::from_str(style::glyph_of(id)),
+            None,
+        )
+        .as_deref(),
+    );
+    icon.setFrame(NSRect::new(
+        NSPoint::new(TEXT_X, 14.0),
+        NSSize::new(16.0, 16.0),
+    ));
+    icon.setContentTintColor(Some(&ink.colorWithAlphaComponent(0.8)));
+
+    let dots = text_label(mtm, "···", 13.0, unsafe { NSFontWeightBold });
+    dots.setAlignment(NSTextAlignment::Right);
+    dots.setFrame(NSRect::new(
+        NSPoint::new(CARD_W - 44.0, 10.0),
+        NSSize::new(30.0, 18.0),
+    ));
+    dots.setTextColor(Some(&ink.colorWithAlphaComponent(0.3)));
+
+    // Meta: small, medium weight, tabular digits, opened up a touch and well
+    // below the title in contrast, so the two never compete.
+    let time = text_label(mtm, "", 11.0, unsafe { NSFontWeightMedium });
+    time.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(
+        11.0,
+        unsafe { NSFontWeightMedium },
+    )));
+    time.setFrame(NSRect::new(
+        NSPoint::new(TEXT_X, META_Y),
+        NSSize::new(CARD_W - 2.0 * TEXT_X, 14.0),
+    ));
+    time.setTextColor(Some(&ink.colorWithAlphaComponent(0.5)));
+
+    // Title: two steps up in size, semibold, tracked in a little as display text
+    // is, nearly full ink.
+    let title_label = text_label(mtm, "", 15.0, unsafe { NSFontWeightSemibold });
+    title_label.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+    title_label.setFrame(NSRect::new(
+        NSPoint::new(TEXT_X, TITLE_Y),
+        NSSize::new(CARD_W - 2.0 * TEXT_X, 20.0),
+    ));
+    title_label.setTextColor(Some(&ink.colorWithAlphaComponent(0.92)));
+    set_title(&title_label, title);
+    let title = title_label;
+
+    for v in [&*icon as &NSView, &dots, &time, &title] {
+        content.addSubview(v);
+    }
+    Face {
+        content,
+        icon,
+        dots,
+        time,
+        title,
+    }
+}
+
+/// Tracking of a card's title and of its meta line, in points.
+const TITLE_KERN: f64 = -0.2;
+const META_KERN: f64 = 0.15;
+
+/// A card's title, tracked.
+pub(crate) fn set_title(label: &NSTextField, text: &str) {
+    style::set_tracked(label, text, TITLE_KERN);
+}
+
+/// A card's meta line, tracked.
+pub(crate) fn set_meta(label: &NSTextField, text: &str) {
+    style::set_tracked(label, text, META_KERN);
+}
+
+/// The card's meta line: tracked time, a dot while it runs, a pencil if it has notes.
+pub(crate) fn time_text(snap: &CardSnap) -> String {
+    let notes = if snap.notes.trim().is_empty() {
+        ""
+    } else {
+        "  ·  ✎"
+    };
+    format!(
+        "{}{}{}",
+        if snap.tracking { "● " } else { "" },
+        format_duration(snap.total_ms),
+        notes
+    )
+}
+
+/// "1 задача", "3 задачи", "5 задач".
+fn tasks_count(n: usize) -> String {
+    let word = match (n % 10, n % 100) {
+        (1, r) if r != 11 => "задача",
+        (2..=4, r) if !(12..=14).contains(&r) => "задачи",
+        _ => "задач",
+    };
+    format!("{n} {word}")
 }
 
 fn text_label(mtm: MainThreadMarker, text: &str, size: f64, weight: f64) -> Retained<NSTextField> {

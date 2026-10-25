@@ -4,6 +4,7 @@ import { Editor } from '@tiptap/core'
 import StarterKit from '@tiptap/starter-kit'
 import { Placeholder } from '@tiptap/extensions'
 import { Markdown } from '@tiptap/markdown'
+import Image from '@tiptap/extension-image'
 
 const css = `
 :root { color-scheme: light dark; }
@@ -36,6 +37,11 @@ body {
   color: color-mix(in srgb, CanvasText 70%, transparent);
 }
 .ProseMirror a { color: AccentColor; }
+.ProseMirror img {
+  display: block; max-width: 100%; height: auto; margin: 4px 0 10px;
+  border-radius: 12px;
+}
+.ProseMirror img.ProseMirror-selectednode { outline: 2px solid AccentColor; }
 .ProseMirror hr { border: none; border-top: 1px solid color-mix(in srgb, CanvasText 15%, transparent); }
 .ProseMirror p.is-editor-empty:first-child::before {
   content: attr(data-placeholder); float: left; height: 0; pointer-events: none;
@@ -61,6 +67,7 @@ const editor = new Editor({
   extensions: [
     StarterKit,
     Markdown,
+    Image.configure({ allowBase64: true }),
     Placeholder.configure({ placeholder: 'Заметки… Markdown: # заголовок, - список, **жирный**, `код`' }),
   ],
   content: '',

@@ -1,9 +1,16 @@
 //! The task modal. A click on a card morphs it into a fixed-size panel over a
 //! dimmed board: title, stats, the markdown notes editor and the latest time
-//! entries. Closing morphs it back into the card. The panel's frame rides a
-//! spring ([`physics::MORPH`]), so the morph lands with a little give.
+//! entries. Closing morphs it back into the card.
+//!
+//! Seamless: the panel starts as the card itself, on the same frame and angle, in
+//! the same material and colour, showing the card's own text, and swaps places with
+//! the card in one frame. Its frame and rotation ride one spring
+//! ([`physics::MORPH`]); only once it has settled does the card's text hand over to
+//! the panel's controls. Closing runs the same backwards and hands back to the card
+//! when the panel lies exactly on it.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::ptr::NonNull;
 use std::rc::Rc;
 
@@ -20,6 +27,7 @@ use objc2_foundation::{NSPoint, NSRect, NSSize, NSString, NSTimer, ns_string};
 use objc2_quartz_core::CACurrentMediaTime;
 use yatt_core::{Status, TaskId};
 
+use crate::board::{Face, card_face, set_meta, set_title, time_text};
 use crate::classes::{ActionTarget, Fill, FillView, FlippedView};
 use crate::editor::{EditorMsg, NotesEditor};
 use crate::model::{CardSnap, UiEvent, format_duration};
@@ -35,6 +43,10 @@ pub struct Modal {
     pub panel: Retained<FillView>,
     /// The card's material, so the panel is the card grown big: blur and tint.
     face: Retained<FillView>,
+    /// The card's own text, shown while the panel is (becoming) the card.
+    card_box: Retained<FlippedView>,
+    card: RefCell<Option<Face>>,
+    /// The panel's controls, shown once it has settled open.
     content: Retained<FlippedView>,
     title: Retained<NSTextField>,
     stats: Retained<NSTextField>,
@@ -45,9 +57,13 @@ pub struct Modal {
     delete: Retained<NSButton>,
     /// The task on screen, shared with the callbacks.
     open: Rc<Cell<Option<TaskId>>>,
-    /// Last title and notes known to match the store, to tell edits from echoes.
+    /// Last title known to match the store, to tell edits from echoes.
     title_known: Rc<RefCell<String>>,
-    notes_known: Rc<RefCell<String>>,
+    /// Notes known to match the store, per task: a late flush from the editor may
+    /// belong to a task that is no longer open.
+    notes_known: Rc<RefCell<HashMap<TaskId, String>>>,
+    /// The editor's keys for the tasks it has shown.
+    keys: Rc<RefCell<HashMap<String, TaskId>>>,
     morph: Rc<Morph>,
     _retained: Vec<Retained<AnyObject>>,
 }
@@ -149,7 +165,8 @@ impl Modal {
     pub fn new(mtm: MainThreadMarker, sink: &Sink) -> Self {
         let open: Rc<Cell<Option<TaskId>>> = Rc::new(Cell::new(None));
         let title_known = Rc::new(RefCell::new(String::new()));
-        let notes_known = Rc::new(RefCell::new(String::new()));
+        let notes_known: Rc<RefCell<HashMap<TaskId, String>>> = Rc::default();
+        let keys: Rc<RefCell<HashMap<String, TaskId>>> = Rc::default();
         let mut retained: Vec<Retained<AnyObject>> = Vec::new();
 
         let dim = FillView::new(mtm, Fill::Dim);
@@ -184,10 +201,25 @@ impl Modal {
             layer.setMasksToBounds(true);
             style::round(&layer, style::CARD_RADIUS);
         }
-        for v in [&*glass as &NSView, &face, &content] {
+        // The card's own edge, so the panel is the card grown big.
+        let edges = style::Edges::new(mtm);
+        let size = panel.frame().size;
+        edges.follow(size.width, size.height);
+        panel.addSubview(&edges.outer);
+        for v in [&*glass as &NSView, &face] {
             v.setAutoresizingMask(fill_mask);
             panel.addSubview(v);
         }
+        panel.addSubview(&edges.inner);
+        content.setAutoresizingMask(fill_mask);
+        panel.addSubview(&content);
+        // Pinned to the top-left at card size: when the panel is card-sized it
+        // lies exactly where the card's own text does.
+        let card_box = FlippedView::new(
+            mtm,
+            NSRect::new(NSPoint::ZERO, NSSize::new(style::CARD_W, style::CARD_H)),
+        );
+        panel.addSubview(&card_box);
 
         let title = NSTextField::textFieldWithString(ns_string!(""), mtm);
         title.setFont(Some(&NSFont::systemFontOfSize_weight(20.0, unsafe {
@@ -227,16 +259,22 @@ impl Modal {
 
         let editor = {
             let (sink, open, known) = (sink.clone(), open.clone(), notes_known.clone());
-            NotesEditor::new(mtm, move |msg| {
-                let Some(id) = open.get() else { return };
-                match msg {
-                    EditorMsg::Notes(md) => {
-                        if md != *known.borrow() {
-                            *known.borrow_mut() = md.clone();
-                            sink(UiEvent::SetNotes(id, md));
-                        }
+            let keys = keys.clone();
+            NotesEditor::new(mtm, move |msg| match msg {
+                EditorMsg::Notes { key, md } => {
+                    // Filed under the task the notes were typed into, open or not.
+                    let Some(id) = keys.borrow().get(&key).copied() else {
+                        return;
+                    };
+                    if known.borrow().get(&id) != Some(&md) {
+                        known.borrow_mut().insert(id, md.clone());
+                        sink(UiEvent::SetNotes(id, md));
                     }
-                    EditorMsg::Close => sink(UiEvent::ToggleExpand(id)),
+                }
+                EditorMsg::Close => {
+                    if let Some(id) = open.get() {
+                        sink(UiEvent::ToggleExpand(id));
+                    }
                 }
             })
         };
@@ -306,7 +344,10 @@ impl Modal {
             dim,
             panel,
             face,
+            card_box,
+            card: RefCell::new(None),
             morph,
+            keys,
             content,
             title,
             stats,
@@ -391,34 +432,65 @@ impl Modal {
     pub fn open(&self, snap: &CardSnap, status: Status, from: NSRect, deg: f64, bounds: NSRect) {
         self.open.set(Some(snap.id));
         *self.title_known.borrow_mut() = snap.title.clone();
-        *self.notes_known.borrow_mut() = snap.notes.clone();
+        let key = snap.id.to_string();
+        self.keys.borrow_mut().insert(key.clone(), snap.id);
+        self.notes_known
+            .borrow_mut()
+            .insert(snap.id, snap.notes.clone());
         self.title.setStringValue(&NSString::from_str(&snap.title));
-        self.editor.set_markdown(&snap.notes);
+        self.editor.set_markdown(&snap.notes, &key);
         self.update(snap, status);
+        self.show_card(snap);
 
-        // Lay the content out at full size, then shrink the panel onto the card: the
-        // content keeps its layout and is revealed as the panel grows.
+        // Lay the controls out at full size; they wait, hidden, until the panel has
+        // grown. The panel starts as the card: same frame, angle, colour and text.
         let target = Self::target_frame(bounds);
         self.panel.setFrame(target);
         self.content
             .setFrame(NSRect::new(NSPoint::ZERO, target.size));
         self.layout(bounds);
-        self.morph.jump(from, deg);
-        self.panel.setAlphaValue(1.0);
         self.content.setAlphaValue(0.0);
+        self.card_box.setAlphaValue(1.0);
+        self.panel.setAlphaValue(1.0);
         self.dim.setAlphaValue(0.0);
-        self.dim.setHidden(false);
-        self.panel.setHidden(false);
-        self.morph.to(target, 0.0, None);
-        let (content, dim) = (self.content.clone(), self.dim.clone());
-        animate(true, motion::MODAL_OPEN_SECS, move || {
-            content.animator().setAlphaValue(1.0);
-            dim.animator().setAlphaValue(1.0);
+        motion::quietly(|| {
+            self.morph.jump(from, deg);
+            self.dim.setHidden(false);
+            self.panel.setHidden(false);
         });
+        let dim = self.dim.clone();
+        animate(true, motion::MODAL_OPEN_SECS, move || {
+            dim.animator().setAlphaValue(1.0)
+        });
+        // Grown and still: the card's text hands over to the panel's controls.
+        let (content, card_box) = (self.content.clone(), self.card_box.clone());
+        self.morph.to(
+            target,
+            0.0,
+            Some(Box::new(move || {
+                let (content, card_box) = (content.clone(), card_box.clone());
+                animate(true, motion::SOFTEN_SECS, move || {
+                    content.animator().setAlphaValue(1.0);
+                    card_box.animator().setAlphaValue(0.0);
+                });
+            })),
+        );
         if let Some(window) = self.panel.window() {
             window.makeFirstResponder(Some(&self.editor.view));
         }
         self.editor.focus();
+    }
+
+    /// Puts the card's own text (as built for the board) in the panel's corner.
+    fn show_card(&self, snap: &CardSnap) {
+        if let Some(old) = self.card.borrow_mut().take() {
+            old.content.removeFromSuperview();
+        }
+        let mtm = MainThreadMarker::new().expect("main thread");
+        let face = card_face(mtm, snap.id, &snap.title, style::hue_of(snap.id));
+        set_meta(&face.time, &time_text(snap));
+        self.card_box.addSubview(&face.content);
+        *self.card.borrow_mut() = Some(face);
     }
 
     /// Morphs back into `to` (the card's frame), or fades out when the card is gone.
@@ -429,13 +501,23 @@ impl Modal {
             window.makeFirstResponder(None);
         }
         self.open.set(None);
-        let (panel, content, dim) = (self.panel.clone(), self.content.clone(), self.dim.clone());
+        // The controls hand back to the card's text first, then the panel shrinks
+        // with that text on it all the way.
+        let (panel, content, dim, card_box) = (
+            self.panel.clone(),
+            self.content.clone(),
+            self.dim.clone(),
+            self.card_box.clone(),
+        );
         let gone = to.is_none();
+        animate(true, motion::SOFTEN_SECS, move || {
+            content.animator().setAlphaValue(0.0);
+            card_box.animator().setAlphaValue(1.0);
+        });
         animate(true, motion::MODAL_CLOSE_SECS, move || {
             if gone {
                 panel.animator().setAlphaValue(0.0);
             }
-            content.animator().setAlphaValue(0.0);
             dim.animator().setAlphaValue(0.0);
         });
         let (panel, dim) = (self.panel.clone(), self.dim.clone());
@@ -443,11 +525,14 @@ impl Modal {
         self.morph.to(
             to,
             deg,
+            // On the card's exact pixels: the card takes over in the same frame.
             Some(Box::new(move || {
-                panel.setHidden(true);
-                panel.setAlphaValue(1.0);
-                dim.setHidden(true);
-                done();
+                motion::quietly(|| {
+                    panel.setHidden(true);
+                    panel.setAlphaValue(1.0);
+                    dim.setHidden(true);
+                    done();
+                });
             })),
         );
     }
@@ -459,9 +544,16 @@ impl Modal {
         }
         *self.title_known.borrow_mut() = snap.title.clone();
         // Notes changed elsewhere (undo): reload the editor.
-        if *self.notes_known.borrow() != snap.notes {
-            *self.notes_known.borrow_mut() = snap.notes.clone();
-            self.editor.set_markdown(&snap.notes);
+        if self.notes_known.borrow().get(&snap.id) != Some(&snap.notes) {
+            self.notes_known
+                .borrow_mut()
+                .insert(snap.id, snap.notes.clone());
+            self.keys.borrow_mut().insert(snap.id.to_string(), snap.id);
+            self.editor.set_markdown(&snap.notes, &snap.id.to_string());
+        }
+        if let Some(face) = self.card.borrow().as_ref() {
+            set_title(&face.title, &snap.title);
+            set_meta(&face.time, &time_text(snap));
         }
         let stats = format!(
             "{}{}  ·  сегодня {}  ·  🍅 {}",

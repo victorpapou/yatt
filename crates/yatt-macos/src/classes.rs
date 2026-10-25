@@ -11,10 +11,10 @@ use objc2::{
 };
 use objc2_app_kit::{
     NSColor, NSControl, NSControlTextEditingDelegate, NSEvent, NSEventModifierFlags, NSEventPhase,
-    NSResponder, NSTextFieldDelegate, NSTextView, NSTrackingArea, NSTrackingAreaOptions, NSView,
-    NSWindow, NSWindowDelegate,
+    NSResponder, NSTextFieldDelegate, NSTextView, NSToolbarDelegate, NSToolbarItem, NSTrackingArea,
+    NSTrackingAreaOptions, NSView, NSWindow, NSWindowDelegate,
 };
-use objc2_foundation::{NSNotification, NSPoint, NSRect, NSString};
+use objc2_foundation::{NSArray, NSNotification, NSPoint, NSRect, NSString};
 use objc2_web_kit::{WKScriptMessage, WKScriptMessageHandler, WKUserContentController};
 
 pub type KeyHandler = Box<dyn Fn(&NSEvent) -> bool>;
@@ -83,6 +83,56 @@ impl WindowDelegate {
             on_close: Box::new(on_close),
         });
         unsafe { msg_send![super(this), init] }
+    }
+}
+
+// ---- toolbar ----
+
+pub struct ToolbarIvars {
+    item: Retained<NSToolbarItem>,
+}
+
+define_class!(
+    // SAFETY: NSObject has no subclassing requirements; no Drop impl.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = ToolbarIvars]
+    /// Serves the window's toolbar its one item: the timer row.
+    pub struct ToolbarDelegate;
+
+    unsafe impl NSObjectProtocol for ToolbarDelegate {}
+
+    unsafe impl NSToolbarDelegate for ToolbarDelegate {
+        #[unsafe(method_id(toolbar:itemForItemIdentifier:willBeInsertedIntoToolbar:))]
+        fn item_for(
+            &self,
+            _toolbar: &objc2_app_kit::NSToolbar,
+            _id: &NSString,
+            _flag: bool,
+        ) -> Option<Retained<NSToolbarItem>> {
+            Some(self.ivars().item.clone())
+        }
+
+        #[unsafe(method_id(toolbarDefaultItemIdentifiers:))]
+        fn default_ids(&self, _toolbar: &objc2_app_kit::NSToolbar) -> Retained<NSArray<NSString>> {
+            self.ids()
+        }
+
+        #[unsafe(method_id(toolbarAllowedItemIdentifiers:))]
+        fn allowed_ids(&self, _toolbar: &objc2_app_kit::NSToolbar) -> Retained<NSArray<NSString>> {
+            self.ids()
+        }
+    }
+);
+
+impl ToolbarDelegate {
+    pub fn new(mtm: MainThreadMarker, item: Retained<NSToolbarItem>) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(ToolbarIvars { item });
+        unsafe { msg_send![super(this), init] }
+    }
+
+    fn ids(&self) -> Retained<NSArray<NSString>> {
+        NSArray::from_retained_slice(&[self.ivars().item.itemIdentifier()])
     }
 }
 
@@ -189,8 +239,6 @@ pub enum Fill {
         tracking: bool,
         selected: bool,
     },
-    /// The "N скрыто" capsule.
-    Badge,
     /// A column's header pill, tinted in the column's colour.
     Chip(usize),
     /// A 1 px divider line.
@@ -232,7 +280,6 @@ define_class!(
             let fill = self.ivars().fill.get();
             let color = match fill {
                 Fill::Card { hue, .. } => crate::style::fill(hue),
-                Fill::Badge => NSColor::whiteColor().colorWithAlphaComponent(0.38),
                 Fill::Chip(i) => crate::style::column_color(i).colorWithAlphaComponent(0.14),
                 Fill::Separator => NSColor::separatorColor(),
                 Fill::Tint => NSColor::labelColor().colorWithAlphaComponent(0.035),
@@ -244,31 +291,14 @@ define_class!(
             match fill {
                 Fill::Card { selected, .. } => {
                     crate::style::round(&layer, crate::style::CARD_RADIUS);
-                    // A light hairline; selection gets an accent ring. A running timer
-                    // shows as ● on the card itself.
-                    // A plain 1 px light rim; selection gets an accent ring.
-                    layer.setBorderWidth(if selected { 2.5 } else { 1.0 });
-                    let rim = if selected {
-                        NSColor::controlAccentColor()
-                    } else {
-                        NSColor::whiteColor().colorWithAlphaComponent(0.6)
-                    };
-                    layer.setBorderColor(Some(&rim.CGColor()));
-                    // A thin soft white glow over the card's faint dark shadow.
-                    layer.setShadowColor(Some(&NSColor::whiteColor().CGColor()));
-                    layer.setShadowOpacity(0.4);
-                    layer.setShadowRadius(4.0);
-                    layer.setShadowOffset(objc2_foundation::NSSize::new(0.0, 0.0));
+                    // No stroke or shadow: the card's edge is its own two layers
+                    // (`style::Edges`).
+                    // Selection gets an accent ring; a running timer shows as ●.
+                    layer.setBorderWidth(if selected { 2.5 } else { 0.0 });
+                    layer.setBorderColor(Some(&NSColor::controlAccentColor().CGColor()));
                 }
-                Fill::Badge => crate::style::round(&layer, 9.0),
                 Fill::Chip(_) => crate::style::round(&layer, 10.0),
                 _ => {}
-            }
-            if fill == Fill::Panel {
-                layer.setShadowColor(Some(&NSColor::shadowColor().CGColor()));
-                layer.setShadowOpacity(0.22);
-                layer.setShadowRadius(24.0);
-                layer.setShadowOffset(objc2_foundation::NSSize::new(0.0, -8.0));
             }
         }
 
@@ -367,8 +397,10 @@ pub enum Swipe {
     Coasting,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Scroll {
+    /// The trackpad or wheel event itself, for handing on to a column's scroll view.
+    pub event: Option<Retained<NSEvent>>,
     pub at: NSPoint,
     /// Finger travel in canvas points (y down), whatever the scrolling direction setting.
     pub finger: (f64, f64),
@@ -403,7 +435,14 @@ define_class!(
         #[unsafe(method_id(hitTest:))]
         fn hit_test(&self, point: NSPoint) -> Option<Retained<NSView>> {
             let hit: Option<Retained<NSView>> = unsafe { msg_send![super(self), hitTest: point] };
-            hit.map(|_| Retained::into_super(self.retain()))
+            // The columns' scrollers keep their own clicks; everything else is ours.
+            hit.map(|v| {
+                if v.isKindOfClass(objc2_app_kit::NSScroller::class()) {
+                    v
+                } else {
+                    Retained::into_super(self.retain())
+                }
+            })
         }
 
         #[unsafe(method(updateTrackingAreas))]
@@ -481,6 +520,7 @@ define_class!(
                 Swipe::None
             };
             self.send(CanvasMsg::Scroll(Scroll {
+                event: Some(event.retain()),
                 at: self.local(event),
                 finger: (sign * dx * k, sign * dy * k),
                 scroll: -dy * k,
