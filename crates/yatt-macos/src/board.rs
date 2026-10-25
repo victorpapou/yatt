@@ -209,19 +209,6 @@ struct Drag {
     target: Option<usize>,
     /// Where the cards go in the target column, counted without them.
     index: usize,
-    /// What the followers replay.
-    tail: Tail,
-}
-
-/// The state behind a dragged group's tail.
-#[derive(Default)]
-struct Tail {
-    /// The lead's recent path, `(time, x, y)`, oldest first.
-    path: Vec<(f64, f64, f64)>,
-    /// The lead's smoothed speed, which shortens the tail.
-    speed: f64,
-    /// Each follower's current delay, eased towards what the speed asks for.
-    delays: Vec<f64>,
 }
 
 /// A dropped group on its way into its column, all of it at once: it keeps the
@@ -995,7 +982,7 @@ impl Board {
                             card.body.settle();
                         }
                         card.set_muted(false);
-                        // Arriving cards land with a little jelly; the ones already
+                        // Arriving cards land (and swing a little); the ones already
                         // there just glide over to make room.
                         card.body.spring = if card.space == Space::Doc(ci) {
                             physics::SHIFT
@@ -1211,38 +1198,30 @@ impl Board {
         if let Some(drag) = self.drag.borrow().as_ref() {
             // The lead chases the pointer; every other card of the group chases the
             // lead itself on a very stiff spring, so it stays exactly under it.
+            // The lead hangs from the pointer; each follower hangs off the card
+            // ahead of it, a chain on strings. Their angles swing on their own
+            // (`Body::step`); the targets are level.
             let pointer = (drag.cursor.0 - drag.grab.0, drag.cursor.1 - drag.grab.1);
-            let lead = drag
+            let at: Vec<Option<(f64, f64)>> = drag
                 .ids
-                .first()
-                .and_then(|id| cards.get(id))
-                .map(|c| (c.body.x, c.body.y));
+                .iter()
+                .map(|id| cards.get(id).map(|c| (c.body.x, c.body.y)))
+                .collect();
+            let chain = physics::chain_spring(drag.ids.len());
             for (i, id) in drag.ids.iter().enumerate() {
                 let Some(card) = cards.get_mut(id) else {
                     continue;
                 };
-                // Followers are placed after the lead has moved, below; the
-                // hidden ones ride with the last drawn one, so they come back from
-                // under the stack at the drop.
-                let (tx, ty) = match (i, lead) {
-                    (0, _) | (_, None) => pointer,
-                    (_, Some(at)) => (at.0, at.1 + physics::trail(i).0),
+                let (tx, ty) = match i {
+                    0 => pointer,
+                    _ => at[i - 1].unwrap_or(pointer),
                 };
-                if i > 0 && drag.group {
-                    continue;
+                if i > 0 {
+                    card.body.spring = chain;
+                } else if !drag.group {
+                    card.body.spring = physics::HELD;
                 }
-                if drag.group {
-                    let r = if i == 0 {
-                        physics::tilt(card.body.vx, physics::LEAD_MAX_TILT)
-                    } else {
-                        0.0
-                    };
-                    card.body.target(tx, ty, r);
-                } else {
-                    // A single card sticks to the pointer.
-                    card.body.target(tx, ty, 0.0);
-                    card.body.settle();
-                }
+                card.body.target(tx, ty + physics::trail(i).0, 0.0);
             }
         }
 
@@ -1318,24 +1297,7 @@ impl Board {
             }
             card.apply_frame(overlay_dy);
         }
-        // Followers replay the lead's path, each a fixed delay later than the one
-        // ahead (the first with none), a sliver lower: while dragging, and after
-        // the drop until each one's turn to land.
-        let lead_at = |ids: &[TaskId], cards: &HashMap<TaskId, Card>| {
-            let c = cards.get(ids.first()?)?;
-            // In overlay coordinates, wherever the lead is.
-            let (ax, ay) = self.offset(c.space);
-            let (ox, oy) = self.offset(Space::Overlay);
-            Some((c.body.x + ax - ox, c.body.y + ay - oy))
-        };
         let mut land_now = false;
-        if let Some(d) = self.drag.borrow_mut().as_mut()
-            && d.group
-            && let Some((x, y)) = lead_at(&d.ids, &cards)
-        {
-            d.tail.path.push((now, x, y));
-            follow_path(&mut cards, &d.ids, &mut d.tail, now, dt, overlay_dy);
-        }
         // A dropped group lands together; it keeps its stacking order until the
         // last of its cards is down in its column.
         if let Some(l) = self.landing.borrow().as_ref() {
@@ -1778,7 +1740,6 @@ impl Board {
             cursor: (p.x, p.y),
             target: Some(col),
             index: 0,
-            tail: Tail::default(),
         });
         // Rings off, followers stacked, the tail hidden: right away, not at the
         // first change of target.
@@ -2076,8 +2037,7 @@ impl Card {
         if self.placed.replace(key) == key {
             return;
         }
-        // Jelly: a little longer along the way the card moves, thinner across it.
-        let (sx, sy) = physics::squash(b.vx, b.vy);
+        let (sx, sy) = (1.0, 1.0);
         let (w, h) = (CARD_W * s * sx, CARD_H * s * sy);
         self.view.setFrameCenterRotation(0.0);
         self.view.setFrame(NSRect::new(
@@ -2133,68 +2093,6 @@ impl Card {
         let (dx, dy) = (p.x - cx, p.y - cy);
         let (lx, ly) = (dx * t.cos() - dy * t.sin(), dx * t.sin() + dy * t.cos());
         lx.abs() <= self.scale * CARD_W / 2.0 && ly.abs() <= self.scale * CARD_H / 2.0
-    }
-}
-
-/// Puts the followers of `ids` (`ids[0]` is the lead) on the lead's recorded
-/// path, each [`physics::trail_delay`] behind (shortened when the lead is fast).
-/// Trims the path to what the last of them still needs.
-fn follow_path(
-    cards: &mut HashMap<TaskId, Card>,
-    ids: &[TaskId],
-    tail: &mut Tail,
-    now: f64,
-    dt: f64,
-    overlay_dy: f64,
-) {
-    let Tail {
-        path,
-        speed,
-        delays,
-    } = tail;
-    let keep = now - physics::trail_delay(ids.len(), ids.len()) - 0.1;
-    let old = path.partition_point(|p| p.0 < keep).saturating_sub(1);
-    path.drain(..old);
-    // The lead's speed over the last few frames, smoothed: a quick swing
-    // shortens the tail, without jitter.
-    let raw = match (path.last(), path.iter().rev().find(|p| p.0 < now - 0.05)) {
-        (Some(a), Some(b)) => (a.1 - b.1).hypot(a.2 - b.2) / (a.0 - b.0).max(1e-3),
-        _ => 0.0,
-    };
-    *speed = physics::smooth_speed(*speed, raw, dt);
-    let speed = *speed;
-    if delays.len() < ids.len() {
-        delays.resize(ids.len(), f64::NAN);
-    }
-    for (i, id) in ids.iter().enumerate().skip(1) {
-        let Some(card) = cards.get_mut(id) else {
-            continue;
-        };
-        let target = physics::trail_delay_at(i, ids.len(), speed);
-        let delay = if delays[i].is_nan() {
-            target
-        } else {
-            physics::ease_delay(delays[i], target, dt)
-        };
-        delays[i] = delay;
-        let Some((x, y)) = physics::path_at(path, now - delay) else {
-            continue;
-        };
-        let y = y + physics::trail(i).0;
-        // Its speed along the path, for the jelly squash and a little tilt.
-        let b = card.body;
-        let step = dt.max(1.0 / 240.0);
-        let (vx, vy) = ((x - b.x) / step, (y - b.y) / step);
-        let r = physics::tilt(vx, physics::FOLLOWER_MAX_TILT);
-        card.body = Body {
-            spring: b.spring,
-            vx: b.vx + (vx - b.vx) * 0.3,
-            vy: b.vy + (vy - b.vy) * 0.3,
-            r,
-            tr: r,
-            ..Body::at(x, y)
-        };
-        card.apply_frame(overlay_dy);
     }
 }
 

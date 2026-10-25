@@ -90,26 +90,21 @@ tabular digits, tracked +0.15, at 50%.
   animations on a view's layer and a plain setter would jump.
 - Cards already in a list that move over to make room, or close a gap, glide on
   a critically damped spring (ease in and out, no overshoot).
-- One motion preset for cards, `physics::JELLY`: jelly rather than spring, soft
-  and heavily damped (ζ 0.75, one slow give of about 3%, settled in about 0.4 s),
-  with squash and stretch. Stacks, list slots and drops use it; a fan opens with
-  it a little brisker and as a wave (each card up to 12 ms after the one before,
-  60 ms in all) and folds with it quicker.
-- Cards are firm jelly, the one exception to "no bounce": they move on springs
-  of a small engine (`physics.rs`), land with a short underdamped settle (ζ 0.8,
-  about 1.5% overshoot, still within half a second) and squash and stretch a
-  little with their speed. Panels and the new-task morph stay critically damped:
-  their text has to read the whole way.
-- A dragged group: the lead follows the pointer on a slightly jelly spring
-  (ζ 0.7); up to eight followers replay the lead's own path, each the same
-  step later than the one before (the first one too): 80 ms for a pair, 60 ms
-  for three, 40 ms for four or more (follower i trails by i steps), each 5% smaller (never below
-  0.6), centred under the lead so none shows outside it at rest; the rest hide
-  until the drop. All of them squash a little (at most 4.5%) with their speed;
-  the followers tilt up to 2°. The selection ring shows while choosing, not while
-  dragging. The column opens one card's room for the whole group, and the group
-  lands together, keeping the stacking order it flew in until the last card is
-  down.
+- Cards hang as if on a string (measured from the reference clip,
+  docs/reference/tima/motion/notes.md). A card's position goes to its place on
+  a critically damped spring (no overshoot, no jitter); its angle hangs from the
+  point that moves it as a damped pendulum (period 0.45 s, ζ 0.45, lever 150 pt,
+  at most 12°): a sideways push tilts it against the move, it swings back past
+  level once or twice and settles. One integrator, fixed 480 Hz substeps
+  (`Body::step`). The task panel uses the same integrator without the swing.
+- A dragged group is a chain: the lead hangs from the pointer, each follower off
+  the card ahead, lagging one link (80 ms for two cards, 60 ms for three, 40 ms
+  from four on); up to eight followers draw, each 5% smaller, centred so none
+  shows outside the lead at rest. The selection ring is off while dragging. The
+  column opens one card's room for the whole group, which lands together,
+  keeping the stacking order it flew in until the last card is down.
+- A fan opens as a short wave (each card up to 12 ms after the one before, 60 ms
+  in all), its cards swinging into their angles.
 - A fan is the swatch layout of the reference frames
   (docs/reference/tima/swatch): from the newest card, just right of the top and
   turned about −70°, the cards wind clockwise round one centre about 40° apart

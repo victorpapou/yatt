@@ -148,6 +148,9 @@ impl Morph {
         let mut s = Body::at(r.size.width, r.size.height);
         o.spring = physics::MORPH;
         s.spring = physics::MORPH;
+        // The panel eases to its angle; only cards hang and swing.
+        o.swings = false;
+        s.swings = false;
         self.origin.set(o);
         self.size.set(s);
         self.place(o, s);

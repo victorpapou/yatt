@@ -1,8 +1,12 @@
-//! A small spring engine for card motion: position and rotation each chase a
-//! target on a unit-mass spring, and the card squashes and stretches a little with
-//! its velocity, so it lands like jelly. Plain math with no AppKit, so it is
-//! tested on any OS. The fan shape is fitted to the reference clip
-//! (docs/reference/card-motion.md).
+//! The card motion engine. A card's position chases its target on a critically
+//! damped spring (no overshoot, no jitter); its angle hangs like a damped
+//! pendulum from the point that moves it, so it tilts against a sudden move,
+//! swings back past level once or twice and settles, as if on a string. One
+//! integrator with fixed substeps for both ([`Body::step`]). A dragged group is
+//! a chain: each follower hangs off the card ahead. Plain math with no AppKit,
+//! so it is tested on any OS. The constants are measured from the reference clip
+//! (docs/reference/tima/motion/notes.md); the fan shape is fitted to the swatch
+//! frames (docs/reference/tima/swatch).
 
 /// A spring with unit mass: `k` is stiffness, `zeta` the damping ratio (1 = critical).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -21,18 +25,24 @@ impl Spring {
     }
 }
 
-/// The cards' one motion preset, jelly rather than spring: soft and heavily
-/// damped (ζ 0.75), so a card arrives with one slow, small give (about 3%) and
-/// no quick wobble, settled in about 0.4 s. Squash and stretch come with it
-/// (`squash`).
-pub const JELLY: Spring = Spring::new(380.0, 0.75);
-/// Settling into a stack or a list slot: the jelly.
-pub const PILE: Spring = JELLY;
-/// A stack opening into its fan: the jelly, a little brisker (about 0.35 s),
-/// with a short wave through the cards ([`fan_wave`]).
-pub const FAN_OPEN: Spring = Spring::new(560.0, 0.75);
-/// A fan folding back into its stack: the jelly too, quicker (about 0.3 s).
-pub const FAN_FOLD: Spring = Spring::new(700.0, 0.75);
+/// Where a card goes when it is put somewhere: critically damped, settled in
+/// about 0.35 s. The swing of its angle is the hanging part ([`SWING_PERIOD`]).
+pub const SETTLE: Spring = Spring::new(380.0, 1.0);
+/// Settling into a stack or a list slot.
+pub const PILE: Spring = SETTLE;
+/// A stack opening into its fan: a little brisker, as a wave ([`fan_wave`]); the
+/// cards swing into their angles.
+pub const FAN_OPEN: Spring = Spring::new(560.0, 1.0);
+/// A fan folding back into its stack: quicker.
+pub const FAN_FOLD: Spring = Spring::new(800.0, 1.0);
+
+/// The hanging swing of a card's angle: natural period, damping ratio, the
+/// lever from the point that moves it (sets how far a push tilts it: about 8° at
+/// 4000 pt/s² sideways), and the most it tilts. Measured from the reference clip.
+pub const SWING_PERIOD: f64 = 0.45;
+pub const SWING_ZETA: f64 = 0.45;
+pub const SWING_LEVER: f64 = 150.0;
+pub const SWING_MAX: f64 = 12.0;
 
 /// When the `i`-th card of a fan of `n` starts to move as the fan opens, in
 /// seconds: a wave through the fan, at most 12 ms apart and 60 ms in all
@@ -41,32 +51,30 @@ pub fn fan_wave(i: usize, n: usize) -> f64 {
     let step = (0.06 / n.max(1) as f64).min(0.012);
     i as f64 * step
 }
-/// The card under the cursor while dragging: nearly attached, a touch of lag and
-/// a little jelly (ζ 0.7).
-pub const LEAD: Spring = Spring::new(1200.0, 0.7);
-/// Followers of a dragged group tilt a little with their speed, at most this.
-pub const FOLLOWER_MAX_TILT: f64 = 2.0;
-/// A card already in a list moving over to make room or close a gap: soft and
-/// nearly critically damped (ease in and out, no visible overshoot).
-pub const SHIFT: Spring = Spring::new(300.0, 0.92);
-/// A card settling into its list slot after a drop: the jelly.
-pub const SLOT: Spring = JELLY;
+/// The lead of a dragged group: nearly attached, a touch of lag.
+pub const LEAD: Spring = Spring::new(1200.0, 1.0);
+/// A single dragged card: with the pointer (about 10 ms behind), so its swing
+/// comes from the pointer's own moves.
+pub const HELD: Spring = Spring::new(40_000.0, 1.0);
+/// A card already in a list moving over to make room or close a gap: soft,
+/// ease in and out.
+pub const SHIFT: Spring = Spring::new(300.0, 1.0);
+/// A card settling into its list slot after a drop.
+pub const SLOT: Spring = SETTLE;
 /// A new card flying from the new-task field into its column.
-pub const FLY: Spring = Spring::new(220.0, 0.8);
+pub const FLY: Spring = Spring::new(220.0, 1.0);
 /// The task modal growing out of its card and shrinking back: no wobble, the
 /// panel's text has to stay readable all the way.
 pub const MORPH: Spring = Spring::new(520.0, 0.88);
-/// Rotation follows faster than position, so tilt reads as a reaction to motion.
-pub const ROTATION: Spring = Spring::new(500.0, 0.8);
 
-/// How much later than the one ahead each follower of a dragged group replays
-/// the lead's path, in seconds, the first one included: for a group of two, of
-/// three, and of four or more. Small groups get longer steps, so the tail reads
-/// about as long whatever the size. The one place to tune it.
+/// How far behind the card ahead each follower of a dragged group hangs, in
+/// seconds of lag at a steady speed: for a group of two, of three, and of four
+/// or more. Small groups get longer links, so the chain reads about as long
+/// whatever the size. The one place to tune it.
 pub const TRAIL_DELAYS: (f64, f64, f64) = (0.08, 0.06, 0.04);
 
-/// The delay step for a dragged group of `n` cards: 80 ms for two, 60 ms for
-/// three, 40 ms for four or more. Follower `i` trails the lead by `i` steps.
+/// The lag of one link for a dragged group of `n` cards: 80 ms for two, 60 ms
+/// for three, 40 ms for four or more.
 pub fn trail_step(n: usize) -> f64 {
     let (two, three, many) = TRAIL_DELAYS;
     match n {
@@ -89,51 +97,12 @@ pub fn trail(i: usize) -> (f64, f64) {
     (0.0, (1.0 - TRAIL_SHRINK * i).max(0.6))
 }
 
-/// How long ago the lead was where the `i`-th follower (1-based) of a group of
-/// `n` is now: a plain delay on the lead's own path, the same step for each, no
-/// springs between the cards.
-pub fn trail_delay(i: usize, n: usize) -> f64 {
-    i as f64 * trail_step(n)
-}
-
-/// The lead's speed (pt/s) at which the tail's delays are halved.
-const TRAIL_HALF_SPEED: f64 = 900.0;
-
-/// The lead's speed for the tail, smoothed over about 120 ms so a jittery pointer
-/// never makes the followers jump back and forth along the path.
-pub fn smooth_speed(previous: f64, raw: f64, dt: f64) -> f64 {
-    let k = 1.0 - (-dt.max(0.0) / 0.12).exp();
-    previous + (raw - previous) * k
-}
-
-/// Moves a follower's current delay towards `target` no faster than half a
-/// second per second: it then replays the lead's path at between half and one
-/// and a half times the lead's pace, never jumping along it.
-pub fn ease_delay(current: f64, target: f64, dt: f64) -> f64 {
-    let most = 0.5 * dt.max(0.0);
-    current + (target - current).clamp(-most, most)
-}
-
-/// The same, shortened as the lead moves faster: the tail hurries after a quick
-/// swing instead of strewing out behind it, and trails fully when slow.
-pub fn trail_delay_at(i: usize, n: usize, speed: f64) -> f64 {
-    trail_delay(i, n) / (1.0 + speed.max(0.0) / TRAIL_HALF_SPEED)
-}
-
-/// Where the lead was at time `t`, from its recorded path `(time, x, y)` (oldest
-/// first), interpolated between samples; before the first sample, the first.
-pub fn path_at(path: &[(f64, f64, f64)], t: f64) -> Option<(f64, f64)> {
-    let first = path.first()?;
-    if t <= first.0 {
-        return Some((first.1, first.2));
-    }
-    let k = path.partition_point(|p| p.0 <= t);
-    let a = path[k - 1];
-    let Some(&b) = path.get(k) else {
-        return Some((a.1, a.2));
-    };
-    let f = (t - a.0) / (b.0 - a.0).max(1e-9);
-    Some((a.1 + (b.1 - a.1) * f, a.2 + (b.2 - a.2) * f))
+/// The spring a follower of a group of `n` hangs off the card ahead with: a
+/// critically damped spring trails a steady motion by twice its time constant,
+/// so the constant is half the link's lag.
+pub fn chain_spring(n: usize) -> Spring {
+    let tau = trail_step(n) / 2.0;
+    Spring::new(1.0 / (tau * tau), 1.0)
 }
 
 /// The stacking order of the `k`-th card of a dragged or landing group (0 = the
@@ -146,27 +115,6 @@ pub fn group_z(k: usize) -> f64 {
 /// Whether a card shows its selection ring: while choosing, never while dragging.
 pub fn ring_shown(selected: bool, dragging: bool) -> bool {
     selected && !dragging
-}
-
-/// Degrees of tilt per point/second of horizontal speed.
-pub const TILT_PER_SPEED: f64 = 0.012;
-pub const LEAD_MAX_TILT: f64 = 4.0;
-
-/// Tilt in degrees (positive = clockwise on screen) for a horizontal speed in points/second.
-pub fn tilt(vx: f64, max: f64) -> f64 {
-    (vx * TILT_PER_SPEED).clamp(-max, max)
-}
-
-/// Stretch per point/second of speed, and the most a card stretches.
-const STRETCH_PER_SPEED: f64 = 0.000_04;
-const MAX_STRETCH: f64 = 0.045;
-
-/// Squash and stretch for a velocity: the card gets longer along the way it moves
-/// and thinner across it, keeping roughly its area. Returns (x, y) scale factors.
-pub fn squash(vx: f64, vy: f64) -> (f64, f64) {
-    let sx = (vx.abs() * STRETCH_PER_SPEED).min(MAX_STRETCH);
-    let sy = (vy.abs() * STRETCH_PER_SPEED).min(MAX_STRETCH);
-    (1.0 + sx - 0.5 * sy, 1.0 + sy - 0.5 * sx)
 }
 
 /// One card's motion state: top-left corner `(x, y)` in a y-down space, rotation `r` in degrees.
@@ -182,6 +130,9 @@ pub struct Body {
     pub ty: f64,
     pub tr: f64,
     pub spring: Spring,
+    /// Whether the angle hangs and swings (cards), or just eases to its target
+    /// (the task panel).
+    pub swings: bool,
 }
 
 impl Body {
@@ -197,6 +148,7 @@ impl Body {
             ty: y,
             tr: 0.0,
             spring: PILE,
+            swings: true,
         }
     }
 
@@ -211,14 +163,30 @@ impl Body {
         let steps = (dt / (1.0 / 480.0)).ceil().max(1.0) as usize;
         let h = dt / steps as f64;
         let (k, c) = (self.spring.k, self.spring.damping());
-        let (kr, cr) = (ROTATION.k, ROTATION.damping());
+        let w0 = std::f64::consts::TAU / SWING_PERIOD;
+        let deg_per_accel = 180.0 / std::f64::consts::PI / SWING_LEVER;
         for _ in 0..steps {
+            let vx0 = self.vx;
             self.vx += (-k * (self.x - self.tx) - c * self.vx) * h;
             self.vy += (-k * (self.y - self.ty) - c * self.vy) * h;
-            self.vr += (-kr * (self.r - self.tr) - cr * self.vr) * h;
             self.x += self.vx * h;
             self.y += self.vy * h;
+            // The angle hangs from the moving point: a push to the right leaves
+            // the bottom behind, turning the card clockwise, and it swings back.
+            let ax = (self.vx - vx0) / h;
+            let swing = self.r - self.tr;
+            let (zeta, push) = if self.swings {
+                (SWING_ZETA, deg_per_accel * ax)
+            } else {
+                (1.0, 0.0)
+            };
+            self.vr += (-w0 * w0 * swing - 2.0 * zeta * w0 * self.vr + push) * h;
             self.r += self.vr * h;
+            let limit = SWING_MAX;
+            if (self.r - self.tr).abs() > limit {
+                self.r = self.tr + limit.copysign(self.r - self.tr);
+                self.vr = 0.0;
+            }
         }
     }
 
@@ -360,40 +328,100 @@ mod tests {
     }
 
     #[test]
-    fn settling_is_a_short_jelly_wobble() {
+    fn position_settles_without_overshoot() {
         let mut b = Body::at(0.0, 0.0);
+        // The position alone (a hanging card's angle swings on a while longer).
+        b.swings = false;
         b.target(100.0, 0.0, 0.0);
-        let mut max = 0.0f64;
-        let mut t = 0.0;
+        let (mut max, mut t) = (0.0f64, 0.0);
         while !b.at_rest() && t < 2.0 {
             b.step(1.0 / 120.0);
             max = max.max(b.x);
             t += 1.0 / 120.0;
         }
-        assert!(max > 100.5 && max < 104.0, "overshoot {max}");
+        assert!(max <= 100.0 + 1e-6, "overshoot {max}");
         assert!(t < 0.8, "settled after {t}s");
     }
 
     #[test]
-    fn the_tail_replays_the_leads_path_later() {
-        // The same step for every follower, the first one included; longer steps
-        // for small groups.
-        let step = trail_step(6);
-        assert!((trail_delay(1, 6) - step).abs() < 1e-12);
-        assert!((trail_delay(3, 6) - 3.0 * step).abs() < 1e-12);
-        assert!((0.07..=0.09).contains(&trail_delay(1, 2)));
-        assert!(trail_step(2) > trail_step(3) && trail_step(3) > trail_step(5));
-        // The same step all the way down a long tail.
-        assert!((trail_delay(9, 10) - 9.0 * trail_step(10)).abs() < 1e-12);
-        // The lead's path, sampled: interpolated, held at either end.
-        let path = [(0.0, 0.0, 0.0), (0.1, 100.0, 10.0), (0.2, 100.0, 30.0)];
-        assert_eq!(path_at(&path, 0.05), Some((50.0, 5.0)));
-        assert_eq!(path_at(&path, -1.0), Some((0.0, 0.0)));
-        assert_eq!(path_at(&path, 9.0), Some((100.0, 30.0)));
-        assert_eq!(path_at(&[], 0.0), None);
-        // Each smaller than the one ahead, centred under it.
-        assert!(trail(2).1 < trail(1).1 && trail(2).0 == 0.0);
-        assert_eq!(trail(TRAIL_SHOWN + 3), trail(TRAIL_SHOWN));
+    fn a_card_swings_like_it_hangs_and_settles() {
+        // Carried right and stopped: it tilts clockwise (against the move),
+        // swings back past level, and settles.
+        let mut b = Body::at(0.0, 0.0);
+        b.spring = LEAD;
+        let dt = 1.0 / 120.0;
+        let mut tilt = 0.0f64;
+        for k in 0..30 {
+            b.target(40.0 * k as f64, 0.0, 0.0);
+            b.step(dt);
+            tilt = tilt.max(b.r);
+        }
+        assert!(tilt > 2.0 && tilt <= SWING_MAX, "tilt {tilt}");
+        let mut back = 0.0f64;
+        let mut t = 0.0;
+        while t < 3.0 {
+            b.step(dt);
+            back = back.min(b.r);
+            t += dt;
+            if b.at_rest() {
+                break;
+            }
+        }
+        assert!(back < -0.2, "no swing back ({back})");
+        assert!(b.r.abs() < 0.05, "not settled: {}", b.r);
+        assert!(t < 1.5, "took {t}s");
+    }
+
+    #[test]
+    fn a_fast_zigzag_stays_stable_and_within_the_limit() {
+        let mut b = Body::at(0.0, 0.0);
+        b.spring = LEAD;
+        let (dt, mut x, mut dir) = (1.0 / 120.0, 0.0f64, 1.0f64);
+        for k in 0..600 {
+            if k % 12 == 0 {
+                dir = -dir;
+            }
+            x += 3000.0 * dt * dir;
+            b.target(x, 0.0, 0.0);
+            b.step(dt);
+            assert!(
+                b.r.is_finite() && b.r.abs() <= SWING_MAX + 1e-9,
+                "angle {}",
+                b.r
+            );
+            assert!(b.x.is_finite());
+        }
+    }
+
+    #[test]
+    fn a_turned_target_is_reached() {
+        // A fan card swings into its angle and stays there.
+        let mut b = Body::at(0.0, 0.0);
+        b.spring = FAN_OPEN;
+        b.target(30.0, -20.0, 40.0);
+        let mut t = 0.0;
+        while !b.at_rest() && t < 3.0 {
+            b.step(1.0 / 120.0);
+            t += 1.0 / 120.0;
+        }
+        assert!((b.r - 40.0).abs() < 0.05 && t < 2.0, "{} after {t}s", b.r);
+    }
+
+    #[test]
+    fn a_chain_link_trails_one_step() {
+        // A follower on the chain spring, behind a lead at a steady 1000 pt/s,
+        // lags about one link's step.
+        let mut f = Body::at(0.0, 0.0);
+        f.spring = chain_spring(4);
+        let dt = 1.0 / 240.0;
+        let mut t = 0.0;
+        for _ in 0..480 {
+            t += dt;
+            f.target(1000.0 * t, 0.0, 0.0);
+            f.step(dt);
+        }
+        let lag = (1000.0 * t - f.x) / 1000.0;
+        assert!((lag - trail_step(4)).abs() < 0.005, "lag {lag}");
     }
 
     #[test]
@@ -403,56 +431,6 @@ mod tests {
         let z: Vec<f64> = (0..20).map(group_z).collect();
         assert!(z.windows(2).all(|w| w[0] > w[1]));
         assert!(z[19] > 900.0);
-    }
-
-    #[test]
-    fn a_fast_zigzag_drag_moves_the_tail_smoothly() {
-        // The lead swings left and right at 3000 pt/s, reversing every 0.1 s;
-        // a follower replaying its path (speed smoothed) never steps further in
-        // one frame than the lead does, nor jumps backwards along the path.
-        let dt = 1.0 / 120.0;
-        let mut path: Vec<(f64, f64, f64)> = Vec::new();
-        let (mut x, mut dir, mut speed) = (0.0f64, 1.0f64, 0.0f64);
-        let mut delay = trail_delay(3, 4);
-        let mut last: Option<(f64, f64)> = None;
-        let mut max_lead_step = 0.0f64;
-        let mut max_step = 0.0f64;
-        for k in 0..240 {
-            let t = k as f64 * dt;
-            if k % 12 == 0 {
-                dir = -dir;
-            }
-            let step = 3000.0 * dt * dir;
-            x += step;
-            max_lead_step = max_lead_step.max(step.abs());
-            path.push((t, x, 0.0));
-            let raw = if path.len() > 6 {
-                let b = path[path.len() - 7];
-                (x - b.1).abs() / (t - b.0)
-            } else {
-                0.0
-            };
-            speed = smooth_speed(speed, raw, dt);
-            delay = ease_delay(delay, trail_delay_at(3, 4, speed), dt);
-            let (fx, fy) = path_at(&path, t - delay).unwrap();
-            if let Some(p) = last {
-                max_step = max_step.max((fx - p.0).hypot(fy - p.1));
-            }
-            last = Some((fx, fy));
-        }
-        assert!(
-            max_step <= max_lead_step * 1.5 + 1e-6,
-            "follower stepped {max_step}, lead {max_lead_step}"
-        );
-    }
-
-    #[test]
-    fn the_tail_hurries_when_the_lead_is_fast() {
-        let slow = trail_delay_at(2, 4, 0.0);
-        let fast = trail_delay_at(2, 4, 2000.0);
-        assert!((slow - trail_delay(2, 4)).abs() < 1e-12);
-        assert!(fast < slow / 2.0 && fast > 0.0);
-        assert!((trail_delay_at(2, 4, TRAIL_HALF_SPEED) - slow / 2.0).abs() < 1e-12);
     }
 
     #[test]
@@ -479,15 +457,6 @@ mod tests {
     }
 
     #[test]
-    fn squash_stretches_along_the_motion() {
-        assert_eq!(squash(0.0, 0.0), (1.0, 1.0));
-        let (sx, sy) = squash(1000.0, 0.0);
-        assert!(sx > 1.0 && sy < 1.0);
-        let (sx, _) = squash(1e9, 0.0);
-        assert!((sx - 1.0 - MAX_STRETCH).abs() < 1e-9);
-    }
-
-    #[test]
     fn cards_centre_on_their_column() {
         // A wide window: the third of 1800 pt starts at 1200.
         let left = centred_left(1200.0, 600.0, 230.0);
@@ -507,6 +476,7 @@ mod tests {
     fn morph_spring_settles_quickly() {
         let mut b = Body::at(0.0, 0.0);
         b.spring = MORPH;
+        b.swings = false;
         b.target(400.0, 300.0, 0.0);
         let mut t = 0.0;
         while !b.at_rest() && t < 2.0 {
@@ -514,13 +484,6 @@ mod tests {
             t += 1.0 / 120.0;
         }
         assert!(t < 0.8, "settled after {t}s");
-    }
-
-    #[test]
-    fn tilt_is_clamped_and_signed() {
-        assert_eq!(tilt(10_000.0, LEAD_MAX_TILT), LEAD_MAX_TILT);
-        assert_eq!(tilt(-10_000.0, LEAD_MAX_TILT), -LEAD_MAX_TILT);
-        assert!((tilt(100.0, 12.0) - 1.2).abs() < 1e-9);
     }
 
     #[test]
