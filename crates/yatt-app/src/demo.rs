@@ -171,11 +171,24 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             let from = centre(top);
             let to = (window.demo_column_x(2), 120.0);
             window.demo_real_mouse(DemoMouse::Down, from);
+            let mut followed = true;
             for i in 1..=20 {
                 let p = ease(from, to, i as f64 / 20.0);
                 window.demo_real_mouse(DemoMouse::Drag, p);
                 wait(16).await;
+                // The card's view must be under the pointer all the way, not only
+                // land at the end.
+                if let Some(v) = window.demo_view_center(top) {
+                    let off = (v.0 - p.0).hypot(v.1 - p.1);
+                    if i > 2 && off > 30.0 {
+                        followed = false;
+                    }
+                }
             }
+            eprintln!(
+                "demo: real-event drag of one card: the card {} the pointer",
+                if followed { "followed" } else { "DID NOT FOLLOW (wrong)" }
+            );
             window.demo_real_mouse(DemoMouse::Up, to);
             wait(700).await;
             let landed = ids(cx, 2).contains(&top);

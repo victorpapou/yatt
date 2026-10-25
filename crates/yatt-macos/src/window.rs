@@ -435,6 +435,12 @@ impl MainWindow {
         self.ui.cards.demo_scroll(column, y);
     }
 
+    /// Development aid: where a card's view is drawn, its centre in canvas
+    /// coordinates.
+    pub fn demo_view_center(&self, id: TaskId) -> Option<(f64, f64)> {
+        self.ui.cards.demo_view_center(id)
+    }
+
     /// Development aid: selects exactly these cards.
     pub fn demo_select(&self, ids: &[TaskId]) {
         self.ui.cards.demo_select(ids);

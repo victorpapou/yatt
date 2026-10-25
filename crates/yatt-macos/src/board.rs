@@ -486,6 +486,22 @@ impl Board {
         scroll.reflectScrolledClipView(&scroll.contentView());
     }
 
+    /// Development aid: where a card's view is drawn, its centre in canvas
+    /// coordinates.
+    pub fn demo_view_center(&self, id: TaskId) -> Option<(f64, f64)> {
+        let cards = self.cards.borrow();
+        let card = cards.get(&id)?;
+        let f = card.view.frame();
+        let p = self.canvas.convertPoint_fromView(
+            NSPoint::new(
+                f.origin.x + f.size.width / 2.0,
+                f.origin.y + f.size.height / 2.0,
+            ),
+            unsafe { card.view.superview() }.as_deref(),
+        );
+        Some((p.x, p.y))
+    }
+
     /// Development aid: selects exactly these cards.
     pub fn demo_select(self: &Rc<Self>, ids: &[TaskId]) {
         *self.selected.borrow_mut() = ids.iter().copied().collect();
@@ -1177,7 +1193,10 @@ impl Board {
                 card.scale = card.target_scale;
                 continue;
             }
-            // A card at rest on its place, at its size, has nothing to do.
+            // A card at rest on its place, at its size, has nothing to step. It may
+            // still have been put somewhere new (a single dragged card is set right
+            // on the pointer, at rest there), so its frame is applied; that returns
+            // at once when nothing changed.
             if card.grow.is_none()
                 && card.scale == card.target_scale
                 && card.body.x == card.body.tx
@@ -1187,6 +1206,7 @@ impl Board {
                 && card.body.vy == 0.0
                 && card.body.vr == 0.0
             {
+                card.apply_frame(overlay_dy);
                 continue;
             }
             if reduce && !dragging {
