@@ -89,12 +89,13 @@ impl Engine {
         }
     }
 
-    pub fn create_task(&mut self, title: String) -> TaskId {
+    /// A new task on top of `status`.
+    pub fn create_task(&mut self, title: String, status: Status) -> TaskId {
         let id = TaskId::new();
         self.execute(Command::Create {
             id,
             title,
-            status: Status::Backlog,
+            status,
             placement: Placement::Top,
         });
         id
@@ -270,7 +271,7 @@ mod tests {
         }
 
         fn task(&mut self, title: &str, status: Status) -> TaskId {
-            let id = self.engine.create_task(title.into());
+            let id = self.engine.create_task(title.into(), Status::Backlog);
             if status != Status::Backlog {
                 self.engine.move_task(id, status, Placement::Bottom);
             }

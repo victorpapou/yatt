@@ -1,14 +1,15 @@
-//! Development aid: `YATT_DEMO=<dir>` plays a short scripted session (stacks, hover
-//! fan, dragging one card, shift-dragging a whole stack, the task modal, timer-only
-//! mode) and saves window captures into `<dir>`, so the UI can be checked without
-//! clicking through it by hand.
+//! Development aid: `YATT_DEMO=<dir>` plays a short scripted session (new tasks
+//! flying in from the capsule, a plain drag, a ⇧/⌘ selection dragged as a train,
+//! a two-finger swipe, a column folded into a stack and fanned, the task modal,
+//! timer-only mode) and saves window captures into `<dir>`, so the UI can be
+//! checked without clicking through it by hand.
 
 use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{App, AsyncApp, Entity};
-use yatt_core::TaskId;
-use yatt_macos::{DemoPointer, MainWindow, Sink, UiEvent};
+use yatt_core::{Status, TaskId};
+use yatt_macos::{DemoPhase, DemoPointer, MainWindow, Sink, UiEvent};
 
 use crate::workspace::Workspace;
 
@@ -30,19 +31,26 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             })
             .unwrap_or_default()
         };
+        let centre = |id: TaskId| window.demo_center(id).unwrap_or((0.0, 0.0));
+        let ease = |from: (f64, f64), to: (f64, f64), t: f64| {
+            let e = t * t * (3.0 - 2.0 * t);
+            (from.0 + (to.0 - from.0) * e, from.1 + (to.1 - from.1) * e)
+        };
         // Moves the pointer from `from` to `to` over `steps` frames, like a hand would.
-        let drag = |id: TaskId, from: (f64, f64), to: (f64, f64), steps: u32| {
+        let drag = |from: (f64, f64), to: (f64, f64), steps: u32| {
             let window = window.clone();
             let executor = executor.clone();
             async move {
                 for i in 1..=steps {
-                    let t = i as f64 / steps as f64;
-                    let e = t * t * (3.0 - 2.0 * t);
-                    let p = (from.0 + (to.0 - from.0) * e, from.1 + (to.1 - from.1) * e);
-                    window.demo_pointer(DemoPointer::Drag(id, p));
+                    let p = ease(from, to, i as f64 / steps as f64);
+                    window.demo_pointer(DemoPointer::Drag(p));
                     executor.timer(Duration::from_millis(16)).await;
                 }
             }
+        };
+        let click = |at: (f64, f64), shift: bool, cmd: bool| {
+            window.demo_pointer(DemoPointer::Down { at, shift, cmd });
+            window.demo_pointer(DemoPointer::Up(at));
         };
 
         wait(600).await;
@@ -51,60 +59,93 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             "Перетаскивание карточек",
             "Таймер в шапке",
             "Сверстать доску",
-            "Стекло и физика",
         ] {
-            sink(UiEvent::NewTask(title.into()));
-        }
-        wait(900).await;
-        shot("1-stack");
-
-        // Hover the backlog stack: it fans out.
-        let (ax, ay) = window.demo_anchor(0);
-        let over = (ax + 90.0, ay + 40.0);
-        window.demo_pointer(DemoPointer::Hover(Some(over)));
-        wait(500).await;
-        shot("2-fan");
-
-        // Pull the top card out alone and carry it to "В работе".
-        let (bx, by) = window.demo_anchor(1);
-        if let Some(&top) = ids(cx, 0).first() {
-            window.demo_pointer(DemoPointer::Down {
-                id: top,
-                at: over,
-                shift: false,
+            sink(UiEvent::NewTask {
+                title: title.into(),
+                status: Status::Backlog,
             });
-            let mid = (bx + 40.0, by + 160.0);
-            drag(top, over, mid, 14).await;
-            shot("3-single-lifted");
-            let end = (bx + 110.0, by + 50.0);
-            drag(top, mid, end, 10).await;
-            window.demo_pointer(DemoPointer::Up(top, end));
-            wait(700).await;
         }
-
-        // Shift-drag the rest of the backlog to "Готово": the stack trails as a train.
-        window.demo_pointer(DemoPointer::Hover(None));
         wait(400).await;
-        let (dx, dy) = window.demo_anchor(2);
+        window.demo_new_task("Стекло и физика", false);
+        wait(140).await;
+        shot("1-fly");
+        wait(700).await;
+        window.demo_new_task("Срочное", true);
+        wait(900).await;
+        shot("2-list");
+
+        // A plain drag: the top backlog card into "В работе", under "Срочное".
+        let bx = window.demo_column_x(1);
         if let Some(&top) = ids(cx, 0).first() {
-            let start = (ax + 90.0, ay + 40.0);
-            window.demo_pointer(DemoPointer::Hover(Some(start)));
-            wait(350).await;
+            let from = centre(top);
             window.demo_pointer(DemoPointer::Down {
-                id: top,
-                at: start,
-                shift: true,
+                at: from,
+                shift: false,
+                cmd: false,
             });
-            let mid = (dx - 120.0, dy + 120.0);
-            drag(top, start, mid, 9).await;
-            shot("4-train");
-            let end = (dx + 100.0, dy + 50.0);
-            drag(top, mid, end, 8).await;
-            window.demo_pointer(DemoPointer::Up(top, end));
+            let mid = (bx - 60.0, 150.0);
+            drag(from, mid, 14).await;
+            shot("3-single-drag");
+            let end = (bx, 130.0);
+            drag(mid, end, 8).await;
+            window.demo_pointer(DemoPointer::Up(end));
+            wait(600).await;
+        }
+
+        // ⌘-click the first backlog card, ⇧-click the third: three selected.
+        let backlog = ids(cx, 0);
+        if backlog.len() >= 3 {
+            click(centre(backlog[0]), false, true);
+            click(centre(backlog[2]), true, false);
+            wait(300).await;
+            shot("4-selection");
+            // Drag the selection to "Готово": the others trail as a train.
+            let from = centre(backlog[1]);
+            let dx = window.demo_column_x(2);
+            window.demo_pointer(DemoPointer::Down {
+                at: from,
+                shift: false,
+                cmd: false,
+            });
+            let mid = (dx - 140.0, 200.0);
+            drag(from, mid, 9).await;
+            shot("5-train");
+            let end = (dx, 70.0);
+            drag(mid, end, 8).await;
+            window.demo_pointer(DemoPointer::Up(end));
+            wait(800).await;
+            shot("6-dropped");
+        }
+
+        // A click on empty board drops the selection; then a two-finger swipe carries
+        // one done card back to "В работе".
+        click((window.demo_column_x(0), 600.0), false, false);
+        if let Some(&card) = ids(cx, 2).last() {
+            let at = centre(card);
+            let swipe = |finger: (f64, f64), phase: DemoPhase| {
+                window.demo_pointer(DemoPointer::Swipe { at, finger, phase });
+            };
+            swipe((0.0, 0.0), DemoPhase::Began);
+            let step = ((bx - at.0) / 16.0, 3.0);
+            for _ in 0..16 {
+                swipe(step, DemoPhase::Changed);
+                wait(16).await;
+            }
+            shot("7-swipe");
+            swipe((0.0, 0.0), DemoPhase::Ended);
             wait(700).await;
-            window.demo_pointer(DemoPointer::Hover(None));
+        }
+
+        // Fold "Готово" into a stack, then fan it with a click.
+        window.demo_toggle_stack(2);
+        wait(600).await;
+        shot("8-stack");
+        if let Some(&top) = ids(cx, 2).first() {
+            click(centre(top), false, false);
             wait(500).await;
-            shot("5-settled");
+            shot("9-fan");
+            click((window.demo_column_x(0), 600.0), false, false);
+            wait(400).await;
         }
 
         // The task modal and timer-only mode.
@@ -114,16 +155,18 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
                 id,
                 "## План\n\n- стекло\n- **физика**".into(),
             ));
-            sink(UiEvent::ToggleExpand(id));
-            wait(900).await;
-            shot("6-modal");
+            click(centre(id), false, false);
+            wait(120).await;
+            shot("10-morph");
+            wait(800).await;
+            shot("11-modal");
             window.debug_print_editor();
             sink(UiEvent::ToggleExpand(id));
             wait(700).await;
         }
         window.toggle_minimal();
         wait(800).await;
-        shot("7-minimal");
+        shot("12-minimal");
         window.toggle_minimal();
         wait(800).await;
         eprintln!("demo: finished");

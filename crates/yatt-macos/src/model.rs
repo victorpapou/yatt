@@ -51,7 +51,11 @@ pub struct TimerSnap {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum UiEvent {
-    NewTask(String),
+    /// A new task on top of `status`.
+    NewTask {
+        title: String,
+        status: Status,
+    },
     /// `index` counts cards of the target column with the moved card left out.
     Move {
         id: TaskId,
@@ -70,6 +74,38 @@ pub enum UiEvent {
     Redo,
     /// The main window was closed.
     Quit,
+}
+
+/// The moves that put `ids` together, in order, at index `at` of a column whose
+/// cards are `column` now; `at` counts the column's cards with `ids` left out.
+/// Each move's index counts the column at that moment with the moved card left out.
+pub fn moves_into(column: &[TaskId], ids: &[TaskId], at: usize, status: Status) -> Vec<UiEvent> {
+    let rest: Vec<TaskId> = column
+        .iter()
+        .copied()
+        .filter(|id| !ids.contains(id))
+        .collect();
+    let anchor = rest.get(at).copied();
+    let mut now: Vec<TaskId> = column.to_vec();
+    let mut events = Vec::new();
+    for (j, id) in ids.iter().enumerate() {
+        now.retain(|x| x != id);
+        let index = match (j, anchor) {
+            (0, Some(a)) => now.iter().position(|x| *x == a).unwrap_or(now.len()),
+            (0, None) => now.len(),
+            _ => now
+                .iter()
+                .position(|x| *x == ids[j - 1])
+                .map_or(now.len(), |p| p + 1),
+        };
+        now.insert(index, *id);
+        events.push(UiEvent::Move {
+            id: *id,
+            status,
+            index,
+        });
+    }
+    events
 }
 
 /// `h:mm:ss`, so a few seconds of work show right away.
@@ -92,6 +128,34 @@ pub fn format_clock(ms: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn moves_into_keeps_the_group_together() {
+        let ids: Vec<TaskId> = (0..5).map(|_| TaskId::new()).collect();
+        let [a, b, c, d, e] = [ids[0], ids[1], ids[2], ids[3], ids[4]];
+        // Column a b c d; move d and b (in that order) to sit before c.
+        let column = [a, b, c, d];
+        let moves = moves_into(&column, &[d, b], 1, Status::Backlog);
+        let mut sim = column.to_vec();
+        for m in &moves {
+            let UiEvent::Move { id, index, .. } = m else {
+                unreachable!()
+            };
+            sim.retain(|x| x != id);
+            sim.insert(*index, *id);
+        }
+        assert_eq!(sim, vec![a, d, b, c]);
+        // From another column, to the end.
+        let moves = moves_into(&[a], &[e], 1, Status::Done);
+        assert_eq!(
+            moves,
+            vec![UiEvent::Move {
+                id: e,
+                status: Status::Done,
+                index: 1
+            }]
+        );
+    }
 
     #[test]
     fn clock_formats() {

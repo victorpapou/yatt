@@ -30,8 +30,8 @@ impl Workspace {
     pub fn handle(&mut self, event: UiEvent) -> bool {
         let e = &mut self.engine;
         match event {
-            UiEvent::NewTask(title) => {
-                e.create_task(title);
+            UiEvent::NewTask { title, status } => {
+                e.create_task(title, status);
             }
             UiEvent::Move { id, status, index } => {
                 e.move_task(id, status, Placement::Index(index));
@@ -193,7 +193,10 @@ mod tests {
     #[test]
     fn events_drive_engine_and_snapshot() {
         let mut ws = workspace();
-        ws.handle(UiEvent::NewTask("Написать план".into()));
+        ws.handle(UiEvent::NewTask {
+            title: "Написать план".into(),
+            status: Status::Backlog,
+        });
         let id = ws.snapshot().columns[0].cards[0].id;
         ws.handle(UiEvent::Move {
             id,

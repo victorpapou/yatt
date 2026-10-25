@@ -3,8 +3,10 @@
 //! and moved with animations, so reorders and column moves stay smooth.
 //!
 //! Layout: a header with the timer, then the board split into three columns by
-//! full-height 1 px dividers. A click on a card opens the task modal
-//! (`modal.rs`); minimal mode shrinks the window to the timer alone.
+//! full-height 1 px dividers, each with a title, a count and a list/stack toggle.
+//! The new-task field floats over the bottom of the board as a glass capsule.
+//! A click on a card opens the task modal (`modal.rs`); minimal mode shrinks the
+//! window to the timer alone.
 
 use std::cell::{Cell, RefCell};
 use std::ptr::NonNull;
@@ -12,17 +14,15 @@ use std::rc::Rc;
 
 use block2::{RcBlock, StackBlock};
 use objc2::rc::Retained;
-use objc2::rc::Weak as ObjcWeak;
-use objc2::runtime::AnyObject;
+use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, sel};
 use objc2_app_kit::{
     NSAnimatablePropertyContainer, NSAnimationContext, NSApplication, NSAutoresizingMaskOptions,
     NSBackingStoreType, NSBezelStyle, NSButton, NSColor, NSControlSize, NSEvent,
-    NSEventModifierFlags, NSFloatingWindowLevel, NSFont, NSFontWeightBold, NSFontWeightMedium,
-    NSFontWeightRegular, NSFontWeightSemibold, NSImage, NSLineBreakMode, NSNormalWindowLevel,
-    NSProgressIndicator, NSProgressIndicatorStyle, NSTextAlignment, NSTextField,
-    NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
-    NSWindow, NSWindowStyleMask, NSWindowTitleVisibility,
+    NSEventModifierFlags, NSFloatingWindowLevel, NSFocusRingType, NSFont, NSFontWeightBold,
+    NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold, NSImage, NSLineBreakMode,
+    NSNormalWindowLevel, NSProgressIndicator, NSProgressIndicatorStyle, NSTextAlignment,
+    NSTextField, NSView, NSWindow, NSWindowStyleMask, NSWindowTitleVisibility,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString, ns_string};
 use objc2_quartz_core::{
@@ -31,21 +31,27 @@ use objc2_quartz_core::{
 };
 use yatt_core::{Status, TaskId};
 
-pub use crate::board::DemoPointer;
 use crate::board::{Board, ColumnGeom};
+pub use crate::board::{DemoPhase, DemoPointer};
 use crate::classes::{
-    ActionTarget, Fill, FillView, FlippedView, RootView, WindowDelegate, editing_text,
+    ActionTarget, FieldDelegate, Fill, FillView, FlippedView, RootView, WindowDelegate,
+    editing_text,
 };
 use crate::modal::Modal;
 use crate::model::{Snapshot, TimerSnap, UiEvent, format_clock};
 use crate::motion;
-use crate::style::{CARD_H, CARD_W};
+use crate::style;
 
 pub type Sink = Rc<dyn Fn(UiEvent)>;
 
 const HEADER_H: f64 = 112.0;
 const PAD: f64 = 16.0;
-const FIELD_INSET: f64 = 12.0;
+/// A column's title row above its cards.
+const COLUMN_HEAD: f64 = 44.0;
+/// The new-task capsule.
+const CAPSULE_H: f64 = 44.0;
+const CAPSULE_MAX_W: f64 = 460.0;
+const CAPSULE_BOTTOM: f64 = 22.0;
 const DIGIT_W: f64 = 28.0;
 const COLON_W: f64 = 14.0;
 /// Minimal mode: just the timer.
@@ -66,6 +72,7 @@ struct Ui {
     header_rule: Retained<FillView>,
     dividers: [Retained<FillView>; 2],
     columns: [Column; 3],
+    capsule: Retained<NSView>,
     new_task: Retained<NSTextField>,
     cards: Rc<Board>,
     modal: Modal,
@@ -98,6 +105,8 @@ struct Column {
     tint: Retained<FillView>,
     title: Retained<NSTextField>,
     count: Retained<NSTextField>,
+    /// List or stack.
+    toggle: Retained<NSButton>,
     highlighted: Cell<bool>,
 }
 
@@ -124,18 +133,15 @@ impl MainWindow {
         window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
         window.setMinSize(NSSize::new(760.0, 480.0));
 
-        let effect = NSVisualEffectView::new(mtm);
-        effect.setMaterial(NSVisualEffectMaterial::UnderWindowBackground);
-        effect.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
-        effect.setState(NSVisualEffectState::FollowsWindowActiveState);
-        window.setContentView(Some(&effect));
-
-        let root = RootView::new(mtm, effect.bounds());
+        // Opaque and theme-aware, like Calendar: the system window background.
+        window.setOpaque(true);
+        window.setBackgroundColor(Some(&NSColor::windowBackgroundColor()));
+        let root = RootView::new(mtm, frame);
         root.setAutoresizingMask(
             NSAutoresizingMaskOptions::ViewWidthSizable
                 | NSAutoresizingMaskOptions::ViewHeightSizable,
         );
-        effect.addSubview(&root);
+        window.setContentView(Some(&root));
 
         let mut retained: Vec<Retained<AnyObject>> = Vec::new();
         let header = Header::new(mtm, &sink, &mut retained);
@@ -146,33 +152,10 @@ impl MainWindow {
         let header_rule = FillView::new(mtm, Fill::Separator);
         board.addSubview(&header_rule);
 
-        let new_task = NSTextField::textFieldWithString(ns_string!(""), mtm);
-        new_task.setPlaceholderString(Some(ns_string!("Новая задача")));
-        new_task.setBezelStyle(objc2_app_kit::NSTextFieldBezelStyle::RoundedBezel);
-        {
-            let sink = sink.clone();
-            let field = ObjcWeak::from_retained(&new_task);
-            let target = ActionTarget::new(mtm, move || {
-                let Some(field) = field.load() else { return };
-                let title = field.stringValue().to_string();
-                let title = title.trim();
-                if !title.is_empty() {
-                    sink(UiEvent::NewTask(title.to_string()));
-                    field.setStringValue(ns_string!(""));
-                }
-            });
-            unsafe {
-                new_task.setTarget(Some(&target));
-                new_task.setAction(Some(ActionTarget::sel()));
-            }
-            retained.push(Retained::into_super(Retained::into_super(target)));
-        }
-
         let columns = Status::ALL.map(|_| Column::new(mtm));
         for c in &columns {
             board.addSubview(&c.view);
         }
-        columns[0].view.addSubview(&new_task);
         let dividers = [
             FillView::new(mtm, Fill::Separator),
             FillView::new(mtm, Fill::Separator),
@@ -195,6 +178,21 @@ impl MainWindow {
         };
         board.addSubview(&cards.canvas);
 
+        // The new-task capsule floats over the cards, under the dragged ones.
+        let (capsule, capsule_content) = style::glass(mtm, CAPSULE_H / 2.0);
+        let new_task = NSTextField::textFieldWithString(ns_string!(""), mtm);
+        new_task.setPlaceholderString(Some(ns_string!(
+            "Новая задача  ·  ↩ в бэклог  ·  ⌘↩ в работу"
+        )));
+        new_task.setBordered(false);
+        new_task.setBezeled(false);
+        new_task.setDrawsBackground(false);
+        new_task.setFocusRingType(NSFocusRingType::None);
+        new_task.setFont(Some(&NSFont::systemFontOfSize(14.0)));
+        capsule_content.addSubview(&new_task);
+        board.addSubview(&capsule);
+        board.addSubview(&cards.overlay);
+
         let modal = Modal::new(mtm, &sink);
         root.addSubview(&modal.dim);
         root.addSubview(&modal.panel);
@@ -209,6 +207,7 @@ impl MainWindow {
             header_rule,
             dividers,
             columns,
+            capsule,
             new_task,
             cards,
             modal,
@@ -218,12 +217,11 @@ impl MainWindow {
             _retained: RefCell::new(retained),
         });
         *tint_target.borrow_mut() = Some(Rc::downgrade(&ui));
-        *tint_target.borrow_mut() = Some(Rc::downgrade(&ui));
         Ui::wire(&ui);
 
         let delegate = WindowDelegate::new(mtm, move || sink(UiEvent::Quit));
         ui.window
-            .setDelegate(Some(objc2::runtime::ProtocolObject::from_ref(&*delegate)));
+            .setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
         ui._retained
             .borrow_mut()
             .push(Retained::into_super(Retained::into_super(delegate)));
@@ -268,15 +266,31 @@ impl MainWindow {
         true
     }
 
-    /// Development aid: synthetic pointer input for the demo script, in board
-    /// coordinates (y down from the top of the board).
+    /// Development aid: synthetic pointer input for the demo script, in canvas
+    /// coordinates (y down from the top of the cards area).
     pub fn demo_pointer(&self, input: DemoPointer) {
         self.ui.cards.demo_pointer(input);
     }
 
-    /// Development aid: where a column's stack sits, in board coordinates.
-    pub fn demo_anchor(&self, column: usize) -> (f64, f64) {
-        self.ui.cards.demo_anchor(column)
+    /// Development aid: the centre of a card, in canvas coordinates.
+    pub fn demo_center(&self, id: TaskId) -> Option<(f64, f64)> {
+        self.ui.cards.demo_center(id)
+    }
+
+    /// Development aid: the horizontal centre of a column, in canvas coordinates.
+    pub fn demo_column_x(&self, column: usize) -> f64 {
+        self.ui.cards.demo_column_x(column)
+    }
+
+    /// Development aid: the list/stack toggle of a column.
+    pub fn demo_toggle_stack(&self, column: usize) {
+        self.ui.toggle_stack(column);
+    }
+
+    /// Development aid: types a task into the new-task field and submits it.
+    pub fn demo_new_task(&self, title: &str, in_progress: bool) {
+        self.ui.new_task.setStringValue(&NSString::from_str(title));
+        self.ui.submit_new_task(in_progress);
     }
 
     /// Development aid: prints the notes editor's rendered HTML to stderr.
@@ -327,10 +341,11 @@ impl Ui {
         *this.root.ivars().on_cancel.borrow_mut() = Some(Box::new({
             let weak = weak.clone();
             move || {
-                if let Some(ui) = weak.upgrade()
-                    && let Some(id) = ui.modal.open_task()
-                {
+                let Some(ui) = weak.upgrade() else { return };
+                if let Some(id) = ui.modal.open_task() {
                     (ui.sink)(UiEvent::ToggleExpand(id));
+                } else {
+                    ui.cards.clear_selection();
                 }
             }
         }));
@@ -349,6 +364,86 @@ impl Ui {
         this._retained
             .borrow_mut()
             .push(Retained::into_super(Retained::into_super(target)));
+
+        // Return files the task into the backlog, ⌘Return straight into "В работе".
+        let delegate = FieldDelegate::new(this.mtm, {
+            let weak = weak.clone();
+            move |command| {
+                let Some(ui) = weak.upgrade() else {
+                    return false;
+                };
+                let app = NSApplication::sharedApplication(ui.mtm);
+                let Some(event) = app.currentEvent() else {
+                    return false;
+                };
+                let is_return = matches!(event.keyCode(), 36 | 76);
+                if !is_return || (command != sel!(insertNewline:) && command != sel!(noop:)) {
+                    return false;
+                }
+                let cmd = event
+                    .modifierFlags()
+                    .contains(NSEventModifierFlags::Command);
+                ui.submit_new_task(cmd);
+                true
+            }
+        });
+        unsafe {
+            this.new_task
+                .setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+        }
+        this._retained
+            .borrow_mut()
+            .push(Retained::into_super(Retained::into_super(delegate)));
+
+        for (i, c) in this.columns.iter().enumerate() {
+            let weak = weak.clone();
+            let target = ActionTarget::new(this.mtm, move || {
+                if let Some(ui) = weak.upgrade() {
+                    ui.toggle_stack(i);
+                }
+            });
+            unsafe {
+                c.toggle.setTarget(Some(&target));
+                c.toggle.setAction(Some(ActionTarget::sel()));
+            }
+            this._retained
+                .borrow_mut()
+                .push(Retained::into_super(Retained::into_super(target)));
+        }
+    }
+
+    fn submit_new_task(&self, in_progress: bool) {
+        let title = self.new_task.stringValue().to_string();
+        let title = title.trim();
+        if title.is_empty() {
+            return;
+        }
+        let status = if in_progress {
+            Status::InProgress
+        } else {
+            Status::Backlog
+        };
+        // The card takes off from the field and springs into its column.
+        let f = self.capsule.frame();
+        let centre = NSPoint::new(
+            f.origin.x + f.size.width / 2.0,
+            f.origin.y + f.size.height / 2.0,
+        );
+        let at = self
+            .cards
+            .canvas
+            .convertPoint_fromView(centre, Some(&self.board));
+        self.cards.spawn_from(at, status);
+        (self.sink)(UiEvent::NewTask {
+            title: title.to_string(),
+            status,
+        });
+        self.new_task.setStringValue(ns_string!(""));
+    }
+
+    fn toggle_stack(&self, column: usize) {
+        self.cards.toggle_stack(column);
+        self.columns[column].update_toggle(self.cards.is_stacked(column));
     }
 
     fn key_down(&self, event: &NSEvent) -> bool {
@@ -396,15 +491,29 @@ impl Ui {
         ));
         self.header_rule
             .setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(size.width, 1.0)));
+        let canvas_h = board_h - COLUMN_HEAD;
+        self.cards.canvas.setFrame(NSRect::new(
+            NSPoint::new(0.0, COLUMN_HEAD),
+            NSSize::new(size.width, canvas_h),
+        ));
         self.cards
-            .canvas
+            .overlay
             .setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(size.width, board_h)));
+        let cw = (size.width - 80.0).min(CAPSULE_MAX_W);
+        self.capsule.setFrame(NSRect::new(
+            NSPoint::new(
+                ((size.width - cw) / 2.0).round(),
+                board_h - CAPSULE_BOTTOM - CAPSULE_H,
+            ),
+            NSSize::new(cw, CAPSULE_H),
+        ));
+        let field_h = 20.0;
+        self.new_task.setFrame(NSRect::new(
+            NSPoint::new(20.0, ((CAPSULE_H - field_h) / 2.0).round()),
+            NSSize::new(cw - 40.0, field_h),
+        ));
         let col_w = (size.width / 3.0).floor();
-        let mut geom = [ColumnGeom {
-            rect: NSRect::ZERO,
-            anchor: NSPoint::ZERO,
-            top_limit: 0.0,
-        }; 3];
+        let mut geom = [ColumnGeom::default(); 3];
         for (i, c) in self.columns.iter().enumerate() {
             let x = i as f64 * col_w;
             let w = if i == 2 { size.width - x } else { col_w };
@@ -415,37 +524,25 @@ impl Ui {
             c.tint.setFrame(c.view.bounds());
             c.title.setFrame(NSRect::new(
                 NSPoint::new(PAD + 2.0, 14.0),
-                NSSize::new(w - 90.0, 20.0),
+                NSSize::new(w - 110.0, 20.0),
             ));
             c.count.setFrame(NSRect::new(
-                NSPoint::new(w - PAD - 42.0, 14.0),
+                NSPoint::new(w - PAD - 70.0, 14.0),
                 NSSize::new(40.0, 20.0),
             ));
-            let mut top = 44.0;
-            if i == 0 {
-                self.new_task.setFrame(NSRect::new(
-                    NSPoint::new(FIELD_INSET, top),
-                    NSSize::new(w - 2.0 * FIELD_INSET, 24.0),
-                ));
-                top += 34.0;
-            }
+            c.toggle.setFrame(NSRect::new(
+                NSPoint::new(w - PAD - 24.0, 12.0),
+                NSSize::new(24.0, 22.0),
+            ));
             if i < 2 {
                 self.dividers[i].setFrame(NSRect::new(
                     NSPoint::new(x + w - 0.5, 1.0),
                     NSSize::new(1.0, board_h),
                 ));
             }
-            // A pile spans −0.10W … 1.22W around its top card: centre that in the column.
-            geom[i] = ColumnGeom {
-                rect: NSRect::new(NSPoint::new(x, 0.0), NSSize::new(w, board_h)),
-                anchor: NSPoint::new(
-                    (x + w / 2.0 - 0.56 * CARD_W).round(),
-                    (top + 0.23 * CARD_H + 10.0).round(),
-                ),
-                top_limit: top,
-            };
+            geom[i] = ColumnGeom { x, w };
         }
-        self.cards.set_geometry(geom);
+        self.cards.set_geometry(geom, canvas_h, COLUMN_HEAD);
     }
 
     fn set_highlight(&self, index: usize, on: bool) {
@@ -822,13 +919,37 @@ impl Column {
         count.setTextColor(Some(&NSColor::secondaryLabelColor()));
         view.addSubview(&title);
         view.addSubview(&count);
-        Self {
+        // Target and action are set in `Ui::wire`: the layout is board state, not an event.
+        let toggle =
+            unsafe { NSButton::buttonWithTitle_target_action(ns_string!(""), None, None, mtm) };
+        toggle.setBordered(false);
+        toggle.setContentTintColor(Some(&NSColor::secondaryLabelColor()));
+        view.addSubview(&toggle);
+        let column = Self {
             view,
             tint,
             title,
             count,
+            toggle,
             highlighted: Cell::new(false),
-        }
+        };
+        column.update_toggle(false);
+        column
+    }
+
+    fn update_toggle(&self, stacked: bool) {
+        let (symbol, tip) = if stacked {
+            ("list.bullet", "Списком")
+        } else {
+            ("square.stack", "Стопкой")
+        };
+        let tip = NSString::from_str(tip);
+        let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+            &NSString::from_str(symbol),
+            Some(&tip),
+        );
+        self.toggle.setImage(image.as_deref());
+        self.toggle.setToolTip(Some(&tip));
     }
 }
 

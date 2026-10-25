@@ -1,9 +1,18 @@
 //! Card colours, glyphs and sizes, matched to the reference clip
 //! (docs/reference/card-motion.md).
 
+use objc2::MainThreadMarker;
 use objc2::rc::Retained;
-use objc2_app_kit::NSColor;
+use objc2::runtime::AnyClass;
+use objc2_app_kit::{
+    NSAutoresizingMaskOptions, NSColor, NSGlassEffectView, NSView, NSVisualEffectBlendingMode,
+    NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
+};
+use objc2_foundation::NSRect;
+use objc2_quartz_core::{CALayer, kCACornerCurveContinuous};
 use yatt_core::TaskId;
+
+use crate::classes::FlippedView;
 
 /// Card size; the height keeps the clip's 2.27 : 1 proportion.
 pub const CARD_W: f64 = 230.0;
@@ -66,4 +75,39 @@ pub fn text(hue: usize) -> Retained<NSColor> {
 /// Text on frosted glass.
 pub fn glass_text() -> Retained<NSColor> {
     rgb((0x2C, 0x2C, 0x30), 1.0)
+}
+
+/// Rounds a layer's corners as a continuous squircle, the way system controls are.
+pub fn round(layer: &CALayer, radius: f64) {
+    layer.setCornerRadius(radius);
+    layer.setCornerCurve(unsafe { kCACornerCurveContinuous });
+}
+
+/// A native glass surface: `NSGlassEffectView` where the system has it, a
+/// within-window blur with a hairline rim otherwise. Put content into the
+/// returned flipped view; it tracks the glass's size.
+pub fn glass(mtm: MainThreadMarker, radius: f64) -> (Retained<NSView>, Retained<FlippedView>) {
+    let content = FlippedView::new(mtm, NSRect::ZERO);
+    content.setAutoresizingMask(
+        NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
+    );
+    if AnyClass::get(c"NSGlassEffectView").is_some() {
+        let glass = NSGlassEffectView::new(mtm);
+        glass.setCornerRadius(radius);
+        glass.setContentView(Some(&content));
+        return (Retained::into_super(glass), content);
+    }
+    let glass = NSVisualEffectView::new(mtm);
+    glass.setMaterial(NSVisualEffectMaterial::Popover);
+    glass.setBlendingMode(NSVisualEffectBlendingMode::WithinWindow);
+    glass.setState(NSVisualEffectState::Active);
+    glass.setWantsLayer(true);
+    if let Some(layer) = glass.layer() {
+        round(&layer, radius);
+        layer.setMasksToBounds(true);
+        layer.setBorderWidth(0.5);
+        layer.setBorderColor(Some(&NSColor::separatorColor().CGColor()));
+    }
+    glass.addSubview(&content);
+    (Retained::into_super(glass), content)
 }

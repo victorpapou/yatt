@@ -4,22 +4,19 @@
 use std::cell::{Cell, RefCell};
 
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol};
+use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, Sel};
 use objc2::{
-    AnyThread, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send,
-    sel,
+    ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel,
 };
 use objc2_app_kit::{
-    NSColor, NSEvent, NSEventModifierFlags, NSResponder, NSTrackingArea, NSTrackingAreaOptions,
-    NSView, NSWindow, NSWindowDelegate,
+    NSColor, NSControl, NSControlTextEditingDelegate, NSEvent, NSEventModifierFlags, NSEventPhase,
+    NSResponder, NSTextFieldDelegate, NSTextView, NSView, NSWindow, NSWindowDelegate,
 };
 use objc2_foundation::{NSNotification, NSPoint, NSRect, NSString};
 use objc2_web_kit::{WKScriptMessage, WKScriptMessageHandler, WKUserContentController};
-use yatt_core::TaskId;
 
 pub type KeyHandler = Box<dyn Fn(&NSEvent) -> bool>;
-pub type CardHandler = Box<dyn Fn(TaskId, CardMsg)>;
-pub type HoverHandler = Box<dyn Fn(Option<NSPoint>)>;
+pub type CanvasHandler = Box<dyn Fn(CanvasMsg)>;
 
 // ---- target/action ----
 
@@ -184,8 +181,12 @@ impl RootView {
 /// What a [`FillView`] paints.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Fill {
-    /// A card's pastel face; `tracking` adds an accent rim.
-    Card { hue: usize, tracking: bool },
+    /// A card's pastel face; `tracking` and `selected` add an accent rim.
+    Card {
+        hue: usize,
+        tracking: bool,
+        selected: bool,
+    },
     /// The light frosting over a glass card's blur.
     Frost,
     /// The "N скрыто" capsule.
@@ -238,28 +239,38 @@ define_class!(
             };
             layer.setBackgroundColor(Some(&color.CGColor()));
             match fill {
-                Fill::Card { tracking, .. } => {
-                    layer.setCornerRadius(crate::style::CARD_RADIUS);
-                    layer.setBorderWidth(if tracking { 2.0 } else { 1.0 });
-                    let rim = if tracking {
-                        NSColor::controlAccentColor()
+                Fill::Card {
+                    tracking, selected, ..
+                } => {
+                    crate::style::round(&layer, crate::style::CARD_RADIUS);
+                    layer.setBorderWidth(if selected {
+                        2.5
+                    } else if tracking {
+                        1.5
                     } else {
-                        NSColor::whiteColor().colorWithAlphaComponent(0.45)
+                        0.5
+                    });
+                    let rim = if selected {
+                        NSColor::controlAccentColor()
+                    } else if tracking {
+                        NSColor::controlAccentColor().colorWithAlphaComponent(0.6)
+                    } else {
+                        NSColor::whiteColor().colorWithAlphaComponent(0.6)
                     };
                     layer.setBorderColor(Some(&rim.CGColor()));
                 }
                 Fill::Frost => {
-                    layer.setCornerRadius(crate::style::CARD_RADIUS);
-                    layer.setBorderWidth(1.0);
+                    crate::style::round(&layer, crate::style::CARD_RADIUS);
+                    layer.setBorderWidth(0.5);
                     layer.setBorderColor(Some(
-                        &NSColor::whiteColor().colorWithAlphaComponent(0.7).CGColor(),
+                        &NSColor::whiteColor().colorWithAlphaComponent(0.75).CGColor(),
                     ));
                 }
-                Fill::Badge => layer.setCornerRadius(9.0),
+                Fill::Badge => crate::style::round(&layer, 9.0),
                 _ => {}
             }
             if fill == Fill::Panel {
-                layer.setCornerRadius(16.0);
+                crate::style::round(&layer, 16.0);
                 layer.setBorderWidth(0.5);
                 layer.setBorderColor(Some(&NSColor::separatorColor().CGColor()));
                 layer.setShadowColor(Some(&NSColor::shadowColor().CGColor()));
@@ -334,73 +345,38 @@ impl ScriptHandler {
     }
 }
 
-/// Raw mouse input on a card, in the window's coordinates. The board decides
-/// what is a click and what is a drag.
-pub enum CardMsg {
-    Down { at: NSPoint, shift: bool },
+/// Pointer input on the board canvas, in the canvas's coordinates. The board
+/// decides what is a click, a drag or a scroll.
+pub enum CanvasMsg {
+    Down { at: NSPoint, shift: bool, cmd: bool },
     Dragged(NSPoint),
     Up(NSPoint),
+    Scroll(Scroll),
 }
 
-pub struct CardIvars {
-    pub id: TaskId,
-    pub on_msg: RefCell<Option<CardHandler>>,
+/// Where a trackpad gesture is; `None` for a plain mouse wheel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Swipe {
+    None,
+    Began,
+    Changed,
+    Ended,
+    /// Momentum after the fingers lifted.
+    Coasting,
 }
 
-define_class!(
-    // SAFETY: NSView has no subclassing requirements; no Drop impl.
-    #[unsafe(super(NSView, NSResponder, NSObject))]
-    #[thread_kind = MainThreadOnly]
-    #[ivars = CardIvars]
-    pub struct CardView;
-
-    impl CardView {
-        #[unsafe(method(isFlipped))]
-        fn is_flipped(&self) -> bool {
-            true
-        }
-
-        #[unsafe(method(mouseDown:))]
-        fn mouse_down(&self, event: &NSEvent) {
-            let shift = event.modifierFlags().contains(NSEventModifierFlags::Shift);
-            self.send(CardMsg::Down {
-                at: event.locationInWindow(),
-                shift,
-            });
-        }
-
-        #[unsafe(method(mouseDragged:))]
-        fn mouse_dragged(&self, event: &NSEvent) {
-            self.send(CardMsg::Dragged(event.locationInWindow()));
-        }
-
-        #[unsafe(method(mouseUp:))]
-        fn mouse_up(&self, event: &NSEvent) {
-            self.send(CardMsg::Up(event.locationInWindow()));
-        }
-    }
-);
-
-impl CardView {
-    pub fn new(mtm: MainThreadMarker, id: TaskId, frame: NSRect) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(CardIvars {
-            id,
-            on_msg: RefCell::new(None),
-        });
-        unsafe { msg_send![super(this), initWithFrame: frame] }
-    }
-
-    fn send(&self, msg: CardMsg) {
-        if let Some(f) = self.ivars().on_msg.borrow().as_ref() {
-            f(self.ivars().id, msg);
-        }
-    }
+#[derive(Debug, Clone, Copy)]
+pub struct Scroll {
+    pub at: NSPoint,
+    /// Finger travel in canvas points (y down), whatever the scrolling direction setting.
+    pub finger: (f64, f64),
+    /// How far the content should scroll (positive: further down the list).
+    pub scroll: f64,
+    pub swipe: Swipe,
 }
 
-/// Where the cards live. Tracks the mouse over the whole board so stacks can fan
-/// out on hover; reports `None` when the mouse leaves.
 pub struct CanvasIvars {
-    pub on_hover: RefCell<Option<HoverHandler>>,
+    pub on_msg: RefCell<Option<CanvasHandler>>,
 }
 
 define_class!(
@@ -416,44 +392,65 @@ define_class!(
             true
         }
 
-        #[unsafe(method(updateTrackingAreas))]
-        fn update_tracking_areas(&self) {
-            for area in self.trackingAreas().iter() {
-                self.removeTrackingArea(&area);
-            }
-            let options = NSTrackingAreaOptions::MouseMoved
-                | NSTrackingAreaOptions::MouseEnteredAndExited
-                | NSTrackingAreaOptions::ActiveInKeyWindow
-                | NSTrackingAreaOptions::InVisibleRect;
-            let area = unsafe {
-                NSTrackingArea::initWithRect_options_owner_userInfo(
-                    NSTrackingArea::alloc(),
-                    NSRect::ZERO,
-                    options,
-                    Some(self),
-                    None,
-                )
-            };
-            self.addTrackingArea(&area);
-            unsafe { msg_send![super(self), updateTrackingAreas] }
+        #[unsafe(method(acceptsFirstMouse:))]
+        fn accepts_first_mouse(&self, _event: Option<&NSEvent>) -> bool {
+            true
         }
 
-        #[unsafe(method(mouseMoved:))]
-        fn mouse_moved(&self, event: &NSEvent) {
-            let p = self.convertPoint_fromView(event.locationInWindow(), None);
-            self.send(Some(p));
-        }
-
-        #[unsafe(method(mouseExited:))]
-        fn mouse_exited(&self, _event: &NSEvent) {
-            self.send(None);
-        }
-
-        // Only the cards take clicks; empty board passes them to the columns below.
+        // The canvas takes every click inside it; the cards are only pictures.
         #[unsafe(method_id(hitTest:))]
         fn hit_test(&self, point: NSPoint) -> Option<Retained<NSView>> {
             let hit: Option<Retained<NSView>> = unsafe { msg_send![super(self), hitTest: point] };
-            hit.filter(|v| !std::ptr::eq(&**v, &**self))
+            hit.map(|_| Retained::into_super(self.retain()))
+        }
+
+        #[unsafe(method(mouseDown:))]
+        fn mouse_down(&self, event: &NSEvent) {
+            let flags = event.modifierFlags();
+            self.send(CanvasMsg::Down {
+                at: self.local(event),
+                shift: flags.contains(NSEventModifierFlags::Shift),
+                cmd: flags.contains(NSEventModifierFlags::Command),
+            });
+        }
+
+        #[unsafe(method(mouseDragged:))]
+        fn mouse_dragged(&self, event: &NSEvent) {
+            self.send(CanvasMsg::Dragged(self.local(event)));
+        }
+
+        #[unsafe(method(mouseUp:))]
+        fn mouse_up(&self, event: &NSEvent) {
+            self.send(CanvasMsg::Up(self.local(event)));
+        }
+
+        #[unsafe(method(scrollWheel:))]
+        fn scroll_wheel(&self, event: &NSEvent) {
+            let (dx, dy) = (event.scrollingDeltaX(), event.scrollingDeltaY());
+            let precise = event.hasPreciseScrollingDeltas();
+            let k = if precise { 1.0 } else { 16.0 };
+            // With natural scrolling the deltas follow the fingers; otherwise they oppose them.
+            let sign = if event.isDirectionInvertedFromDevice() { 1.0 } else { -1.0 };
+            let phase = event.phase();
+            let swipe = if !precise {
+                Swipe::None
+            } else if event.momentumPhase() != NSEventPhase::None {
+                Swipe::Coasting
+            } else if phase.contains(NSEventPhase::Began) {
+                Swipe::Began
+            } else if phase.intersects(NSEventPhase::Ended | NSEventPhase::Cancelled) {
+                Swipe::Ended
+            } else if phase.intersects(NSEventPhase::Changed | NSEventPhase::Stationary) {
+                Swipe::Changed
+            } else {
+                Swipe::None
+            };
+            self.send(CanvasMsg::Scroll(Scroll {
+                at: self.local(event),
+                finger: (sign * dx * k, sign * dy * k),
+                scroll: -dy * k,
+                swipe,
+            }));
         }
     }
 );
@@ -461,15 +458,85 @@ define_class!(
 impl CanvasView {
     pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(CanvasIvars {
-            on_hover: RefCell::new(None),
+            on_msg: RefCell::new(None),
         });
         unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] }
     }
 
-    fn send(&self, p: Option<NSPoint>) {
-        if let Some(f) = self.ivars().on_hover.borrow().as_ref() {
-            f(p);
+    fn local(&self, event: &NSEvent) -> NSPoint {
+        self.convertPoint_fromView(event.locationInWindow(), None)
+    }
+
+    fn send(&self, msg: CanvasMsg) {
+        if let Some(f) = self.ivars().on_msg.borrow().as_ref() {
+            f(msg);
         }
+    }
+}
+
+define_class!(
+    // SAFETY: NSView has no subclassing requirements; no Drop impl.
+    #[unsafe(super(NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = NoIvars]
+    /// A flipped view that never takes clicks: cards being dragged ride on it.
+    pub struct OverlayView;
+
+    impl OverlayView {
+        #[unsafe(method(isFlipped))]
+        fn is_flipped(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method_id(hitTest:))]
+        fn hit_test(&self, _point: NSPoint) -> Option<Retained<NSView>> {
+            None
+        }
+    }
+);
+
+impl OverlayView {
+    pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(NoIvars);
+        unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] }
+    }
+}
+
+// ---- text field delegate ----
+
+pub struct FieldIvars {
+    /// Gets each editing command (`insertNewline:` …); returns true when it handled it.
+    on_command: Box<dyn Fn(Sel) -> bool>,
+}
+
+define_class!(
+    // SAFETY: NSObject has no subclassing requirements; no Drop impl.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = FieldIvars]
+    pub struct FieldDelegate;
+
+    unsafe impl NSObjectProtocol for FieldDelegate {}
+
+    unsafe impl NSControlTextEditingDelegate for FieldDelegate {
+        #[unsafe(method(control:textView:doCommandBySelector:))]
+        fn do_command(&self, _control: &NSControl, _view: &NSTextView, sel: Sel) -> bool {
+            (self.ivars().on_command)(sel)
+        }
+    }
+
+    unsafe impl NSTextFieldDelegate for FieldDelegate {}
+);
+
+impl FieldDelegate {
+    pub fn new(
+        mtm: MainThreadMarker,
+        on_command: impl Fn(Sel) -> bool + 'static,
+    ) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(FieldIvars {
+            on_command: Box::new(on_command),
+        });
+        unsafe { msg_send![super(this), init] }
     }
 }
 

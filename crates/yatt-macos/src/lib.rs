@@ -20,9 +20,9 @@ mod style;
 mod window;
 
 pub use model::{
-    CardSnap, ColumnSnap, Snapshot, TimerSnap, UiEvent, format_clock, format_duration,
+    CardSnap, ColumnSnap, Snapshot, TimerSnap, UiEvent, format_clock, format_duration, moves_into,
 };
 #[cfg(target_os = "macos")]
 pub use objc2::MainThreadMarker;
 #[cfg(target_os = "macos")]
-pub use window::{DemoPointer, MainWindow, Sink};
+pub use window::{DemoPhase, DemoPointer, MainWindow, Sink};

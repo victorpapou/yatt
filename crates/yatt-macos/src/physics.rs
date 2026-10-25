@@ -23,6 +23,12 @@ impl Spring {
 pub const PILE: Spring = Spring::new(320.0, 0.75);
 /// The card under the cursor while dragging: nearly attached, a touch of lag.
 pub const LEAD: Spring = Spring::new(1200.0, 0.85);
+/// A card settling into its list slot after a drop.
+pub const SLOT: Spring = Spring::new(420.0, 0.82);
+/// A new card flying from the new-task field into its column.
+pub const FLY: Spring = Spring::new(170.0, 0.72);
+/// The task modal growing out of its card and shrinking back.
+pub const MORPH: Spring = Spring::new(260.0, 0.84);
 /// Rotation follows faster than position, so tilt reads as a reaction to motion.
 pub const ROTATION: Spring = Spring::new(500.0, 0.8);
 
@@ -152,6 +158,12 @@ pub fn fan_origin(pivot: (f64, f64), w: f64, h: f64, deg: f64) -> (f64, f64) {
     (pivot.0 + rx - w / 2.0, pivot.1 + ry - h / 2.0)
 }
 
+/// Where a card dropped with its centre at `y` lands in a list whose first slot
+/// starts at `top`, slots `pitch` apart, holding `n` cards.
+pub fn insert_index(y: f64, top: f64, pitch: f64, n: usize) -> usize {
+    (((y - top) / pitch).floor().max(0.0) as usize).min(n)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,6 +198,27 @@ mod tests {
             }
         }
         assert!(lead.x > f1.x && f1.x > f3.x);
+    }
+
+    #[test]
+    fn insert_index_by_slot() {
+        assert_eq!(insert_index(-50.0, 10.0, 100.0, 3), 0);
+        assert_eq!(insert_index(60.0, 10.0, 100.0, 3), 0);
+        assert_eq!(insert_index(115.0, 10.0, 100.0, 3), 1);
+        assert_eq!(insert_index(900.0, 10.0, 100.0, 3), 3);
+    }
+
+    #[test]
+    fn morph_spring_settles_quickly() {
+        let mut b = Body::at(0.0, 0.0);
+        b.spring = MORPH;
+        b.target(400.0, 300.0, 0.0);
+        let mut t = 0.0;
+        while !b.at_rest() && t < 2.0 {
+            b.step(1.0 / 120.0);
+            t += 1.0 / 120.0;
+        }
+        assert!(t < 0.8, "settled after {t}s");
     }
 
     #[test]

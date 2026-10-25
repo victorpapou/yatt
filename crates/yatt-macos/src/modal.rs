@@ -1,9 +1,13 @@
 //! The task modal. A click on a card morphs it into a fixed-size panel over a
 //! dimmed board: title, stats, the markdown notes editor and the latest time
-//! entries. Closing morphs it back into the card.
+//! entries. Closing morphs it back into the card. The panel's frame rides a
+//! spring ([`physics::MORPH`]), so the morph lands with a little give.
 
 use std::cell::{Cell, RefCell};
+use std::ptr::NonNull;
 use std::rc::Rc;
+
+use block2::RcBlock;
 
 use objc2::rc::{Retained, Weak as ObjcWeak};
 use objc2::runtime::AnyObject;
@@ -12,14 +16,16 @@ use objc2_app_kit::{
     NSAnimatablePropertyContainer, NSButton, NSColor, NSControlSize, NSFont, NSFontWeightRegular,
     NSFontWeightSemibold, NSLineBreakMode, NSTextField, NSView,
 };
-use objc2_foundation::{NSPoint, NSRect, NSSize, NSString, ns_string};
+use objc2_foundation::{NSPoint, NSRect, NSSize, NSString, NSTimer, ns_string};
+use objc2_quartz_core::CACurrentMediaTime;
 use yatt_core::{Status, TaskId};
 
 use crate::classes::{ActionTarget, Fill, FillView, FlippedView};
 use crate::editor::{EditorMsg, NotesEditor};
 use crate::model::{CardSnap, UiEvent, format_duration};
 use crate::motion;
-use crate::window::{Sink, animate, animate_with_completion};
+use crate::physics::{self, Body};
+use crate::window::{Sink, animate};
 
 const ENTRY_LINES: usize = 4;
 
@@ -39,7 +45,91 @@ pub struct Modal {
     /// Last title and notes known to match the store, to tell edits from echoes.
     title_known: Rc<RefCell<String>>,
     notes_known: Rc<RefCell<String>>,
+    morph: Rc<Morph>,
     _retained: Vec<Retained<AnyObject>>,
+}
+
+/// Springs the panel's frame towards a target rect: origin and size each ride a body.
+struct Morph {
+    panel: Retained<FillView>,
+    origin: Cell<Body>,
+    size: Cell<Body>,
+    timer: RefCell<Option<Retained<NSTimer>>>,
+    last_tick: Cell<f64>,
+    done: RefCell<Option<Box<dyn Fn()>>>,
+}
+
+impl Morph {
+    fn jump(&self, r: NSRect) {
+        let mut o = Body::at(r.origin.x, r.origin.y);
+        let mut s = Body::at(r.size.width, r.size.height);
+        o.spring = physics::MORPH;
+        s.spring = physics::MORPH;
+        self.origin.set(o);
+        self.size.set(s);
+        self.panel.setFrame(r);
+    }
+
+    /// Springs to `r`, then runs `done` (dropping any earlier one unrun).
+    fn to(self: &Rc<Self>, r: NSRect, done: Option<Box<dyn Fn()>>) {
+        let (mut o, mut s) = (self.origin.get(), self.size.get());
+        o.target(r.origin.x, r.origin.y, 0.0);
+        s.target(r.size.width, r.size.height, 0.0);
+        self.origin.set(o);
+        self.size.set(s);
+        *self.done.borrow_mut() = done;
+        if motion::reduce_motion() {
+            self.jump(r);
+            self.finish();
+            return;
+        }
+        if self.timer.borrow().is_some() {
+            return;
+        }
+        self.last_tick.set(CACurrentMediaTime());
+        let weak = Rc::downgrade(self);
+        let block = RcBlock::new(move |_timer: NonNull<NSTimer>| {
+            if let Some(m) = weak.upgrade() {
+                m.tick();
+            }
+        });
+        let timer = unsafe {
+            NSTimer::scheduledTimerWithTimeInterval_repeats_block(1.0 / 120.0, true, &block)
+        };
+        *self.timer.borrow_mut() = Some(timer);
+    }
+
+    fn tick(&self) {
+        let now = CACurrentMediaTime();
+        let dt = (now - self.last_tick.replace(now)).clamp(0.0, 1.0 / 30.0);
+        let (mut o, mut s) = (self.origin.get(), self.size.get());
+        o.step(dt);
+        s.step(dt);
+        let rest = o.at_rest() && s.at_rest();
+        if rest {
+            o.settle();
+            s.settle();
+        }
+        self.origin.set(o);
+        self.size.set(s);
+        self.panel.setFrame(NSRect::new(
+            NSPoint::new(o.x, o.y),
+            NSSize::new(s.x.max(1.0), s.y.max(1.0)),
+        ));
+        if rest {
+            if let Some(t) = self.timer.borrow_mut().take() {
+                t.invalidate();
+            }
+            self.finish();
+        }
+    }
+
+    fn finish(&self) {
+        let done = self.done.borrow_mut().take();
+        if let Some(f) = done {
+            f();
+        }
+    }
 }
 
 impl Modal {
@@ -178,9 +268,19 @@ impl Modal {
             content.addSubview(v);
         }
 
+        let morph = Rc::new(Morph {
+            panel: panel.clone(),
+            origin: Cell::new(Body::at(0.0, 0.0)),
+            size: Cell::new(Body::at(0.0, 0.0)),
+            timer: RefCell::new(None),
+            last_tick: Cell::new(0.0),
+            done: RefCell::new(None),
+        });
+
         Self {
             dim,
             panel,
+            morph,
             content,
             title,
             stats,
@@ -222,11 +322,9 @@ impl Modal {
         self.dim.setFrame(bounds);
         let frame = Self::target_frame(bounds);
         if self.open.get().is_some() {
-            self.panel.setFrame(frame);
+            self.morph.jump(frame);
         }
         let (w, h) = (frame.size.width, frame.size.height);
-        self.content
-            .setFrame(NSRect::new(NSPoint::ZERO, frame.size));
         let pad = 24.0;
         let iw = w - 2.0 * pad;
         self.title.setFrame(NSRect::new(
@@ -270,25 +368,23 @@ impl Modal {
         self.title.setStringValue(&NSString::from_str(&snap.title));
         self.editor.set_markdown(&snap.notes);
         self.update(snap, status);
-        self.layout(bounds);
 
+        // Lay the content out at full size, then shrink the panel onto the card: the
+        // content keeps its layout and is revealed as the panel grows.
         let target = Self::target_frame(bounds);
-        self.panel.setFrame(from);
+        self.panel.setFrame(target);
         self.content
             .setFrame(NSRect::new(NSPoint::ZERO, target.size));
+        self.layout(bounds);
+        self.morph.jump(from);
+        self.panel.setAlphaValue(1.0);
         self.content.setAlphaValue(0.0);
         self.dim.setAlphaValue(0.0);
         self.dim.setHidden(false);
         self.panel.setHidden(false);
-        let reduce = motion::reduce_motion();
-        if reduce {
-            self.panel.setFrame(target);
-        }
-        let (panel, content, dim) = (self.panel.clone(), self.content.clone(), self.dim.clone());
+        self.morph.to(target, None);
+        let (content, dim) = (self.content.clone(), self.dim.clone());
         animate(true, motion::MODAL_OPEN_SECS, move || {
-            if !reduce {
-                panel.animator().setFrame(target);
-            }
             content.animator().setAlphaValue(1.0);
             dim.animator().setAlphaValue(1.0);
         });
@@ -306,24 +402,24 @@ impl Modal {
         }
         self.open.set(None);
         let (panel, content, dim) = (self.panel.clone(), self.content.clone(), self.dim.clone());
-        let (panel2, dim2) = (self.panel.clone(), self.dim.clone());
-        let reduce = motion::reduce_motion();
-        animate_with_completion(
-            motion::MODAL_CLOSE_SECS,
-            move || {
-                match to {
-                    Some(rect) if !reduce => panel.animator().setFrame(rect),
-                    _ => panel.animator().setAlphaValue(0.0),
-                }
-                content.animator().setAlphaValue(0.0);
-                dim.animator().setAlphaValue(0.0);
-            },
-            move || {
-                panel2.setHidden(true);
-                panel2.setAlphaValue(1.0);
-                dim2.setHidden(true);
+        let gone = to.is_none();
+        animate(true, motion::MODAL_CLOSE_SECS, move || {
+            if gone {
+                panel.animator().setAlphaValue(0.0);
+            }
+            content.animator().setAlphaValue(0.0);
+            dim.animator().setAlphaValue(0.0);
+        });
+        let (panel, dim) = (self.panel.clone(), self.dim.clone());
+        let to = to.unwrap_or_else(|| self.panel.frame());
+        self.morph.to(
+            to,
+            Some(Box::new(move || {
+                panel.setHidden(true);
+                panel.setAlphaValue(1.0);
+                dim.setHidden(true);
                 done();
-            },
+            })),
         );
     }
 
