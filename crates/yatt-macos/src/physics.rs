@@ -45,18 +45,18 @@ pub const MORPH: Spring = Spring::new(260.0, 1.0);
 pub const ROTATION: Spring = Spring::new(500.0, 0.8);
 
 /// How much later than the one ahead each follower of a dragged group replays
-/// the lead's path, in seconds, the first one included: for a group of two,
-/// three, and from five on (four is between). Small groups get longer steps, so
-/// the tail reads about as long whatever the size. The one place to tune it.
+/// the lead's path, in seconds, the first one included: for a group of two, of
+/// three, and of four or more. Small groups get longer steps, so the tail reads
+/// about as long whatever the size. The one place to tune it.
 pub const TRAIL_DELAYS: (f64, f64, f64) = (0.08, 0.06, 0.04);
 
-/// The delay step for a dragged group of `n` cards.
+/// The delay step for a dragged group of `n` cards: 80 ms for two, 60 ms for
+/// three, 40 ms for four or more. Follower `i` trails the lead by `i` steps.
 pub fn trail_step(n: usize) -> f64 {
     let (two, three, many) = TRAIL_DELAYS;
     match n {
         0..=2 => two,
         3 => three,
-        4 => (three + many) / 2.0,
         _ => many,
     }
 }

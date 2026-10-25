@@ -85,7 +85,7 @@ tabular digits, tracked +0.15, at 50%.
 - A dragged group: the lead follows the pointer on a slightly jelly spring
   (ζ 0.7); up to eight followers replay the lead's own path, each the same
   step later than the one before (the first one too): 80 ms for a pair, 60 ms
-  for three, 50 ms for four, 40 ms from five on, each 5% smaller (never below
+  for three, 40 ms for four or more (follower i trails by i steps), each 5% smaller (never below
   0.6), centred under the lead so none shows outside it at rest; the rest hide
   until the drop. All of them squash a little (at most 4.5%) with their speed;
   the followers tilt up to 2°. The selection ring shows while choosing, not while
