@@ -20,27 +20,27 @@ impl Spring {
 }
 
 /// Resting in a stack or fan.
-pub const PILE: Spring = Spring::new(320.0, 0.75);
+pub const PILE: Spring = Spring::new(320.0, 0.95);
 /// The card under the cursor while dragging: nearly attached, a touch of lag.
-pub const LEAD: Spring = Spring::new(1200.0, 0.85);
+pub const LEAD: Spring = Spring::new(1200.0, 0.95);
 /// A card settling into its list slot after a drop.
-pub const SLOT: Spring = Spring::new(420.0, 0.82);
+pub const SLOT: Spring = Spring::new(420.0, 1.0);
 /// A new card flying from the new-task field into its column.
-pub const FLY: Spring = Spring::new(170.0, 0.72);
+pub const FLY: Spring = Spring::new(170.0, 0.95);
 /// The task modal growing out of its card and shrinking back.
-pub const MORPH: Spring = Spring::new(260.0, 0.84);
+pub const MORPH: Spring = Spring::new(260.0, 1.0);
 /// Rotation follows faster than position, so tilt reads as a reaction to motion.
-pub const ROTATION: Spring = Spring::new(500.0, 0.8);
+pub const ROTATION: Spring = Spring::new(500.0, 0.95);
 
 /// The `i`-th card behind the lead (1-based): softer, so the train stretches out.
 pub fn follower(i: usize) -> Spring {
-    Spring::new(420.0 / (1.0 + 0.15 * i as f64), 0.7)
+    Spring::new(420.0 / (1.0 + 0.15 * i as f64), 0.9)
 }
 
 /// Degrees of tilt per point/second of horizontal speed.
 pub const TILT_PER_SPEED: f64 = 0.012;
 pub const LEAD_MAX_TILT: f64 = 4.0;
-pub const FOLLOWER_MAX_TILT: f64 = 12.0;
+pub const FOLLOWER_MAX_TILT: f64 = 0.0;
 
 /// Tilt in degrees (positive = clockwise on screen) for a horizontal speed in points/second.
 pub fn tilt(vx: f64, max: f64) -> f64 {
@@ -120,22 +120,16 @@ impl Body {
     }
 }
 
-/// Where the `i`-th card of a collapsed stack sits relative to the top card,
-/// as fractions of the card's width and height (index 0 is the top card).
-pub fn pile_offset(i: usize) -> (f64, f64) {
-    const OFFSETS: [(f64, f64); 6] = [
-        (0.0, 0.0),
-        (0.10, -0.23),
-        (0.22, -0.23),
-        (-0.06, 0.18),
-        (-0.10, 0.62),
-        (-0.07, 0.82),
-    ];
-    OFFSETS[i.min(OFFSETS.len() - 1)]
+/// The `i`-th card of a collapsed stack (0 = top): how far down its centre sits
+/// and its scale. The cards behind are a touch narrower and peek out below the
+/// top card as thin slivers; past the third they hide behind it.
+pub fn pile(i: usize) -> (f64, f64) {
+    let i = i.min(3) as f64;
+    (8.0 * i, 1.0 - 0.06 * i)
 }
 
-/// Fan angles in degrees (positive = clockwise), top card first: a swatch book
-/// turning about the stack's bottom-left corner, about −45° on top to +20° at the bottom.
+/// Fan rotations in degrees (positive = clockwise), top card first: about −45° on
+/// top to +20° at the bottom.
 pub fn fan_angles(n: usize) -> Vec<f64> {
     if n <= 1 {
         return vec![0.0; n];
@@ -146,16 +140,16 @@ pub fn fan_angles(n: usize) -> Vec<f64> {
     (0..n).map(|i| top + step * i as f64).collect()
 }
 
-/// Top-left corner of a `w × h` card turned by `deg` about `pivot`, where the pivot is the
-/// card's bottom-left corner. Returned for an unrotated frame that is then turned about
-/// its centre, which is how AppKit applies rotation.
-pub fn fan_origin(pivot: (f64, f64), w: f64, h: f64, deg: f64) -> (f64, f64) {
-    let t = deg.to_radians();
-    // Centre relative to the bottom-left corner, y down: (w/2, −h/2), turned by t.
-    let (cx, cy) = (w / 2.0, -h / 2.0);
-    let rx = cx * t.cos() - cy * t.sin();
-    let ry = cx * t.sin() + cy * t.cos();
-    (pivot.0 + rx - w / 2.0, pivot.1 + ry - h / 2.0)
+/// Fanned stack: the `i`-th card's centre relative to the stack's centre (y down)
+/// and its rotation. The cards spread around a ring in stack order, starting just
+/// right of the top and going clockwise, turning progressively as they go.
+pub fn fan(i: usize, n: usize, radius: f64) -> (f64, f64, f64) {
+    if n <= 1 {
+        return (0.0, 0.0, 0.0);
+    }
+    let step = (300.0 / (n - 1) as f64).min(58.0);
+    let t = (-80.0 + step * i as f64).to_radians();
+    (radius * t.cos(), radius * 0.9 * t.sin(), fan_angles(n)[i])
 }
 
 /// Where a card dropped with its centre at `y` lands in a list whose first slot
@@ -164,12 +158,17 @@ pub fn insert_index(y: f64, top: f64, pitch: f64, n: usize) -> usize {
     (((y - top) / pitch).floor().max(0.0) as usize).min(n)
 }
 
+/// The `i`-th card trailing a dragged group (0 = lead) shrinks the further back it is.
+pub fn trail_scale(i: usize) -> f64 {
+    (1.0 - 0.07 * i as f64).max(0.6)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn pile_spring_settles_with_small_overshoot_in_about_300ms() {
+    fn pile_spring_settles_without_visible_overshoot() {
         let mut b = Body::at(0.0, 0.0);
         b.target(100.0, 0.0, 0.0);
         let mut max = 0.0f64;
@@ -179,8 +178,8 @@ mod tests {
             max = max.max(b.x);
             t += 1.0 / 120.0;
         }
-        assert!(max > 100.0 && max < 104.0, "overshoot {max}");
-        assert!(t > 0.25 && t < 0.7, "settled after {t}s");
+        assert!(max < 100.3, "overshoot {max}");
+        assert!(t > 0.2 && t < 0.7, "settled after {t}s");
     }
 
     #[test]
@@ -224,7 +223,7 @@ mod tests {
     #[test]
     fn tilt_is_clamped_and_signed() {
         assert_eq!(tilt(10_000.0, LEAD_MAX_TILT), LEAD_MAX_TILT);
-        assert_eq!(tilt(-10_000.0, FOLLOWER_MAX_TILT), -FOLLOWER_MAX_TILT);
+        assert_eq!(tilt(-10_000.0, LEAD_MAX_TILT), -LEAD_MAX_TILT);
         assert!((tilt(100.0, 12.0) - 1.2).abs() < 1e-9);
     }
 
@@ -237,8 +236,12 @@ mod tests {
     }
 
     #[test]
-    fn unrotated_fan_card_sits_on_its_pivot() {
-        let (x, y) = fan_origin((10.0, 100.0), 200.0, 80.0, 0.0);
-        assert!((x - 10.0).abs() < 1e-9 && (y - 20.0).abs() < 1e-9);
+    fn fan_spreads_around_the_ring_and_trail_shrinks() {
+        let (x0, y0, r0) = fan(0, 6, 100.0);
+        let (_, y3, _) = fan(3, 6, 100.0);
+        assert!(y0 < 0.0 && x0 > 0.0 && r0 < -40.0);
+        assert!(y3 > 0.0);
+        assert!(trail_scale(1) < 1.0 && trail_scale(3) < trail_scale(1));
+        assert_eq!(pile(5), pile(3));
     }
 }

@@ -4,12 +4,15 @@
 //! - Each column is a plain list by default, scrolling on its own. A toggle in the
 //!   column header collapses it into a stack like the reference clip
 //!   (docs/reference/card-motion.md): the top card is frosted glass with an "ещё N"
-//!   badge, the rest peek out around it. A click on the stack fans it out.
+//!   badge, the next ones peek out below it as slivers. A click fans the stack out
+//!   around a ring; the card under the pointer turns to glass. Dragging the folded
+//!   stack takes it whole.
 //! - Click opens a card, ⌘-click toggles it in the selection, ⇧-click selects a
 //!   range within the column.
 //! - Dragging one card is a plain drag: it follows the pointer and the list makes
 //!   room. Dragging a selection lifts the pressed card as glass with the target
-//!   column written on it; the other selected cards trail it on softer springs.
+//!   column written on it; the other selected cards trail it on softer springs,
+//!   each smaller than the one ahead.
 //! - A two-finger swipe across a card drags it (or the selection) the same way;
 //!   a vertical swipe scrolls the column.
 //!
@@ -49,8 +52,10 @@ use crate::window::{Sink, animate};
 
 /// Pixels the pointer (or fingers) must travel before a press becomes a drag.
 const DRAG_THRESHOLD: f64 = 4.0;
-/// Where a trailing card rests relative to the one ahead of it.
-const TRAIN_OFFSET: (f64, f64) = (-7.0, 5.0);
+/// Where a trailing card rests relative to the one ahead of it: up and to the right.
+const TRAIN_OFFSET: (f64, f64) = (20.0, -35.0);
+/// A fanned card under the pointer grows a little.
+const HOVER_SCALE: f64 = 1.04;
 /// Content blur on a lifted card, in points.
 const LIFT_BLUR: f64 = 5.0;
 /// List layout: first slot's top, and the gap between cards.
@@ -73,6 +78,7 @@ pub enum DemoPointer {
     },
     Drag((f64, f64)),
     Up((f64, f64)),
+    Hover(Option<(f64, f64)>),
     /// A two-finger trackpad swipe step: finger travel since the last step.
     Swipe {
         at: (f64, f64),
@@ -134,6 +140,9 @@ struct Card {
     lifted: bool,
     /// Flying in from the new-task field.
     flying: bool,
+    /// Drawn scale about the centre, easing towards `target_scale`.
+    scale: f64,
+    target_scale: f64,
 }
 
 struct Press {
@@ -193,6 +202,10 @@ pub struct Board {
     press: RefCell<Option<Press>>,
     drag: RefCell<Option<Drag>>,
     gesture: Cell<Gesture>,
+    /// The card order last applied to the views, and which of them were lifted.
+    stacking: RefCell<(Vec<TaskId>, Vec<bool>)>,
+    /// The card under the pointer, for the glass highlight in a fanned stack.
+    hover: Cell<Option<TaskId>>,
     /// The card standing in for the open task modal, kept invisible.
     hidden: Cell<Option<TaskId>>,
     /// A task just typed into the new-task field: its card starts here (canvas coordinates).
@@ -232,6 +245,8 @@ impl Board {
             press: RefCell::new(None),
             drag: RefCell::new(None),
             gesture: Cell::new(Gesture::Idle),
+            hover: Cell::new(None),
+            stacking: RefCell::new(Default::default()),
             hidden: Cell::new(None),
             spawn: Cell::new(None),
             timer: RefCell::new(None),
@@ -404,6 +419,7 @@ impl Board {
             },
             DemoPointer::Drag(at) => CanvasMsg::Dragged(pt(at)),
             DemoPointer::Up(at) => CanvasMsg::Up(pt(at)),
+            DemoPointer::Hover(at) => CanvasMsg::Hover(at.map(pt)),
             DemoPointer::Swipe { at, finger, phase } => CanvasMsg::Scroll(Scroll {
                 at: pt(at),
                 finger,
@@ -446,8 +462,7 @@ impl Board {
             ),
             Layout::Stack { .. } => {
                 let a = self.stack_anchor(ci);
-                let (fx, fy) = physics::pile_offset(i);
-                (a.0 + fx * CARD_W, a.1 + fy * CARD_H)
+                (a.0, a.1 + physics::pile(i).0)
             }
         }
     }
@@ -457,13 +472,10 @@ impl Board {
         (g.x + (g.w - CARD_W) / 2.0).round()
     }
 
-    /// Top-left of a stack's top card. A pile spans −0.10W … 1.22W around it: centre that.
+    /// Top-left of a stack's top card, centred in the column.
     fn stack_anchor(&self, ci: usize) -> (f64, f64) {
         let g = self.geom.get()[ci];
-        (
-            (g.x + g.w / 2.0 - 0.56 * CARD_W).round(),
-            (0.23 * CARD_H + 18.0).round(),
-        )
+        ((g.x + (g.w - CARD_W) / 2.0).round(), 18.0)
     }
 
     // ---- cards ----
@@ -473,6 +485,9 @@ impl Board {
         let hue = style::hue_of(snap.id);
         let bounds = NSRect::new(NSPoint::ZERO, NSSize::new(CARD_W, CARD_H));
         let view = FlippedView::new(mtm, bounds);
+        // Scaling shrinks the frame and keeps card-sized bounds; the parts must not
+        // follow the frame, or they would shrink twice.
+        view.setAutoresizesSubviews(false);
         view.setWantsLayer(true);
         if let Some(layer) = view.layer() {
             layer.setShadowColor(Some(&NSColor::blackColor().CGColor()));
@@ -598,6 +613,8 @@ impl Board {
             removing: false,
             lifted: false,
             flying: false,
+            scale: 1.0,
+            target_scale: 1.0,
         };
         card.set_look(Look::Solid, false);
         card
@@ -639,6 +656,7 @@ impl Board {
         let layouts = self.layouts.get();
         let scroll = self.scroll.get();
         let selected = self.selected.borrow();
+        let hover = self.hover.get();
         let mut cards = self.cards.borrow_mut();
         let (w, h) = (CARD_W, CARD_H);
 
@@ -651,22 +669,23 @@ impl Board {
             let n = ids.len();
             match layouts[ci] {
                 Layout::Stack { fanned } if fanned && n > 1 => {
+                    // Around a ring centred on the stack, kept clear of the canvas top.
                     let a = self.stack_anchor(ci);
-                    let angles = physics::fan_angles(n);
-                    // Keep the fan's top inside the canvas: the top card reaches about
-                    // w·sin45 + h·cos45 above the pivot.
-                    let reach = w * 0.71 + h * 0.71;
-                    let pivot = (a.0 + 0.08 * w, (a.1 + 1.25 * h).max(reach + 8.0));
+                    let radius = 0.46 * w;
+                    let reach = radius * 0.9 + 0.5 * (w * w + h * h).sqrt();
+                    let centre = (a.0 + w / 2.0, (a.1 + h / 2.0).max(reach + 8.0));
                     for (i, id) in ids.iter().enumerate() {
                         let Some(card) = cards.get_mut(id) else {
                             continue;
                         };
-                        let deg = angles[i];
-                        let (x, y) = physics::fan_origin(pivot, w, h, deg);
-                        card.body.target(x, y, deg);
+                        let (dx, dy, deg) = physics::fan(i, n, radius);
+                        card.body
+                            .target(centre.0 + dx - w / 2.0, centre.1 + dy - h / 2.0, deg);
                         card.body.spring = physics::PILE;
-                        card.z = (n - i) as f64;
-                        card.set_look(Look::Solid, true);
+                        let hovered = hover == Some(*id);
+                        card.z = if hovered { 500.0 } else { (n - i) as f64 };
+                        card.target_scale = if hovered { HOVER_SCALE } else { 1.0 };
+                        card.set_look(if hovered { Look::Glass } else { Look::Solid }, true);
                         card.set_badge("");
                     }
                 }
@@ -676,10 +695,11 @@ impl Board {
                         let Some(card) = cards.get_mut(id) else {
                             continue;
                         };
-                        let (fx, fy) = physics::pile_offset(i);
-                        card.body.target(a.0 + fx * w, a.1 + fy * h, 0.0);
+                        let (dy, scale) = physics::pile(i);
+                        card.body.target(a.0, a.1 + dy, 0.0);
                         card.body.spring = physics::PILE;
                         card.z = (n - i) as f64;
+                        card.target_scale = scale;
                         let top = i == 0 && n > 1;
                         card.set_look(if top { Look::Glass } else { Look::Solid }, true);
                         let badge = card.badge_text.clone();
@@ -705,6 +725,7 @@ impl Board {
                             .target(x, LIST_TOP + slot as f64 * PITCH - scroll[ci], 0.0);
                         card.body.spring = physics::SLOT;
                         card.z = 1.0;
+                        card.target_scale = 1.0;
                         card.set_look(Look::Solid, true);
                         card.set_badge("");
                     }
@@ -722,6 +743,11 @@ impl Board {
                     continue;
                 };
                 card.z = 1000.0 - i as f64;
+                card.target_scale = if drag.group {
+                    physics::trail_scale(i)
+                } else {
+                    1.0
+                };
                 card.set_badge("");
                 if i == 0 {
                     card.body.spring = physics::LEAD;
@@ -744,10 +770,30 @@ impl Board {
                 card.z = 900.0;
             }
             card.set_selected(selected.contains(id));
-            if let Some(layer) = card.view.layer() {
-                layer.setZPosition(card.z);
-            }
         }
+        self.restack(&cards);
+    }
+
+    /// Orders the canvas's and the overlay's subviews by each card's `z`. Layer
+    /// zPosition alone does not hold once a view has been moved between them.
+    fn restack(&self, cards: &HashMap<TaskId, Card>) {
+        let mut sorted: Vec<(&TaskId, &Card)> = cards.iter().collect();
+        sorted.sort_by(|a, b| a.1.z.total_cmp(&b.1.z).then(a.0.cmp(b.0)));
+        let order: Vec<TaskId> = sorted.iter().map(|(id, _)| **id).collect();
+        let lifted: Vec<bool> = sorted.iter().map(|(_, c)| c.lifted).collect();
+        let key = (order, lifted);
+        if *self.stacking.borrow() == key {
+            return;
+        }
+        for (parent, on_overlay) in [(&*self.canvas as &NSView, false), (&self.overlay, true)] {
+            let views: Vec<Retained<NSView>> = sorted
+                .iter()
+                .filter(|(_, c)| c.lifted == on_overlay)
+                .map(|(_, c)| Retained::into_super(c.view.clone()))
+                .collect();
+            parent.setSubviews(&NSArray::from_retained_slice(&views));
+        }
+        *self.stacking.borrow_mut() = key;
     }
 
     // ---- motion ----
@@ -814,6 +860,17 @@ impl Board {
             } else {
                 card.body.step(dt);
             }
+            let ease = if reduce {
+                1.0
+            } else {
+                1.0 - (-dt * 16.0).exp()
+            };
+            card.scale += (card.target_scale - card.scale) * ease;
+            if (card.scale - card.target_scale).abs() < 0.002 {
+                card.scale = card.target_scale;
+            } else {
+                moving = true;
+            }
             if card.body.at_rest() {
                 card.body.settle();
                 card.flying = false;
@@ -829,6 +886,7 @@ impl Board {
                 card.apply_frame(overlay_dy);
             }
         }
+        self.restack(&cards);
         drop(cards);
         if !moving && let Some(timer) = self.timer.borrow_mut().take() {
             timer.invalidate();
@@ -929,6 +987,13 @@ impl Board {
                 }
             }
             CanvasMsg::Scroll(s) => self.on_scroll(s),
+            CanvasMsg::Hover(p) => {
+                let id = p.and_then(|p| self.hit(p));
+                if self.drag.borrow().is_none() && self.hover.replace(id) != id {
+                    self.retarget();
+                    self.kick();
+                }
+            }
         }
     }
 
@@ -1094,7 +1159,10 @@ impl Board {
         };
         let mut ids = vec![id];
         let selected = self.selected.borrow().clone();
-        if selected.contains(&id) && selected.len() > 1 {
+        if self.layouts.get()[col] == (Layout::Stack { fanned: false }) {
+            // A folded stack goes as a whole.
+            ids.extend(self.order.borrow()[col].iter().filter(|x| **x != id));
+        } else if selected.contains(&id) && selected.len() > 1 {
             for o in self.order.borrow().iter() {
                 ids.extend(o.iter().filter(|x| **x != id && selected.contains(x)));
             }
@@ -1239,9 +1307,6 @@ impl Card {
             self.lifted = false;
             self.view.removeFromSuperview();
             canvas.addSubview(&self.view);
-            if let Some(layer) = self.view.layer() {
-                layer.setZPosition(self.z);
-            }
         }
     }
 
@@ -1322,11 +1387,15 @@ impl Card {
     fn apply_frame(&self, overlay_dy: f64) {
         let b = &self.body;
         let dy = if self.lifted { overlay_dy } else { 0.0 };
+        let s = self.scale;
+        let (w, h) = (CARD_W * s, CARD_H * s);
         self.view.setFrameCenterRotation(0.0);
         self.view.setFrame(NSRect::new(
-            NSPoint::new(b.x, b.y + dy),
-            NSSize::new(CARD_W, CARD_H),
+            NSPoint::new(b.x + (CARD_W - w) / 2.0, b.y + dy + (CARD_H - h) / 2.0),
+            NSSize::new(w, h),
         ));
+        // Bounds stay card-sized, so the content scales with the frame.
+        self.view.setBoundsSize(NSSize::new(CARD_W, CARD_H));
         // The canvas is flipped, so AppKit's positive rotation already reads clockwise.
         self.view.setFrameCenterRotation(b.r);
     }
@@ -1338,7 +1407,7 @@ impl Card {
         let t = (-b.r).to_radians();
         let (dx, dy) = (p.x - cx, p.y - cy);
         let (lx, ly) = (dx * t.cos() - dy * t.sin(), dx * t.sin() + dy * t.cos());
-        lx.abs() <= CARD_W / 2.0 && ly.abs() <= CARD_H / 2.0
+        lx.abs() <= self.scale * CARD_W / 2.0 && ly.abs() <= self.scale * CARD_H / 2.0
     }
 }
 

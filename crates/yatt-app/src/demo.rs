@@ -136,37 +136,59 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             wait(700).await;
         }
 
-        // Fold "Готово" into a stack, then fan it with a click.
-        window.demo_toggle_stack(2);
+        // Fold "В работе" into a stack, fan it with a click, then drag it whole to "Готово".
+        window.demo_toggle_stack(1);
         wait(600).await;
         shot("8-stack");
-        if let Some(&top) = ids(cx, 2).first() {
-            click(centre(top), false, false);
-            wait(500).await;
+        if let Some(&top) = ids(cx, 1).first() {
+            let at = centre(top);
+            click(at, false, false);
+            wait(150).await;
+            let first = ids(cx, 1);
+            if let Some(&id) = first.get(1) {
+                window.demo_pointer(DemoPointer::Hover(Some(centre(id))));
+            }
+            wait(450).await;
             shot("9-fan");
+            window.demo_pointer(DemoPointer::Hover(None));
             click((window.demo_column_x(0), 600.0), false, false);
-            wait(400).await;
+            wait(500).await;
+            let at = centre(top);
+            window.demo_pointer(DemoPointer::Down {
+                at,
+                shift: false,
+                cmd: false,
+            });
+            let dx = window.demo_column_x(2);
+            let mid = (dx - 60.0, 330.0);
+            drag(at, mid, 10).await;
+            shot("10-stack-drag");
+            let end = (dx, 90.0);
+            drag(mid, end, 8).await;
+            window.demo_pointer(DemoPointer::Up(end));
+            wait(700).await;
+            window.demo_toggle_stack(1);
         }
 
         // The task modal and timer-only mode.
         sink(UiEvent::StartPause);
-        if let Some(&id) = ids(cx, 1).first() {
+        if let Some(&id) = ids(cx, 2).first() {
             sink(UiEvent::SetNotes(
                 id,
                 "## План\n\n- стекло\n- **физика**".into(),
             ));
             click(centre(id), false, false);
             wait(120).await;
-            shot("10-morph");
+            shot("11-morph");
             wait(800).await;
-            shot("11-modal");
+            shot("12-modal");
             window.debug_print_editor();
             sink(UiEvent::ToggleExpand(id));
             wait(700).await;
         }
         window.toggle_minimal();
         wait(800).await;
-        shot("12-minimal");
+        shot("13-minimal");
         window.toggle_minimal();
         wait(800).await;
         eprintln!("demo: finished");

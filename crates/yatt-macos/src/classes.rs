@@ -6,11 +6,13 @@ use std::cell::{Cell, RefCell};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, Sel};
 use objc2::{
-    ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel,
+    AnyThread, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class,
+    msg_send, sel,
 };
 use objc2_app_kit::{
     NSColor, NSControl, NSControlTextEditingDelegate, NSEvent, NSEventModifierFlags, NSEventPhase,
-    NSResponder, NSTextFieldDelegate, NSTextView, NSView, NSWindow, NSWindowDelegate,
+    NSResponder, NSTextFieldDelegate, NSTextView, NSTrackingArea, NSTrackingAreaOptions, NSView,
+    NSWindow, NSWindowDelegate,
 };
 use objc2_foundation::{NSNotification, NSPoint, NSRect, NSString};
 use objc2_web_kit::{WKScriptMessage, WKScriptMessageHandler, WKUserContentController};
@@ -348,10 +350,16 @@ impl ScriptHandler {
 /// Pointer input on the board canvas, in the canvas's coordinates. The board
 /// decides what is a click, a drag or a scroll.
 pub enum CanvasMsg {
-    Down { at: NSPoint, shift: bool, cmd: bool },
+    Down {
+        at: NSPoint,
+        shift: bool,
+        cmd: bool,
+    },
     Dragged(NSPoint),
     Up(NSPoint),
     Scroll(Scroll),
+    /// The pointer moved over the canvas, or left it (`None`).
+    Hover(Option<NSPoint>),
 }
 
 /// Where a trackpad gesture is; `None` for a plain mouse wheel.
@@ -402,6 +410,38 @@ define_class!(
         fn hit_test(&self, point: NSPoint) -> Option<Retained<NSView>> {
             let hit: Option<Retained<NSView>> = unsafe { msg_send![super(self), hitTest: point] };
             hit.map(|_| Retained::into_super(self.retain()))
+        }
+
+        #[unsafe(method(updateTrackingAreas))]
+        fn update_tracking_areas(&self) {
+            for area in self.trackingAreas().iter() {
+                self.removeTrackingArea(&area);
+            }
+            let options = NSTrackingAreaOptions::MouseMoved
+                | NSTrackingAreaOptions::MouseEnteredAndExited
+                | NSTrackingAreaOptions::ActiveInKeyWindow
+                | NSTrackingAreaOptions::InVisibleRect;
+            let area = unsafe {
+                NSTrackingArea::initWithRect_options_owner_userInfo(
+                    NSTrackingArea::alloc(),
+                    NSRect::ZERO,
+                    options,
+                    Some(self),
+                    None,
+                )
+            };
+            self.addTrackingArea(&area);
+            unsafe { msg_send![super(self), updateTrackingAreas] }
+        }
+
+        #[unsafe(method(mouseMoved:))]
+        fn mouse_moved(&self, event: &NSEvent) {
+            self.send(CanvasMsg::Hover(Some(self.local(event))));
+        }
+
+        #[unsafe(method(mouseExited:))]
+        fn mouse_exited(&self, _event: &NSEvent) {
+            self.send(CanvasMsg::Hover(None));
         }
 
         #[unsafe(method(mouseDown:))]
