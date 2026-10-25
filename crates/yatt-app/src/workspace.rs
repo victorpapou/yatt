@@ -45,13 +45,19 @@ impl Workspace {
             }
             UiEvent::Rename(id, title) => e.execute(Command::Rename { id, title }),
             UiEvent::SetNotes(id, notes) => e.execute(Command::SetNotes { id, notes }),
-            UiEvent::Paste { items, status } => {
-                // Each lands on top, so the last goes in first to keep the order.
-                for (title, notes) in items.into_iter().rev() {
-                    let id = e.create_task(title, status);
-                    if !notes.is_empty() {
-                        e.execute(Command::SetNotes { id, notes });
-                    }
+            UiEvent::Paste { .. } | UiEvent::Group(_) => {
+                // A paste, or a group of moves or deletes: one step to undo.
+                let mut cmds = Vec::new();
+                board_commands(event, &mut cmds);
+                if let Some(open) = self.expanded
+                    && cmds
+                        .iter()
+                        .any(|c| matches!(c, Command::Delete { id } if *id == open))
+                {
+                    self.expanded = None;
+                }
+                if !cmds.is_empty() {
+                    e.execute(Command::Batch(cmds));
                 }
             }
             UiEvent::Delete(id) => {
@@ -188,6 +194,40 @@ fn entry_label(start: Timestamp, end: Option<Timestamp>, now: Timestamp) -> Stri
         until,
         format_duration(ms)
     )
+}
+
+/// The board commands a UI event stands for, appended to `out`: moves, deletes
+/// and pasted copies (each pasted card lands on top, so the last goes in first
+/// to keep their order). Other events stand for none.
+fn board_commands(event: UiEvent, out: &mut Vec<Command>) {
+    match event {
+        UiEvent::Move { id, status, index } => out.push(Command::Move {
+            id,
+            status,
+            placement: Placement::Index(index),
+        }),
+        UiEvent::Delete(id) => out.push(Command::Delete { id }),
+        UiEvent::Paste { items, status } => {
+            for (title, notes) in items.into_iter().rev() {
+                let id = TaskId::new();
+                out.push(Command::Create {
+                    id,
+                    title,
+                    status,
+                    placement: Placement::Top,
+                });
+                if !notes.is_empty() {
+                    out.push(Command::SetNotes { id, notes });
+                }
+            }
+        }
+        UiEvent::Group(events) => {
+            for e in events {
+                board_commands(e, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]

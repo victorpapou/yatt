@@ -1,6 +1,7 @@
 //! yatt's native AppKit views. They render [`Snapshot`]s built by the app and
 //! report [`UiEvent`]s back; they know nothing about the engine or storage.
 
+pub mod eventlog;
 pub mod model;
 pub mod physics;
 
@@ -25,4 +26,4 @@ pub use model::{
 #[cfg(target_os = "macos")]
 pub use objc2::MainThreadMarker;
 #[cfg(target_os = "macos")]
-pub use window::{DemoMouse, DemoPhase, DemoPointer, MainWindow, Sink};
+pub use window::{DemoMouse, DemoPointer, MainWindow, Sink};

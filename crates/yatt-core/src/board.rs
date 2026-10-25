@@ -61,6 +61,9 @@ pub enum Command {
     Restore {
         id: TaskId,
     },
+    /// Several commands as one: applied in order, undone as one step. If one
+    /// fails, the ones before it are rolled back and nothing changes.
+    Batch(Vec<Command>),
 }
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -246,6 +249,34 @@ impl Board {
                 Ok(Applied {
                     changed: vec![id],
                     inverse: Command::Delete { id },
+                })
+            }
+            Command::Batch(cmds) => {
+                let mut changed = Vec::new();
+                let mut inverses = Vec::new();
+                for cmd in cmds {
+                    match self.apply(cmd, now) {
+                        Ok(applied) => {
+                            for id in applied.changed {
+                                if !changed.contains(&id) {
+                                    changed.push(id);
+                                }
+                            }
+                            inverses.push(applied.inverse);
+                        }
+                        Err(e) => {
+                            // Back to where the batch started.
+                            for inverse in inverses.into_iter().rev() {
+                                let _ = self.apply(inverse, now);
+                            }
+                            return Err(e);
+                        }
+                    }
+                }
+                inverses.reverse();
+                Ok(Applied {
+                    changed,
+                    inverse: Command::Batch(inverses),
                 })
             }
         }
@@ -498,5 +529,73 @@ mod tests {
             text: Some("milk".into()),
         };
         assert_eq!(b.column(Status::Backlog, &by_text)[0].title, "Buy milk");
+    }
+
+    #[test]
+    fn a_batch_is_one_undo_step_and_rolls_back_on_failure() {
+        let mut board = Board::default();
+        let mut history = History::default();
+        let ids: Vec<TaskId> = (0..20).map(|_| TaskId::new()).collect();
+        for (i, id) in ids.iter().enumerate() {
+            history
+                .execute(
+                    &mut board,
+                    Command::Create {
+                        id: *id,
+                        title: format!("t{i}"),
+                        status: Status::Backlog,
+                        placement: Placement::Bottom,
+                    },
+                    now(),
+                )
+                .unwrap();
+        }
+        let before: Vec<TaskId> = board
+            .column(Status::Backlog, &Filter::default())
+            .iter()
+            .map(|t| t.id)
+            .collect();
+        // Twenty cards into "In progress" as one move.
+        let moves = ids
+            .iter()
+            .map(|id| Command::Move {
+                id: *id,
+                status: Status::InProgress,
+                placement: Placement::Bottom,
+            })
+            .collect();
+        history
+            .execute(&mut board, Command::Batch(moves), now())
+            .unwrap();
+        assert_eq!(
+            board.column(Status::InProgress, &Filter::default()).len(),
+            20
+        );
+        // One undo puts all twenty back, in their order.
+        history.undo(&mut board, now()).unwrap();
+        let after: Vec<TaskId> = board
+            .column(Status::Backlog, &Filter::default())
+            .iter()
+            .map(|t| t.id)
+            .collect();
+        assert_eq!(after, before);
+        assert!(
+            board
+                .column(Status::InProgress, &Filter::default())
+                .is_empty()
+        );
+        // One redo moves them all again.
+        history.redo(&mut board, now()).unwrap();
+        assert_eq!(
+            board.column(Status::InProgress, &Filter::default()).len(),
+            20
+        );
+        // A batch that fails half way changes nothing.
+        let bad = Command::Batch(vec![
+            Command::Delete { id: ids[0] },
+            Command::Delete { id: TaskId::new() },
+        ]);
+        assert!(history.execute(&mut board, bad, now()).is_err());
+        assert!(board.get(ids[0]).unwrap().deleted_at.is_none());
     }
 }

@@ -32,15 +32,16 @@ use objc2_app_kit::{
     NSWindowTitleVisibility, NSWindowToolbarStyle,
 };
 use objc2_core_graphics::CGMutablePath;
+use objc2_foundation::{NSArray, NSNumber, NSObjectNSKeyValueCoding, NSValue};
 use objc2_foundation::{NSCopying, NSPoint, NSRect, NSSize, NSString, ns_string};
 use objc2_quartz_core::{
-    CAMediaTiming, CAMediaTimingFunction, CAShapeLayer, CATransition, kCALineCapRound,
-    kCAMediaTimingFunctionEaseOut, kCATransitionFade, kCATransitionFromTop, kCATransitionPush,
+    CABasicAnimation, CALayer, CAMediaTiming, CAMediaTimingFunction, CAShapeLayer,
+    CASpringAnimation, NSValueCATransform3DAdditions, kCALineCapRound,
 };
 use yatt_core::{Status, TaskId};
 
+pub use crate::board::DemoPointer;
 use crate::board::{Board, ColumnGeom};
-pub use crate::board::{DemoPhase, DemoPointer};
 
 /// A real mouse event for the demo script to send through the window.
 #[derive(Debug, Clone, Copy)]
@@ -50,8 +51,8 @@ pub enum DemoMouse {
     Up,
 }
 use crate::classes::{
-    ActionTarget, EditCmd, FieldDelegate, Fill, FillView, FlippedView, PassView, RootView,
-    ToolbarDelegate, WindowDelegate, editing_text,
+    ActionTarget, EditCmd, FieldDelegate, Fill, FillView, FlippedView, PassView, PlainToolbarItem,
+    RootView, ToolbarDelegate, WindowDelegate, editing_text,
 };
 use crate::modal::Modal;
 use crate::model::{Snapshot, TimerSnap, UiEvent, format_clock};
@@ -61,7 +62,7 @@ use crate::style;
 pub type Sink = Rc<dyn Fn(UiEvent)>;
 
 /// The toolbar's timer item: the ring and five digits.
-const TIMER_ITEM_W: f64 = 136.0;
+const TIMER_ITEM_W: f64 = 112.0;
 /// Height of the timer row in the toolbar.
 const TOOLBAR_H: f64 = 40.0;
 /// The progress ring: diameter and stroke, in the toolbar and in minimal mode.
@@ -76,10 +77,14 @@ const CHIP_TOP: f64 = 12.0;
 const CAPSULE_H: f64 = 44.0;
 const CAPSULE_MAX_W: f64 = 460.0;
 const CAPSULE_BOTTOM: f64 = 22.0;
-/// The clock's digits in minimal mode: font size, digit and colon widths, height.
-const DIGITS_MINI: (f64, f64, f64, f64) = (46.0, 28.0, 14.0, 56.0);
+/// The clock's digits in minimal mode: font size, the step from one digit to the
+/// next and from a colon on (tabular figures, tracked tight), and height.
+const DIGITS_MINI: (f64, f64, f64, f64) = (46.0, 26.0, 12.0, 56.0);
 /// The same in the toolbar.
-const DIGITS_BAR: (f64, f64, f64, f64) = (24.0, 19.0, 10.0, 32.0);
+const DIGITS_BAR: (f64, f64, f64, f64) = (24.0, 14.0, 7.0, 32.0);
+/// Each digit's label is this much wider than its step, so the glyph is never
+/// clipped by the field's inset; neighbouring labels overlap, glyphs don't.
+const DIGIT_PAD: f64 = 6.0;
 /// Minimal mode: just the timer.
 const MINI_SIZE: (f64, f64) = (300.0, 136.0);
 
@@ -185,13 +190,13 @@ impl MainWindow {
         window.setContentView(Some(&root));
 
         let mut retained: Vec<Retained<AnyObject>> = Vec::new();
+        retained.extend(crate::eventlog::install());
         let header = Header::new(mtm, &sink, &mut retained);
         // The timer row lives in a native toolbar, unified with the titlebar.
-        let timer_item = NSToolbarItem::initWithItemIdentifier(
-            NSToolbarItem::alloc(mtm),
-            ns_string!("yatt.timer"),
-        );
+        let timer_item = PlainToolbarItem::item(mtm, ns_string!("yatt.timer"));
         timer_item.setView(Some(&header.view));
+        // Plain text in the toolbar: no bubble (see `PlainToolbarItem`).
+        timer_item.setBordered(false);
         #[allow(deprecated)]
         {
             timer_item.setMinSize(NSSize::new(TIMER_ITEM_W, TOOLBAR_H));
@@ -414,7 +419,8 @@ impl MainWindow {
                 1.0,
             );
             if let Some(event) = event {
-                window.sendEvent(&event);
+                // Through the application, as the system delivers them.
+                NSApplication::sharedApplication(self.ui.mtm).sendEvent(&event);
             }
         }
     }
@@ -452,7 +458,7 @@ impl MainWindow {
             1.0,
         );
         if let Some(event) = event {
-            window.sendEvent(&event);
+            NSApplication::sharedApplication(self.ui.mtm).sendEvent(&event);
         }
     }
 
@@ -693,9 +699,8 @@ impl Ui {
                 };
                 *self.clipboard.borrow_mut() = (items, text);
                 if cmd == EditCmd::Cut {
-                    for id in selection {
-                        (self.sink)(UiEvent::Delete(id));
-                    }
+                    let deletes = selection.into_iter().map(UiEvent::Delete).collect();
+                    (self.sink)(UiEvent::Group(deletes));
                 }
             }
             EditCmd::Paste => {
@@ -718,9 +723,8 @@ impl Ui {
             }
             EditCmd::SelectAll => self.cards.select_all(self.cards.focused_column()),
             EditCmd::Delete => {
-                for id in selection {
-                    (self.sink)(UiEvent::Delete(id));
-                }
+                let deletes = selection.into_iter().map(UiEvent::Delete).collect();
+                (self.sink)(UiEvent::Group(deletes));
                 self.cards.clear_selection();
             }
         }
@@ -1103,7 +1107,7 @@ impl Header {
             .digits
             .borrow()
             .iter()
-            .map(|d| d.frame().size.width)
+            .map(|d| d.frame().size.width - DIGIT_PAD)
             .sum();
         let minimal = self.minimal.get();
         for b in [&self.stopwatch, &self.skip, &self.stop] {
@@ -1262,7 +1266,11 @@ impl Header {
                 )));
                 d.setAlignment(NSTextAlignment::Center);
                 d.setWantsLayer(true);
-                d.setFrame(NSRect::new(NSPoint::new(x, 0.0), NSSize::new(w, h)));
+                d.setLayerUsesCoreImageFilters(true);
+                d.setFrame(NSRect::new(
+                    NSPoint::new(x - DIGIT_PAD / 2.0, 0.0),
+                    NSSize::new(w + DIGIT_PAD, h),
+                ));
                 self.digits_box.addSubview(&d);
                 digits.push(d);
                 x += w;
@@ -1275,21 +1283,37 @@ impl Header {
                     continue;
                 }
                 let d = &digits[i];
+                // The system's numeric transition: the old glyph shrinks, blurs and
+                // fades away upwards on a ghost copy, the new one grows in from
+                // below, sharpening. Only this digit moves.
+                let ghost = label(
+                    mtm,
+                    &old.get(i).map(|c| c.to_string()).unwrap_or_default(),
+                    1.0,
+                    0.0,
+                );
+                ghost.setFont(d.font().as_deref());
+                ghost.setAlignment(NSTextAlignment::Center);
+                ghost.setFrame(d.frame());
+                ghost.setWantsLayer(true);
+                ghost.setLayerUsesCoreImageFilters(true);
+                self.digits_box.addSubview(&ghost);
+                let (w, h) = (d.frame().size.width, d.frame().size.height);
+                if let Some(layer) = ghost.layer() {
+                    numeric_morph(&layer, (w, h), DigitPose::REST, DigitPose::OUT, reduce);
+                }
                 if let Some(layer) = d.layer() {
-                    let t = CATransition::animation();
-                    unsafe {
-                        if reduce {
-                            t.setType(kCATransitionFade);
-                        } else {
-                            t.setType(kCATransitionPush);
-                            t.setSubtype(Some(kCATransitionFromTop));
-                        }
-                        t.setTimingFunction(Some(&CAMediaTimingFunction::functionWithName(
-                            kCAMediaTimingFunctionEaseOut,
-                        )));
-                    }
-                    t.setDuration(motion::DIGIT_SECS);
-                    layer.addAnimation_forKey(&t, Some(ns_string!("roll")));
+                    numeric_morph(&layer, (w, h), DigitPose::IN, DigitPose::REST, reduce);
+                }
+                let block = RcBlock::new(move |_t: NonNull<objc2_foundation::NSTimer>| {
+                    ghost.removeFromSuperview();
+                });
+                unsafe {
+                    objc2_foundation::NSTimer::scheduledTimerWithTimeInterval_repeats_block(
+                        motion::DIGIT_SECS + 0.15,
+                        false,
+                        &block,
+                    );
                 }
                 d.setStringValue(&NSString::from_str(&ch.to_string()));
             }
@@ -1297,6 +1321,113 @@ impl Header {
         *shown = clock.to_string();
     }
 }
+
+/// A digit's look in the numeric transition: scale, vertical offset (in its
+/// height), blur radius (pt) and opacity.
+#[derive(Clone, Copy)]
+struct DigitPose {
+    scale: f64,
+    rise: f64,
+    blur: f64,
+    alpha: f32,
+}
+
+impl DigitPose {
+    const REST: Self = Self {
+        scale: 1.0,
+        rise: 0.0,
+        blur: 0.0,
+        alpha: 1.0,
+    };
+    const IN: Self = Self {
+        scale: 0.8,
+        rise: 0.22,
+        blur: 4.0,
+        alpha: 0.0,
+    };
+    const OUT: Self = Self {
+        scale: 0.8,
+        rise: -0.22,
+        blur: 4.0,
+        alpha: 0.0,
+    };
+
+    /// About the glyph's centre (a view's layer scales about its corner).
+    fn transform(self, (w, h): (f64, f64)) -> objc2_quartz_core::CATransform3D {
+        let s = self.scale;
+        objc2_quartz_core::CATransform3D {
+            m11: s,
+            m12: 0.0,
+            m13: 0.0,
+            m14: 0.0,
+            m21: 0.0,
+            m22: s,
+            m23: 0.0,
+            m24: 0.0,
+            m31: 0.0,
+            m32: 0.0,
+            m33: 1.0,
+            m34: 0.0,
+            m41: w * (1.0 - s) / 2.0,
+            m42: h * (1.0 - s) / 2.0 + self.rise * h,
+            m43: 0.0,
+            m44: 1.0,
+        }
+    }
+}
+
+/// Animates a digit's layer from one pose to another: the scale and offset on a
+/// critically damped spring (no bounce), opacity and blur alongside. The layer
+/// ends in `to` (kept for a pose other than rest, for a ghost on its way out).
+fn numeric_morph(layer: &CALayer, size: (f64, f64), from: DigitPose, to: DigitPose, reduce: bool) {
+    let keep = |a: &CABasicAnimation| {
+        if to.alpha < 1.0 {
+            a.setFillMode(unsafe { objc2_quartz_core::kCAFillModeForwards });
+            a.setRemovedOnCompletion(false);
+        }
+    };
+    let opacity = CABasicAnimation::animationWithKeyPath(Some(ns_string!("opacity")));
+    unsafe {
+        opacity.setFromValue(Some(&NSNumber::new_f32(from.alpha)));
+        opacity.setToValue(Some(&NSNumber::new_f32(to.alpha)));
+    }
+    opacity.setDuration(motion::DIGIT_SECS);
+    keep(&opacity);
+    layer.addAnimation_forKey(&opacity, Some(ns_string!("digit.opacity")));
+    if reduce {
+        return;
+    }
+    let spring = CASpringAnimation::animationWithKeyPath(Some(ns_string!("transform")));
+    spring.setMass(1.0);
+    spring.setStiffness(DIGIT_STIFFNESS);
+    spring.setDamping(2.0 * DIGIT_STIFFNESS.sqrt());
+    unsafe {
+        spring.setFromValue(Some(&NSValue::valueWithCATransform3D(from.transform(size))));
+        spring.setToValue(Some(&NSValue::valueWithCATransform3D(to.transform(size))));
+    }
+    spring.setDuration(spring.settlingDuration());
+    keep(&spring);
+    layer.addAnimation_forKey(&spring, Some(ns_string!("digit.transform")));
+    // The blur runs on a filter named on the layer for the length of the change.
+    if let Some(blur) = style::gaussian(0.0) {
+        unsafe { blur.setValue_forKey(Some(ns_string!("blur")), ns_string!("name")) };
+        let filters =
+            NSArray::from_retained_slice(&[Retained::into_super(Retained::into_super(blur))]);
+        unsafe { layer.setFilters(Some(&filters)) };
+        let radius =
+            CABasicAnimation::animationWithKeyPath(Some(ns_string!("filters.blur.inputRadius")));
+        unsafe {
+            radius.setFromValue(Some(&NSNumber::new_f64(from.blur)));
+            radius.setToValue(Some(&NSNumber::new_f64(to.blur)));
+        }
+        radius.setDuration(motion::DIGIT_SECS);
+        keep(&radius);
+        layer.addAnimation_forKey(&radius, Some(ns_string!("digit.blur")));
+    }
+}
+
+/// Stiffness of the digits' spring: settled in about 0.3 s.
+const DIGIT_STIFFNESS: f64 = 300.0;
 
 /// The toolbar's control items, each its own bubble; the two view switches,
 /// side by side, share one.

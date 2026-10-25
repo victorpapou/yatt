@@ -24,6 +24,11 @@ impl Spring {
 /// Settling into a stack or fan: stiff and a little underdamped (ζ 0.8), so the
 /// card overshoots a touch, about 1.5%, and settles at once, like firm jelly.
 pub const PILE: Spring = Spring::new(420.0, 0.8);
+/// A stack opening into its fan: quick, settled in about 0.3 s whatever the
+/// number of cards, with only a trace of the jelly.
+pub const FAN_OPEN: Spring = Spring::new(900.0, 0.85);
+/// A fan folding back into its stack: quicker still, about 0.22 s.
+pub const FAN_FOLD: Spring = Spring::new(1500.0, 0.9);
 /// The card under the cursor while dragging: nearly attached, a touch of lag.
 pub const LEAD: Spring = Spring::new(1200.0, 0.95);
 /// A card settling into its list slot after a drop: the same jelly landing.
@@ -36,16 +41,16 @@ pub const MORPH: Spring = Spring::new(260.0, 1.0);
 /// Rotation follows faster than position, so tilt reads as a reaction to motion.
 pub const ROTATION: Spring = Spring::new(500.0, 0.8);
 
-/// How much later than the one ahead each drawn follower of a dragged group
-/// replays the lead's path, in seconds; the first one has none. The one place to
-/// tune the tail.
-pub const TRAIL_DELAY: f64 = 0.07;
+/// How much later than the one ahead each follower of a dragged group replays
+/// the lead's path, and how far apart they land after the drop, in seconds; the
+/// first one has no delay. The one place to tune the tail.
+pub const TRAIL_DELAY: f64 = 0.055;
 /// Followers drawn under the lead of a dragged group; the rest hide until the drop.
-pub const TRAIL_SHOWN: usize = 3;
+pub const TRAIL_SHOWN: usize = 8;
 /// Each drawn follower sits this much lower than the one ahead and this much
 /// smaller, so it peeks out under it as a sliver: a stack being carried.
-const TRAIL_STEP: f64 = 7.0;
-const TRAIL_SHRINK: f64 = 0.06;
+const TRAIL_STEP: f64 = 6.0;
+const TRAIL_SHRINK: f64 = 0.05;
 
 /// The `i`-th drawn follower (1-based): its offset down from the lead and scale.
 pub fn trail(i: usize) -> (f64, f64) {
@@ -56,7 +61,7 @@ pub fn trail(i: usize) -> (f64, f64) {
 /// How long ago the lead was where the `i`-th follower (1-based) is now: a plain
 /// delay on the lead's own path, no springs between the cards.
 pub fn trail_delay(i: usize) -> f64 {
-    i.clamp(1, TRAIL_SHOWN).saturating_sub(1) as f64 * TRAIL_DELAY
+    i.max(1).saturating_sub(1) as f64 * TRAIL_DELAY
 }
 
 /// Where the lead was at time `t`, from its recorded path `(time, x, y)` (oldest
@@ -73,6 +78,13 @@ pub fn path_at(path: &[(f64, f64, f64)], t: f64) -> Option<(f64, f64)> {
     };
     let f = (t - a.0) / (b.0 - a.0).max(1e-9);
     Some((a.1 + (b.1 - a.1) * f, a.2 + (b.2 - a.2) * f))
+}
+
+/// The stacking order of the `k`-th card of a dragged or landing group (0 = the
+/// lead): the lead on top, each next one under the one before, for the whole
+/// flight and landing, above everything else on the board.
+pub fn group_z(k: usize) -> f64 {
+    1000.0 - k as f64
 }
 
 /// Whether a card shows its selection ring: while choosing, never while dragging.
@@ -183,55 +195,82 @@ pub fn pile(i: usize) -> (f64, f64) {
 }
 
 /// The most cards a fan draws; deeper ones stay hidden in the stack.
-pub const FAN_SHOWN: usize = 12;
-/// Half the fan's spread for three cards and its widest, in degrees.
-const FAN_HALF_MIN: f64 = 20.0;
-const FAN_HALF_MAX: f64 = 45.0;
-/// How far below the stacked card's centre the pivot may sit, and at least.
-const FAN_REACH_MAX: f64 = 260.0;
-const FAN_REACH_MIN: f64 = 60.0;
+pub const FAN_SHOWN: usize = 20;
+/// Where the newest card sits round the fan's centre, in degrees (y down, so −90
+/// is straight up): just right of the top, as in the reference frames.
+const FAN_START: f64 = -86.0;
+/// The most the cards go round, and the most they turn from first to last.
+const FAN_SWEEP: f64 = 320.0;
+const FAN_TURN: f64 = 108.0;
 
-/// Half of a fan's spread in degrees for `n` cards: about ±20° for three, opening
-/// up with every card to ±45°.
-pub fn fan_half_spread(n: usize) -> f64 {
-    match n {
-        0 | 1 => 0.0,
-        2 => 12.0,
-        _ => (FAN_HALF_MIN + 2.5 * (n - 3) as f64).min(FAN_HALF_MAX),
-    }
+/// How far a fanned card's centre sits from the fan's centre: wider with more
+/// cards: about 0.17 card widths for three, 0.36 for nine, so each card hides
+/// most of the one under it (fitted to the
+/// reference frames).
+pub fn fan_radius(n: usize, w: f64) -> f64 {
+    w * (0.08 + 0.031 * n.min(FAN_SHOWN) as f64).min(0.45)
 }
 
-/// A swatch fan: like colour swatches on one pin, the cards turn about a single
-/// pivot below the stack, evenly from left to right on one arc. The middle of the
-/// arc is where the stacked card lies, so the stack opens from itself. Returns the
-/// `i`-th card's centre offset from the stacked card's centre and its turn in
-/// degrees (positive is clockwise), for a `card` (width, height) and a column
-/// `col_w` wide: the pivot comes closer when the arc would not fit the column.
-/// Cards past [`FAN_SHOWN`] stay on the stack.
-pub fn fan(i: usize, n: usize, card: (f64, f64), col_w: f64) -> (f64, f64, f64) {
+/// The swatch fan of the reference frames (docs/reference/tima/swatch): card
+/// `i` (0 = the newest, on top of the stack) of `n`. From the newest just right
+/// of the top, the cards wind clockwise round one centre, down the right, round
+/// the bottom and up the left to the oldest, about 40° apart (fewer cards go less far
+/// round), each turned about 13° further clockwise than the next newer one: from
+/// about −70° for the newest to about +38° for the oldest of nine. Returns the
+/// card's centre offset from the fan's centre and its turn in degrees (positive
+/// is clockwise). Past [`FAN_SHOWN`] cards the steps get finer instead of going
+/// round further; deeper cards stay on the stack.
+pub fn fan(i: usize, n: usize, w: f64) -> (f64, f64, f64) {
     let n = n.min(FAN_SHOWN);
     if n <= 1 || i >= n {
         return (0.0, 0.0, 0.0);
     }
-    let half = fan_half_spread(n);
-    let deg = -half + 2.0 * half * i as f64 / (n - 1) as f64;
-    let r = fan_reach(n, card, col_w);
-    let at = deg.to_radians();
-    // The pivot is `r` below the stacked card's centre; turning about it moves the
-    // centre along the arc.
-    (r * at.sin(), r * (1.0 - at.cos()), deg)
+    let gaps = (n - 1) as f64;
+    let sweep = (125.0 * gaps).min(FAN_SWEEP);
+    let turn = (37.0 * gaps).min(FAN_TURN);
+    let t = i as f64 / gaps;
+    let at = (FAN_START + sweep * t).to_radians();
+    let r = fan_radius(n, w);
+    (r * at.cos(), r * at.sin(), -0.65 * turn + turn * t)
 }
 
-/// The distance from the pivot to each card's centre: as far as the column's
-/// width allows the outermost cards, turned by the full half spread.
-pub fn fan_reach(n: usize, (w, h): (f64, f64), col_w: f64) -> f64 {
-    let half = fan_half_spread(n.min(FAN_SHOWN)).to_radians();
-    if half <= 0.0 {
-        return FAN_REACH_MIN;
+/// The smallest a fan may shrink its cards to fit its column, so their text stays
+/// legible; past that it draws fewer cards.
+pub const FAN_MIN_SCALE: f64 = 0.6;
+
+/// The fan's bounding box around its centre at full size: (min x, min y, max x,
+/// max y) of the turned cards.
+pub fn fan_bounds(n: usize, (w, h): (f64, f64)) -> (f64, f64, f64, f64) {
+    let k = n.clamp(1, FAN_SHOWN);
+    let mut b = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    for i in 0..k {
+        let (x, y, deg) = fan(i, k, w);
+        let (c, s) = (deg.to_radians().cos().abs(), deg.to_radians().sin().abs());
+        let (hx, hy) = ((w * c + h * s) / 2.0, (w * s + h * c) / 2.0);
+        b = (
+            b.0.min(x - hx),
+            b.1.min(y - hy),
+            b.2.max(x + hx),
+            b.3.max(y + hy),
+        );
     }
-    // Half the width of a card turned by `half`, around its centre.
-    let turned = 0.5 * (w * half.cos() + h * half.sin());
-    ((col_w / 2.0 - turned) / half.sin()).clamp(FAN_REACH_MIN, FAN_REACH_MAX)
+    b
+}
+
+/// How many of `n` stacked cards a fan draws and at what scale, so the whole
+/// rosette fits a box `room` (width, height) wide: the reference layout, shrunk
+/// uniformly (angles unchanged), never below [`FAN_MIN_SCALE`]; where even that
+/// is too big, fewer cards.
+pub fn fan_fit(n: usize, card: (f64, f64), room: (f64, f64)) -> (usize, f64) {
+    let mut k = n.clamp(1, FAN_SHOWN);
+    loop {
+        let (x0, y0, x1, y1) = fan_bounds(k, card);
+        let scale = (room.0 / (x1 - x0)).min(room.1 / (y1 - y0)).min(1.0);
+        if scale >= FAN_MIN_SCALE || k <= 2 {
+            return (k, scale);
+        }
+        k -= 1;
+    }
 }
 
 /// A plain click on a fanned stack: true opens the card (the second click of a
@@ -277,7 +316,8 @@ mod tests {
         assert_eq!(trail_delay(1), 0.0);
         assert!((trail_delay(2) - TRAIL_DELAY).abs() < 1e-12);
         assert!((trail_delay(3) - 2.0 * TRAIL_DELAY).abs() < 1e-12);
-        assert_eq!(trail_delay(9), trail_delay(TRAIL_SHOWN));
+        // The same step all the way down a long tail.
+        assert!((trail_delay(9) - 8.0 * TRAIL_DELAY).abs() < 1e-12);
         // The lead's path, sampled: interpolated, held at either end.
         let path = [(0.0, 0.0, 0.0), (0.1, 100.0, 10.0), (0.2, 100.0, 30.0)];
         assert_eq!(path_at(&path, 0.05), Some((50.0, 5.0)));
@@ -286,7 +326,16 @@ mod tests {
         assert_eq!(path_at(&[], 0.0), None);
         // Each sliver smaller and lower than the one ahead; no more than three.
         assert!(trail(2).1 < trail(1).1 && trail(2).0 > trail(1).0);
-        assert_eq!(trail(9), trail(TRAIL_SHOWN));
+        assert_eq!(trail(TRAIL_SHOWN + 3), trail(TRAIL_SHOWN));
+    }
+
+    #[test]
+    fn a_group_keeps_its_stacking_order_all_the_way() {
+        // Before the drop, in flight and while landing the same values: the lead
+        // on top, then each next card under the one before, above the board.
+        let z: Vec<f64> = (0..20).map(group_z).collect();
+        assert!(z.windows(2).all(|w| w[0] > w[1]));
+        assert!(z[19] > 900.0);
     }
 
     #[test]
@@ -342,49 +391,57 @@ mod tests {
     }
 
     #[test]
-    fn the_fan_is_one_even_symmetric_arc() {
-        let card = (230.0, 101.0);
-        for n in [2, 3, 6, 12, 30] {
+    fn the_fan_matches_the_reference_and_has_no_right_angles() {
+        let w = 230.0;
+        // Nine cards, measured from docs/reference/tima/swatch/n9.png: newest on
+        // top just right of the top, turned about −70°; oldest upper left, about
+        // +38°; about 40° apart round the centre and 13.5° apart in turn.
+        let (x0, y0, r0) = fan(0, 9, w);
+        let (x8, y8, r8) = fan(8, 9, w);
+        assert!(x0.abs() < 0.15 * w && y0 < 0.0, "newest at {x0}, {y0}");
+        assert!((r0 + 70.0).abs() < 4.0, "newest turned {r0}");
+        assert!(
+            x8 < 0.0 && y8 < 0.0 && (r8 - 38.0).abs() < 4.0,
+            "oldest {x8} {y8} {r8}"
+        );
+        assert!((fan_radius(9, w) / w - 0.36).abs() < 0.02);
+        for n in [3, 5, 7, 8, 9, 12, 30] {
             let k = n.min(FAN_SHOWN);
-            let arms: Vec<(f64, f64, f64)> = (0..k).map(|i| fan(i, n, card, 366.0)).collect();
-            let degs: Vec<f64> = arms.iter().map(|a| a.2).collect();
-            // One arc: never 90° or more between any two cards.
-            let spread = degs[k - 1] - degs[0];
-            assert!(spread < 90.0 + 1e-9, "{n} cards spread {spread}");
-            // Even steps, left to right.
-            let step = degs[1] - degs[0];
-            assert!(step > 0.0);
-            for w in degs.windows(2) {
-                assert!((w[1] - w[0] - step).abs() < 1e-9);
+            let arms: Vec<(f64, f64, f64)> = (0..k).map(|i| fan(i, n, w)).collect();
+            for pair in arms.windows(2) {
+                // Neighbours turn by the same small step, never a right angle.
+                let d = (pair[1].2 - pair[0].2).abs();
+                assert!(d > 1.0 && d < 45.0, "{n} cards: neighbours {d}° apart");
             }
-            if n >= 6 {
-                assert!(step <= 12.0, "{n} cards step {step}");
-            }
-            // Symmetric about the stack: mirrored offsets and turns.
-            for i in 0..k {
-                let (a, b) = (arms[i], arms[k - 1 - i]);
-                assert!((a.0 + b.0).abs() < 1e-9 && (a.1 - b.1).abs() < 1e-9);
-                assert!((a.2 + b.2).abs() < 1e-9);
-            }
+            // Never more than once round: the first and last never coincide.
+            let a = arms[0].1.atan2(arms[0].0);
+            let b = arms[k - 1].1.atan2(arms[k - 1].0);
+            assert!((a - b).abs() > 0.1);
         }
-        assert!((fan_half_spread(3) - 20.0).abs() < 1e-9);
-        assert_eq!(fan_half_spread(40), 45.0);
-        // Nothing past the twelfth card leaves the stack.
-        assert_eq!(fan(12, 30, card, 366.0), (0.0, 0.0, 0.0));
+        // A stable size: the most it draws or thirty, the same fan.
+        assert_eq!(fan(5, FAN_SHOWN, w), fan(5, 30, w));
+        assert_eq!(fan(FAN_SHOWN, 30, w), (0.0, 0.0, 0.0));
     }
 
     #[test]
-    fn the_fan_fits_its_column() {
+    fn the_fan_fits_a_320_pt_column() {
         let card = (230.0, 101.0);
-        for n in [3, 6, 12] {
-            let r = fan_reach(n, card, 366.0);
-            let half = fan_half_spread(n).to_radians();
-            let edge = r * half.sin() + 0.5 * (card.0 * half.cos() + card.1 * half.sin());
+        for n in 3..=12 {
+            let (k, scale) = fan_fit(n, card, (320.0 - 16.0, 2000.0));
+            let (x0, _, x1, _) = fan_bounds(k, card);
             assert!(
-                edge <= 183.0 + 1e-6 || r == FAN_REACH_MIN,
-                "{n} cards reach {edge}"
+                (x1 - x0) * scale <= 304.0 + 1e-6,
+                "{n} cards: {} wide",
+                (x1 - x0) * scale
             );
+            assert!(
+                (FAN_MIN_SCALE - 1e-9..=1.0).contains(&scale),
+                "{n} cards at {scale}"
+            );
+            assert!(k <= n);
         }
+        // A wide column needs no shrinking for a few cards.
+        assert_eq!(fan_fit(3, card, (800.0, 800.0)), (3, 1.0));
     }
 
     #[test]

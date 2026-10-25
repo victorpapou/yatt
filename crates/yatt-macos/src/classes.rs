@@ -10,8 +10,8 @@ use objc2::{
     msg_send, sel,
 };
 use objc2_app_kit::{
-    NSColor, NSControl, NSControlTextEditingDelegate, NSEvent, NSEventModifierFlags, NSEventPhase,
-    NSResponder, NSTextFieldDelegate, NSTextView, NSToolbarDelegate, NSToolbarItem, NSTrackingArea,
+    NSColor, NSControl, NSControlTextEditingDelegate, NSEvent, NSEventModifierFlags, NSResponder,
+    NSTextFieldDelegate, NSTextView, NSToolbarDelegate, NSToolbarItem, NSTrackingArea,
     NSTrackingAreaOptions, NSView, NSWindow, NSWindowDelegate,
 };
 use objc2_foundation::{NSArray, NSNotification, NSPoint, NSRect, NSString};
@@ -139,6 +139,33 @@ impl ToolbarDelegate {
     ) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(ToolbarIvars { items, order });
         unsafe { msg_send![super(this), init] }
+    }
+}
+
+define_class!(
+    // SAFETY: NSToolbarItem has no subclassing requirements; no Drop impl.
+    #[unsafe(super(NSToolbarItem, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    /// A toolbar item for plain content: it asks the toolbar for no glass bubble.
+    /// `glassBehavior` is AppKit's own private, read-only switch for that on
+    /// macOS 26 and later; `hidesSharedBackground` is not there on 27.2.
+    pub struct PlainToolbarItem;
+
+    impl PlainToolbarItem {
+        #[unsafe(method(glassBehavior))]
+        fn glass_behavior(&self) -> usize {
+            // 0: no glass. Any other value (1–3 tried) gives the item a bubble.
+            0
+        }
+    }
+);
+
+impl PlainToolbarItem {
+    /// A new item, as the plain toolbar item it is to everyone else.
+    pub fn item(mtm: MainThreadMarker, id: &NSString) -> Retained<NSToolbarItem> {
+        let this = Self::alloc(mtm).set_ivars(());
+        let this: Retained<Self> = unsafe { msg_send![super(this), initWithItemIdentifier: id] };
+        Retained::into_super(this)
     }
 }
 
@@ -309,6 +336,8 @@ pub enum Fill {
 
 pub struct FillIvars {
     pub fill: Cell<Fill>,
+    /// A card's corners shrink with the card: its radius is CARD_RADIUS × this.
+    pub corner_scale: Cell<f64>,
     pub on_click: RefCell<Option<Box<dyn Fn()>>>,
 }
 
@@ -346,7 +375,10 @@ define_class!(
             layer.setBackgroundColor(Some(&color.CGColor()));
             match fill {
                 Fill::Card { .. } => {
-                    crate::style::round(&layer, crate::style::CARD_RADIUS);
+                    crate::style::round(
+                        &layer,
+                        crate::style::CARD_RADIUS * self.ivars().corner_scale.get(),
+                    );
                     // No stroke or shadow: the card's edge, and the selection ring
                     // outside it, are layers of their own (`style::Edges`). A
                     // running timer shows as ● in the text.
@@ -370,6 +402,14 @@ define_class!(
 );
 
 impl FillView {
+    /// A card's tint at `scale` of its size: the corners go with it.
+    pub fn set_corner_scale(&self, scale: f64) {
+        self.ivars().corner_scale.set(scale);
+        if let Some(layer) = self.layer() {
+            layer.setCornerRadius(crate::style::CARD_RADIUS * scale);
+        }
+    }
+
     pub fn set_fill(&self, fill: Fill) {
         if self.ivars().fill.replace(fill) != fill {
             // Selection rings, tints and fills ease over instead of jumping.
@@ -381,6 +421,7 @@ impl FillView {
     pub fn new(mtm: MainThreadMarker, fill: Fill) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(FillIvars {
             fill: Cell::new(fill),
+            corner_scale: Cell::new(1.0),
             on_click: RefCell::new(None),
         });
         let view: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
@@ -441,27 +482,11 @@ pub enum CanvasMsg {
     Hover(Option<NSPoint>),
 }
 
-/// Where a trackpad gesture is; `None` for a plain mouse wheel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Swipe {
-    None,
-    Began,
-    Changed,
-    Ended,
-    /// Momentum after the fingers lifted.
-    Coasting,
-}
-
 #[derive(Debug, Clone)]
 pub struct Scroll {
     /// The trackpad or wheel event itself, for handing on to a column's scroll view.
     pub event: Option<Retained<NSEvent>>,
     pub at: NSPoint,
-    /// Finger travel in canvas points (y down), whatever the scrolling direction setting.
-    pub finger: (f64, f64),
-    /// How far the content should scroll (positive: further down the list).
-    pub scroll: f64,
-    pub swipe: Swipe,
 }
 
 pub struct CanvasIvars {
@@ -555,31 +580,9 @@ define_class!(
 
         #[unsafe(method(scrollWheel:))]
         fn scroll_wheel(&self, event: &NSEvent) {
-            let (dx, dy) = (event.scrollingDeltaX(), event.scrollingDeltaY());
-            let precise = event.hasPreciseScrollingDeltas();
-            let k = if precise { 1.0 } else { 16.0 };
-            // With natural scrolling the deltas follow the fingers; otherwise they oppose them.
-            let sign = if event.isDirectionInvertedFromDevice() { 1.0 } else { -1.0 };
-            let phase = event.phase();
-            let swipe = if !precise {
-                Swipe::None
-            } else if event.momentumPhase() != NSEventPhase::None {
-                Swipe::Coasting
-            } else if phase.contains(NSEventPhase::Began) {
-                Swipe::Began
-            } else if phase.intersects(NSEventPhase::Ended | NSEventPhase::Cancelled) {
-                Swipe::Ended
-            } else if phase.intersects(NSEventPhase::Changed | NSEventPhase::Stationary) {
-                Swipe::Changed
-            } else {
-                Swipe::None
-            };
             self.send(CanvasMsg::Scroll(Scroll {
                 event: Some(event.retain()),
                 at: self.local(event),
-                finger: (sign * dx * k, sign * dy * k),
-                scroll: -dy * k,
-                swipe,
             }));
         }
     }

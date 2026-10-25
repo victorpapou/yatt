@@ -46,7 +46,8 @@ const HUES: [(Rgb, Rgb); 6] = [
     ((0xA5, 0x3A, 0xF0), (0x3E, 0x11, 0x60)),
     ((0xEC, 0xF5, 0x72), (0x4F, 0x54, 0x1A)),
     ((0x7F, 0xD0, 0x96), (0x22, 0x54, 0x3A)),
-    ((0xF6, 0xF6, 0xF8), (0x2E, 0x2E, 0x34)),
+    // The "white" card: a light neutral grey, so it reads as a card of its own.
+    ((0xE9, 0xE9, 0xEC), (0x2E, 0x2E, 0x34)),
 ];
 
 /// Filled SF Symbols in the spirit of the clip's event glyphs.
@@ -87,8 +88,16 @@ fn rgb((r, g, b): Rgb, alpha: f64) -> Retained<NSColor> {
 /// the blur.
 pub fn fill(hue: usize) -> Retained<NSColor> {
     // Dense enough that text behind is only a soft patch under the light blur.
+    // Over the system's glass the tint is lighter, so less of the frost shows
+    // through as colour mud; over the plain blur it is denser.
     let white = hue % HUES.len() == HUES.len() - 1;
-    rgb(HUES[hue % HUES.len()].0, if white { 0.65 } else { 0.55 })
+    let alpha = match (real_glass(), white) {
+        (true, true) => 0.55,
+        (true, false) => 0.45,
+        (false, true) => 0.65,
+        (false, false) => 0.55,
+    };
+    rgb(HUES[hue % HUES.len()].0, alpha)
 }
 
 pub fn text(hue: usize) -> Retained<NSColor> {
@@ -122,7 +131,23 @@ pub fn card_blur(mtm: MainThreadMarker) -> Retained<NSView> {
         // The public style with the least frost.
         glass.setStyle(NSGlassEffectViewStyle::Clear);
         tune_glass(&glass);
-        return Retained::into_super(glass);
+        // The glass has no saturation of its own: under it, a backdrop that only
+        // saturates (no blur), so it shows the same 1.2 boost as the plain path.
+        let holder = FlippedView::new(mtm, NSRect::ZERO);
+        let fill = NSAutoresizingMaskOptions::ViewWidthSizable
+            | NSAutoresizingMaskOptions::ViewHeightSizable;
+        if let Some(layer) = backdrop_layer(0.0) {
+            round(&layer, CARD_RADIUS);
+            layer.setMasksToBounds(true);
+            let saturate = FlippedView::new(mtm, NSRect::ZERO);
+            saturate.setLayer(Some(&layer));
+            saturate.setWantsLayer(true);
+            saturate.setAutoresizingMask(fill);
+            holder.addSubview(&saturate);
+        }
+        glass.setAutoresizingMask(fill);
+        holder.addSubview(&glass);
+        return Retained::into_super(holder);
     }
     if let Some(layer) = backdrop_layer(CARD_BLUR) {
         round(&layer, CARD_RADIUS);
@@ -346,17 +371,34 @@ impl Edges {
 
     /// Fits both layers to a `w` × `h` card at the origin of its view.
     pub fn layout(&self, w: f64, h: f64) {
+        self.layout_scaled(w, h, 1.0);
+    }
+
+    /// The same for a card shown at `scale` of its size: the edges' corners,
+    /// blur and depth and the ring's gap, width and corners shrink with it. The
+    /// edge bitmaps are shown at a matching density, so their 9-slice corners
+    /// cover `scale` times the points.
+    pub fn layout_scaled(&self, w: f64, h: f64, scale: f64) {
+        let s = scale.max(0.05);
+        let pad = EDGE_PAD * s;
         self.outer.setFrame(NSRect::new(
-            NSPoint::new(-EDGE_PAD, -EDGE_PAD),
-            NSSize::new(w + 2.0 * EDGE_PAD, h + 2.0 * EDGE_PAD),
+            NSPoint::new(-pad, -pad),
+            NSSize::new(w + 2.0 * pad, h + 2.0 * pad),
         ));
         self.inner
             .setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(w, h)));
-        let o = RING_GAP + RING_WIDTH;
+        for v in [&self.outer, &self.inner] {
+            if let Some(layer) = v.layer() {
+                layer.setContentsScale(EDGE_SCALE / s);
+            }
+        }
+        let o = (RING_GAP + RING_WIDTH) * s;
         self.ring.setFrame(NSRect::new(
             NSPoint::new(-o, -o),
             NSSize::new(w + 2.0 * o, h + 2.0 * o),
         ));
+        self.ring_layer.setCornerRadius(CARD_RADIUS * s + o);
+        self.ring_layer.setBorderWidth(RING_WIDTH * s);
     }
 
     /// Shows or hides the selection ring, easing over.
@@ -467,6 +509,20 @@ const INSET_STEPS: usize = 12;
 
 /// Card glyph bitmaps by symbol name and hue.
 type GlyphCache = std::collections::HashMap<(String, usize), Option<Retained<CGImage>>>;
+
+/// Gives a card's backdrop (as made by [`card_blur`]) the corner radius of a card
+/// at `scale` of its size.
+pub fn set_blur_corners(view: &NSView, scale: f64) {
+    let r = CARD_RADIUS * scale;
+    if let Some(glass) = view.downcast_ref::<NSGlassEffectView>() {
+        glass.setCornerRadius(r);
+    } else if let Some(layer) = view.layer() {
+        layer.setCornerRadius(r);
+    }
+    for sub in view.subviews().iter() {
+        set_blur_corners(&sub, scale);
+    }
+}
 
 /// A card's glyph (an SF Symbol) in the card's ink, drawn once per symbol and
 /// hue and shown as a layer's contents.
@@ -595,14 +651,21 @@ mod tests {
     /// Renders a card's plain layers (tint, then the inner edge; no backdrop) into
     /// a bitmap at 2 px per point and returns its BGRA pixels and row length.
     fn render_card(tint: (f64, f64, f64)) -> (Vec<u8>, usize) {
-        let (w, h) = (CARD_W, CARD_H);
+        render_card_at(tint, 1.0)
+    }
+
+    /// The same for a card shown at `scale`, set up the way `Edges` and the tint
+    /// scale theirs.
+    fn render_card_at(tint: (f64, f64, f64), scale: f64) -> (Vec<u8>, usize) {
+        let (w, h) = (CARD_W * scale, CARD_H * scale);
         let root = CALayer::new();
         root.setFrame(CGRect::new(CGPoint::ZERO, CGSize::new(w, h)));
         let face = CALayer::new();
         face.setFrame(root.bounds());
         face.setBackgroundColor(Some(&CGColor::new_srgb(tint.0, tint.1, tint.2, 1.0)));
-        round(&face, CARD_RADIUS);
+        round(&face, CARD_RADIUS * scale);
         let inner = with_edge_images(|_, inner| edge_layer(inner, 0.0));
+        inner.setContentsScale(EDGE_SCALE / scale);
         inner.setFrame(root.bounds());
         root.addSublayer(&face);
         root.addSublayer(&inner);
@@ -669,6 +732,36 @@ mod tests {
         );
         assert!(at(1.0) > at(1.5) && at(1.5) >= at(2.0));
         assert!(at(3.0) <= centre + 3, "3 pt {} vs centre {centre}", at(3.0));
+    }
+
+    #[test]
+    fn a_card_at_0_8_has_its_edge_and_corners_at_0_8() {
+        let tint = (0.78, 0.58, 0.95);
+        let (full, fw) = render_card_at(tint, 1.0);
+        let (small, sw) = render_card_at(tint, 0.8);
+        let light = |px: &[u8], pw: usize, x: f64, y: f64| {
+            let i = (((y * EDGE_SCALE) as usize) * pw + (x * EDGE_SCALE) as usize) * 4;
+            px[i] as i32 + px[i + 1] as i32 + px[i + 2] as i32
+        };
+        // The white inner edge: what the full card shows d points in, the small
+        // one shows 0.8 d in.
+        for d in [0.5, 1.0, 1.5, 2.5] {
+            let a = light(&full, fw, d, CARD_H / 2.0);
+            let b = light(&small, sw, d * 0.8, CARD_H * 0.8 / 2.0);
+            // Within what half a pixel of the 2 px/pt grid makes up.
+            assert!((a - b).abs() <= 30, "{d} pt in: full {a}, at 0.8 {b}");
+        }
+        // The corner: a point 0.25 radii in from the corner along the diagonal
+        // lies outside the full card's curve, and at 0.8 both corners shrink alike.
+        let alpha = |px: &[u8], pw: usize, x: f64| {
+            let i = (((x * EDGE_SCALE) as usize) * pw + (x * EDGE_SCALE) as usize) * 4;
+            px[i + 3]
+        };
+        let p = 0.2 * CARD_RADIUS;
+        assert_eq!(alpha(&full, fw, p), alpha(&small, sw, p * 0.8));
+        assert!(alpha(&full, fw, p) < 40, "corner {}", alpha(&full, fw, p));
+        assert!(alpha(&full, fw, 0.5 * CARD_RADIUS) > 200);
+        assert!(alpha(&small, sw, 0.5 * CARD_RADIUS * 0.8) > 200);
     }
 
     /// Renders a selected card the way `Edges` stacks it (ring, outline, tint,

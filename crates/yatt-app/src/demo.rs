@@ -1,6 +1,7 @@
 //! Development aid: `YATT_DEMO=<dir>` plays a short scripted session (new tasks
 //! flying in from the capsule, a plain drag, a ⇧/⌘ selection dragged as a train,
-//! a two-finger swipe, a column folded into a stack and fanned, the task modal,
+//! real mouse drags through the window, a column folded into a stack and fanned,
+//! the task modal,
 //! timer-only mode) and saves window captures into `<dir>`, so the UI can be
 //! checked without clicking through it by hand.
 
@@ -9,7 +10,7 @@ use std::time::Duration;
 
 use gpui::{App, AsyncApp, Entity};
 use yatt_core::{Status, TaskId};
-use yatt_macos::{DemoMouse, DemoPhase, DemoPointer, MainWindow, Sink, UiEvent};
+use yatt_macos::{DemoMouse, DemoPointer, MainWindow, Sink, UiEvent};
 
 use crate::workspace::Workspace;
 
@@ -54,6 +55,32 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
         };
 
         wait(600).await;
+        if let Some(n) = std::env::var("YATT_DEMO_FAN").ok().and_then(|n| n.parse::<usize>().ok()) {
+            // One stack of `n` cards, fanned open, for a look at the fan.
+            for i in 0..n {
+                sink(UiEvent::NewTask {
+                    title: format!("Задача {}", i + 1),
+                    status: Status::Backlog,
+                });
+            }
+            wait(600).await;
+            window.demo_toggle_stack();
+            wait(700).await;
+            if let Some(&top) = ids(cx, 0).first() {
+                window.demo_real_click(centre(top), 1);
+            }
+            wait(900).await;
+            shot(&format!("fan-{n}"));
+            eprintln!("demo: finished");
+            return;
+        }
+        if std::env::var_os("YATT_DEMO_TOOLBAR").is_some() {
+            // Just the window as it opens, for a look at the toolbar.
+            wait(900).await;
+            shot("toolbar");
+            eprintln!("demo: finished");
+            return;
+        }
         if let Ok(n) = std::env::var("YATT_DEMO_PERF") {
             // A big board (`YATT_DEMO_PERF=<cards>`, 100 by default): a long
             // scroll timed step by step, then 20 cards dragged slowly across,
@@ -198,28 +225,17 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             let end = (dx, 70.0);
             drag(mid, end, 8).await;
             window.demo_pointer(DemoPointer::Up(end));
-            wait(800).await;
+            // The cards land one after another.
+            wait(40).await;
+            shot("6a-landing");
+            wait(60).await;
+            shot("6b-landing");
+            wait(700).await;
             shot("6-dropped");
         }
 
-        // A click on empty board drops the selection; then a two-finger swipe carries
-        // one done card back to "В работе".
+        // A click on empty board drops the selection.
         click((window.demo_column_x(0), 600.0), false, false);
-        if let Some(&card) = ids(cx, 2).last() {
-            let at = centre(card);
-            let swipe = |finger: (f64, f64), phase: DemoPhase| {
-                window.demo_pointer(DemoPointer::Swipe { at, finger, phase });
-            };
-            swipe((0.0, 0.0), DemoPhase::Began);
-            let step = ((bx - at.0) / 16.0, 3.0);
-            for _ in 0..16 {
-                swipe(step, DemoPhase::Changed);
-                wait(16).await;
-            }
-            shot("7-swipe");
-            swipe((0.0, 0.0), DemoPhase::Ended);
-            wait(700).await;
-        }
 
         // Fold the board into stacks, fan "В работе" with a click, then drag it whole to "Готово".
         window.demo_toggle_stack();
@@ -306,6 +322,22 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             wait(450).await;
             shot("9-fan");
             window.demo_pointer(DemoPointer::Hover(None));
+            // A real drag of one card out of the open fan into "Бэклог".
+            if let Some(&one) = ids(cx, 1).get(1) {
+                let from = centre(one);
+                let to = (window.demo_column_x(0), 200.0);
+                window.demo_real_mouse(DemoMouse::Down, from);
+                for i in 1..=16 {
+                    window.demo_real_mouse(DemoMouse::Drag, ease(from, to, i as f64 / 16.0));
+                    wait(16).await;
+                }
+                window.demo_real_mouse(DemoMouse::Up, to);
+                wait(700).await;
+                eprintln!(
+                    "demo: real-event drag of one card out of a fan: {}",
+                    if ids(cx, 0).contains(&one) { "landed in Бэклог" } else { "DID NOT MOVE (wrong)" }
+                );
+            }
             // A second, real click (through hit-testing) on a fanned card folds the fan.
             if let Some(&id) = first.get(1) {
                 window.demo_real_click(centre(id), 2);

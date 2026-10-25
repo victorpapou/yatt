@@ -66,6 +66,8 @@ pub enum UiEvent {
     Rename(TaskId, String),
     SetNotes(TaskId, String),
     Delete(TaskId),
+    /// Several moves or deletes made together: undone and redone as one.
+    Group(Vec<UiEvent>),
     /// Copies of tasks, `(title, notes)` in order, on top of `status`.
     Paste {
         items: Vec<(String, String)>,

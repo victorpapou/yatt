@@ -48,9 +48,7 @@ use objc2_foundation::{
 use objc2_quartz_core::CACurrentMediaTime;
 use yatt_core::{Status, TaskId};
 
-use crate::classes::{
-    CanvasMsg, CanvasView, Fill, FillView, FlippedView, OverlayView, Scroll, Swipe,
-};
+use crate::classes::{CanvasMsg, CanvasView, Fill, FillView, FlippedView, OverlayView, Scroll};
 use crate::model::{CardSnap, ColumnSnap, UiEvent, format_duration, moves_into};
 use crate::motion;
 use crate::physics::{self, Body};
@@ -65,6 +63,11 @@ const STACK_SHOWN: usize = 3;
 /// How far beyond a column's visible area list rows stay drawn, in screens:
 /// enough that a fast scroll never shows an empty slot, few enough glass views.
 const ROW_OVERSCAN: f64 = 0.5;
+/// The longest a landing group keeps its flight order, in case a card never
+/// comes to rest.
+const LANDING_MAX_SECS: f64 = 2.0;
+/// Room a fan keeps from the canvas's sides, when it has room.
+const FAN_MARGIN: f64 = 8.0;
 /// The most a click on a fan waits for a second one before folding, in seconds.
 const FAN_FOLD_DELAY: f64 = 0.22;
 /// A fanned card under the pointer grows a little, keeping its place in the order.
@@ -95,19 +98,6 @@ pub enum DemoPointer {
     Drag((f64, f64)),
     Up((f64, f64)),
     Hover(Option<(f64, f64)>),
-    /// A two-finger trackpad swipe step: finger travel since the last step.
-    Swipe {
-        at: (f64, f64),
-        finger: (f64, f64),
-        phase: DemoPhase,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DemoPhase {
-    Began,
-    Changed,
-    Ended,
 }
 
 /// One column's horizontal extent on the canvas.
@@ -132,7 +122,7 @@ struct Column {
     doc: Retained<FlippedView>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Layout {
     List,
     Stack { fanned: bool },
@@ -192,6 +182,8 @@ struct Card {
     placed: Cell<[f64; 8]>,
     /// The size the edge layers were last laid out for.
     shadow_size: Cell<(f64, f64)>,
+    /// The scale the corners were last cut for.
+    corner_scale: Cell<f64>,
     edges: style::Edges,
 }
 
@@ -217,20 +209,12 @@ struct Drag {
     path: Vec<(f64, f64, f64)>,
 }
 
-/// A two-finger trackpad gesture over the canvas.
-#[derive(Clone, Copy)]
-enum Gesture {
-    Idle,
-    /// Not sure yet whether it scrolls or drags.
-    Deciding {
-        at: NSPoint,
-        finger: (f64, f64),
-        scroll: f64,
-    },
-    Scrolling(Option<usize>),
-    Dragging((f64, f64)),
-    /// Momentum after a drag: ignored.
-    Spent,
+/// A dropped group on its way into its column, all of it at once: it keeps the
+/// stacking order it flew in until the last card is down.
+struct Landing {
+    /// Lead first, in the order they flew.
+    ids: Vec<TaskId>,
+    start: f64,
 }
 
 pub struct Board {
@@ -242,8 +226,6 @@ pub struct Board {
     overlay_dy: Cell<f64>,
     sink: Sink,
     cols: [Column; 3],
-    /// Trackpad events held while a gesture decides between scrolling and dragging.
-    held: RefCell<Vec<Retained<NSEvent>>>,
     /// Scroll observers of the columns, kept for as long as the board.
     observers: RefCell<Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>>,
     statuses: [Status; 3],
@@ -258,11 +240,12 @@ pub struct Board {
     anchor: Cell<Option<TaskId>>,
     press: RefCell<Option<Press>>,
     drag: RefCell<Option<Drag>>,
-    gesture: Cell<Gesture>,
     /// The card order last applied to the views, and where each sat.
     stacking: RefCell<Vec<(TaskId, Space)>>,
     /// A card changed parent since the views were last ordered.
     restack_due: Cell<bool>,
+    /// A dropped group flying in, one card after another.
+    landing: RefCell<Option<Landing>>,
     /// `YATT_PERF`: when a stack was clicked open, until its first frame.
     fan_clicked: Cell<Option<f64>>,
     /// The card under the pointer, for the glass highlight in a fanned stack.
@@ -316,7 +299,6 @@ impl Board {
             overlay_dy: Cell::new(0.0),
             sink,
             cols,
-            held: RefCell::new(Vec::new()),
             observers: RefCell::new(Vec::new()),
             statuses: Status::ALL,
             titles: RefCell::new(Default::default()),
@@ -329,11 +311,11 @@ impl Board {
             anchor: Cell::new(None),
             press: RefCell::new(None),
             drag: RefCell::new(None),
-            gesture: Cell::new(Gesture::Idle),
             hover: Cell::new(None),
             stacking: RefCell::new(Default::default()),
             restack_due: Cell::new(false),
             fan_clicked: Cell::new(None),
+            landing: RefCell::new(None),
             hidden: Cell::new(None),
             spawn: Cell::new(None),
             timer: RefCell::new(None),
@@ -599,17 +581,6 @@ impl Board {
             DemoPointer::Drag(at) => CanvasMsg::Dragged(pt(at)),
             DemoPointer::Up(at) => CanvasMsg::Up(pt(at)),
             DemoPointer::Hover(at) => CanvasMsg::Hover(at.map(pt)),
-            DemoPointer::Swipe { at, finger, phase } => CanvasMsg::Scroll(Scroll {
-                event: None,
-                at: pt(at),
-                finger,
-                scroll: -finger.1,
-                swipe: match phase {
-                    DemoPhase::Began => Swipe::Began,
-                    DemoPhase::Changed => Swipe::Changed,
-                    DemoPhase::Ended => Swipe::Ended,
-                },
-            }),
         };
         self.on_msg(msg);
     }
@@ -797,6 +768,7 @@ impl Board {
             parts,
             grow: None,
             shadow_size: Cell::new((0.0, 0.0)),
+            corner_scale: Cell::new(f64::NAN),
             placed: Cell::new([f64::NAN; 8]),
             parked: Rc::new(Cell::new(false)),
             culled: false,
@@ -857,13 +829,20 @@ impl Board {
             let n = ids.len();
             match layouts[ci] {
                 Layout::Stack { fanned } if fanned && n > 1 => {
-                    // A swatch fan on one pivot below the stack, from the deepest card
-                    // on the left to the top card on the right; each overlaps the one
-                    // before it, and the top card keeps its place on top.
-                    let a = self.stack_anchor(ci);
-                    let centre = (a.0 + w / 2.0, a.1 + h / 2.0);
-                    let col_w = self.geom.get()[ci].w;
-                    let shown_n = n.min(physics::FAN_SHOWN);
+                    // The swatch fan of the reference, newest card on top, shrunk
+                    // as a whole (angles unchanged) to fit its column and the board's
+                    // height, and centred on the column below the chips.
+                    let g = self.geom.get()[ci];
+                    let room = (
+                        g.w - 2.0 * FAN_MARGIN,
+                        self.height.get() - LIST_TOP - 2.0 * FAN_MARGIN,
+                    );
+                    let (shown_n, scale) = physics::fan_fit(n, (w, h), room);
+                    let (x0, y0, x1, _) = physics::fan_bounds(shown_n, (w, h));
+                    let centre = (
+                        g.x + g.w / 2.0 - (x0 + x1) / 2.0 * scale,
+                        LIST_TOP + FAN_MARGIN - y0 * scale,
+                    );
                     for (i, id) in ids.iter().enumerate() {
                         let Some(card) = cards.get_mut(id) else {
                             continue;
@@ -871,17 +850,20 @@ impl Board {
                         // Twelve cards at most; the rest wait, hidden, on the stack.
                         let shown = i < shown_n;
                         let (dx, dy, deg) = if shown {
-                            physics::fan(shown_n - 1 - i, shown_n, (w, h), col_w)
+                            let (dx, dy, deg) = physics::fan(i, shown_n, w);
+                            (dx * scale, dy * scale, deg)
                         } else {
                             parked.insert(*id);
                             (0.0, 0.0, 0.0)
                         };
                         let at = (centre.0 + dx - w / 2.0, centre.1 + dy - h / 2.0, deg);
                         self.send_home(card, Space::Canvas, at);
-                        card.body.spring = physics::PILE;
+                        card.body.spring = physics::FAN_OPEN;
                         card.set_muted(false);
+                        // Newer cards on top, as on the stack.
                         card.z = if shown { (n - i) as f64 } else { 0.0 };
-                        card.target_scale = if hover == Some(*id) { HOVER_SCALE } else { 1.0 };
+                        card.target_scale =
+                            scale * if hover == Some(*id) { HOVER_SCALE } else { 1.0 };
                         card.set_look(Look::Solid, true);
                     }
                 }
@@ -898,7 +880,7 @@ impl Board {
                         if i >= STACK_SHOWN {
                             parked.insert(*id);
                         }
-                        card.body.spring = physics::PILE;
+                        card.body.spring = physics::FAN_FOLD;
                         card.z = (n - i) as f64;
                         card.target_scale = scale;
                         card.set_look(Look::Solid, true);
@@ -961,7 +943,7 @@ impl Board {
                 let Some(card) = cards.get_mut(id) else {
                     continue;
                 };
-                card.z = 1000.0 - i as f64;
+                card.z = physics::group_z(i);
                 card.set_muted(false);
                 card.target_scale = if i == 0 { 1.0 } else { physics::trail(i).1 };
                 if i == 0 {
@@ -990,6 +972,15 @@ impl Board {
             .unwrap_or_default();
         if let Some(d) = drag.as_ref() {
             parked.extend(d.ids.iter().skip(1 + physics::TRAIL_SHOWN).copied());
+        }
+        // A landing group keeps the stacking order it flew in until the last of
+        // its cards is down.
+        if let Some(l) = self.landing.borrow().as_ref() {
+            for (k, id) in l.ids.iter().enumerate() {
+                if let Some(card) = cards.get_mut(id) {
+                    card.z = physics::group_z(k);
+                }
+            }
         }
         for (id, card) in cards.iter_mut() {
             if !followers.contains(id) {
@@ -1237,29 +1228,34 @@ impl Board {
             card.apply_frame(overlay_dy);
         }
         // Followers replay the lead's path, each a fixed delay later than the one
-        // ahead (the first with none), a sliver lower.
+        // ahead (the first with none), a sliver lower: while dragging, and after
+        // the drop until each one's turn to land.
+        let lead_at = |ids: &[TaskId], cards: &HashMap<TaskId, Card>| {
+            let c = cards.get(ids.first()?)?;
+            // In overlay coordinates, wherever the lead is.
+            let (ax, ay) = self.offset(c.space);
+            let (ox, oy) = self.offset(Space::Overlay);
+            Some((c.body.x + ax - ox, c.body.y + ay - oy))
+        };
+        let mut land_now = false;
         if let Some(d) = self.drag.borrow_mut().as_mut()
             && d.group
-            && let Some(lead) = d.ids.first().and_then(|id| cards.get(id)).map(|c| c.body)
+            && let Some((x, y)) = lead_at(&d.ids, &cards)
         {
-            d.path.push((now, lead.x, lead.y));
-            let keep = now - physics::trail_delay(physics::TRAIL_SHOWN) - 0.1;
-            let old = d.path.partition_point(|p| p.0 < keep).saturating_sub(1);
-            d.path.drain(..old);
-            for (i, id) in d.ids.iter().enumerate().skip(1) {
-                let Some(card) = cards.get_mut(id) else {
-                    continue;
-                };
-                let Some((x, y)) = physics::path_at(&d.path, now - physics::trail_delay(i)) else {
-                    continue;
-                };
-                let y = y + physics::trail(i).0;
-                let spring = card.body.spring;
-                card.body = Body {
-                    spring,
-                    ..Body::at(x, y)
-                };
-                card.apply_frame(overlay_dy);
+            d.path.push((now, x, y));
+            follow_path(&mut cards, &d.ids, 1, &mut d.path, now, overlay_dy);
+        }
+        // A dropped group lands together; it keeps its stacking order until the
+        // last of its cards is down in its column.
+        if let Some(l) = self.landing.borrow().as_ref() {
+            let down = l
+                .ids
+                .iter()
+                .all(|id| cards.get(id).is_none_or(|c| c.space != Space::Overlay));
+            if down || now - l.start > LANDING_MAX_SECS {
+                land_now = true;
+            } else {
+                moving = true;
             }
         }
         // Cards that came to rest away from home land there, but only once every
@@ -1288,6 +1284,10 @@ impl Board {
             self.restack(&cards);
         }
         drop(cards);
+        if land_now {
+            *self.landing.borrow_mut() = None;
+            self.retarget();
+        }
         if let Some(t0) = self.fan_clicked.take()
             && self.perf.borrow().is_some()
         {
@@ -1353,12 +1353,25 @@ impl Board {
             CanvasMsg::Dragged(p) => {
                 if self.drag.borrow().is_none() {
                     let Some(press) = self.press.borrow_mut().take() else {
+                        crate::eventlog::log("board: dragged, but no press: not dragging");
                         return;
                     };
-                    let far = (p.x - press.start.x).hypot(p.y - press.start.y) >= DRAG_THRESHOLD;
+                    let d = (p.x - press.start.x).hypot(p.y - press.start.y);
+                    let far = d >= DRAG_THRESHOLD;
                     match press.id {
-                        Some(id) if far => self.begin_drag(id, press.start, p),
+                        Some(id) if far => {
+                            crate::eventlog::log(format!("board: drag starts with {id:?}"));
+                            self.begin_drag(id, press.start, p)
+                        }
                         _ => {
+                            crate::eventlog::log(format!(
+                                "board: dragged {d:.1} pt, {}",
+                                if press.id.is_none() {
+                                    "pressed on no card"
+                                } else {
+                                    "below the threshold"
+                                }
+                            ));
                             *self.press.borrow_mut() = Some(press);
                             return;
                         }
@@ -1367,6 +1380,16 @@ impl Board {
                 self.drag_to(p);
             }
             CanvasMsg::Up(p) => {
+                crate::eventlog::log(format!(
+                    "board: up at ({:.0}, {:.0}), {}",
+                    p.x,
+                    p.y,
+                    if self.drag.borrow().is_some() {
+                        "drop"
+                    } else {
+                        "click"
+                    }
+                ));
                 if self.drag.borrow().is_some() {
                     self.drop_at(p);
                 } else if let Some(press) = self.press.borrow_mut().take()
@@ -1388,6 +1411,27 @@ impl Board {
 
     fn on_down(self: &Rc<Self>, at: NSPoint, shift: bool, cmd: bool, clicks: isize) {
         let id = self.hit(at);
+        if crate::eventlog::enabled() {
+            let what = id.and_then(|id| {
+                let cards = self.cards.borrow();
+                let c = cards.get(&id)?;
+                Some(format!(
+                    "card {id:?} in {:?} at ({:.0}, {:.0}) scale {:.2} hidden {}",
+                    c.space,
+                    c.body.x,
+                    c.body.y,
+                    c.scale,
+                    c.view.isHidden()
+                ))
+            });
+            crate::eventlog::log(format!(
+                "board: down at ({:.0}, {:.0}) clicks {clicks} shift {shift} cmd {cmd} on {}; layouts {:?}",
+                at.x,
+                at.y,
+                what.unwrap_or_else(|| "no card".into()),
+                self.layouts.get()
+            ));
+        }
         if let Some(id) = id {
             if cmd {
                 let mut sel = self.selected.borrow_mut();
@@ -1578,76 +1622,15 @@ impl Board {
     /// Scrolling is native: a column's scroll view gets the events. A two-finger
     /// swipe that starts sideways over a card drags it instead; until that is
     /// decided the events are held, then replayed to the scroll view if it scrolls.
+    /// Trackpad and wheel scrolling is the column's own: every event goes to its
+    /// native scroll view. (Cards are dragged with the pointer only.)
     fn on_scroll(self: &Rc<Self>, s: Scroll) {
-        let col = self.column_at(s.at.x);
-        let event = s.event.as_deref();
-        match (s.swipe, self.gesture.get()) {
-            (Swipe::None, _) => self.forward(col, event),
-            (Swipe::Began, _) => {
-                let mut held = self.held.borrow_mut();
-                held.clear();
-                held.extend(s.event.clone());
-                self.gesture.set(Gesture::Deciding {
-                    at: s.at,
-                    finger: s.finger,
-                    scroll: s.scroll,
-                });
-            }
-            (Swipe::Changed, Gesture::Deciding { at, finger, scroll }) => {
-                self.held.borrow_mut().extend(s.event.clone());
-                let finger = (finger.0 + s.finger.0, finger.1 + s.finger.1);
-                let scroll = scroll + s.scroll;
-                if finger.0.hypot(finger.1) < DRAG_THRESHOLD * 1.5 {
-                    self.gesture.set(Gesture::Deciding { at, finger, scroll });
-                    return;
-                }
-                let sideways = finger.0.abs() > finger.1.abs();
-                match self.hit(at) {
-                    Some(id) if sideways => {
-                        self.held.borrow_mut().clear();
-                        let cursor = (at.x + finger.0, at.y + finger.1);
-                        self.begin_drag(id, at, NSPoint::new(cursor.0, cursor.1));
-                        self.drag_to(NSPoint::new(cursor.0, cursor.1));
-                        self.gesture.set(Gesture::Dragging(cursor));
-                    }
-                    _ => {
-                        let ci = self.column_at(at.x);
-                        let held: Vec<_> = self.held.borrow_mut().drain(..).collect();
-                        for e in &held {
-                            self.forward(ci, Some(e));
-                        }
-                        self.gesture.set(Gesture::Scrolling(ci));
-                    }
-                }
-            }
-            (Swipe::Changed | Swipe::Ended | Swipe::Coasting, Gesture::Scrolling(ci)) => {
-                self.forward(ci, event)
-            }
-            (Swipe::Changed, Gesture::Dragging(c)) => {
-                let cursor = (c.0 + s.finger.0, c.1 + s.finger.1);
-                self.drag_to(NSPoint::new(cursor.0, cursor.1));
-                self.gesture.set(Gesture::Dragging(cursor));
-            }
-            (Swipe::Ended, Gesture::Dragging(c)) => {
-                self.drop_at(NSPoint::new(c.0, c.1));
-                self.gesture.set(Gesture::Spent);
-            }
-            (Swipe::Ended, Gesture::Deciding { at, .. }) => {
-                let ci = self.column_at(at.x);
-                let held: Vec<_> = self.held.borrow_mut().drain(..).collect();
-                for e in &held {
-                    self.forward(ci, Some(e));
-                }
-                self.forward(ci, event);
-                self.gesture.set(Gesture::Idle);
-            }
-            (Swipe::Coasting, Gesture::Idle) => self.forward(col, event),
-            _ => {}
-        }
+        self.forward(self.column_at(s.at.x), s.event.as_deref());
     }
 
     fn begin_drag(self: &Rc<Self>, id: TaskId, start: NSPoint, p: NSPoint) {
         let Some(col) = self.column_of(id) else {
+            crate::eventlog::log(format!("board: drag refused: {id:?} is in no column"));
             return;
         };
         let mut ids = vec![id];
@@ -1730,6 +1713,12 @@ impl Board {
         };
         (self.on_target)(None);
         self.report_perf(drag.ids.len());
+        if drag.group && drag.target.is_some() {
+            *self.landing.borrow_mut() = Some(Landing {
+                ids: drag.ids.clone(),
+                start: CACurrentMediaTime(),
+            });
+        }
         if let Some(col) = drag.target {
             let before = self.order.borrow()[col].clone();
             // The cards land in the order they had on the board, whichever one led.
@@ -1748,8 +1737,10 @@ impl Board {
                     order[col].insert(at + i, *id);
                 }
             }
-            for e in moves_into(&before, &ids, drag.index, self.statuses[col]) {
-                (self.sink)(e);
+            // One undo step for the whole group.
+            let moves = moves_into(&before, &ids, drag.index, self.statuses[col]);
+            if !moves.is_empty() {
+                (self.sink)(UiEvent::Group(moves));
             }
         }
         self.retarget();
@@ -1924,7 +1915,7 @@ impl Card {
             for part in &self.parts {
                 part.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(w, h)));
             }
-            self.cut_shadows(w, h);
+            self.cut_shadows(w, h, self.scale);
             // Where the title sits so that it covers the text in the field.
             let start = (
                 FIELD_TEXT_X - TEXT_X,
@@ -1980,7 +1971,7 @@ impl Card {
         for part in &self.parts {
             part.setFrame(local);
         }
-        self.cut_shadows(w, h);
+        self.cut_shadows(w, h, self.scale);
         self.content.setFrame(local);
         self.content.setBoundsSize(NSSize::new(CARD_W, CARD_H));
         // The column label a touch above the middle, the count under it.
@@ -1997,9 +1988,18 @@ impl Card {
     }
 
     /// Fits the edge layers to a `w` × `h` card, when its size has changed.
-    fn cut_shadows(&self, w: f64, h: f64) {
-        if self.shadow_size.replace((w, h)) != (w, h) {
-            self.edges.layout(w, h);
+    /// Its corners too: a smaller card has a smaller radius everywhere (tint,
+    /// backdrop, both edges, the selection ring), as if the whole card scaled.
+    /// The corners follow the card's scale, not its squash, so they hold still
+    /// while it moves.
+    fn cut_shadows(&self, w: f64, h: f64, scale: f64) {
+        let scale_changed = self.corner_scale.replace(scale) != scale;
+        if self.shadow_size.replace((w, h)) != (w, h) || scale_changed {
+            self.edges.layout_scaled(w, h, scale);
+        }
+        if scale_changed {
+            self.face.set_corner_scale(scale);
+            style::set_blur_corners(&self.parts[0], scale);
         }
     }
 
@@ -2011,6 +2011,37 @@ impl Card {
         let (dx, dy) = (p.x - cx, p.y - cy);
         let (lx, ly) = (dx * t.cos() - dy * t.sin(), dx * t.sin() + dy * t.cos());
         lx.abs() <= self.scale * CARD_W / 2.0 && ly.abs() <= self.scale * CARD_H / 2.0
+    }
+}
+
+/// Puts the cards of `ids` from index `from` on (`ids[0]` is the lead) on the
+/// lead's recorded `path`, each [`physics::trail_delay`] behind, a sliver lower.
+/// Trims the path to what the last of them still needs.
+fn follow_path(
+    cards: &mut HashMap<TaskId, Card>,
+    ids: &[TaskId],
+    from: usize,
+    path: &mut Vec<(f64, f64, f64)>,
+    now: f64,
+    overlay_dy: f64,
+) {
+    let keep = now - physics::trail_delay(ids.len()) - 0.1;
+    let old = path.partition_point(|p| p.0 < keep).saturating_sub(1);
+    path.drain(..old);
+    for (i, id) in ids.iter().enumerate().skip(from.max(1)) {
+        let Some(card) = cards.get_mut(id) else {
+            continue;
+        };
+        let Some((x, y)) = physics::path_at(path, now - physics::trail_delay(i)) else {
+            continue;
+        };
+        let y = y + physics::trail(i).0;
+        let spring = card.body.spring;
+        card.body = Body {
+            spring,
+            ..Body::at(x, y)
+        };
+        card.apply_frame(overlay_dy);
     }
 }
 
