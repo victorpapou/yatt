@@ -43,8 +43,13 @@ glow, no layer shadow.
 
 1. Outside, the outline: a black shadow at 30%, 1 pt blur, no offset, only
    outside the card.
-2. Inside, a white inner edge: 65% white at the edge, fading out over 2 pt,
-   only inside the card, over the tint and under the text.
+2. Inside, a soft white glow along the edge: 42% white at the edge, fading out
+   on an ease-out curve over 3.75 pt, only inside the card, over the tint and
+   under the text.
+
+While a card is carried (the head of a group only) a lift shadow eases in under
+it: 20% black, 24 pt blur, 8 pt down, outside the card only, pre-drawn like the
+edges; it eases out again when the card is set down.
 
 Everything scales with the card (a sliver of a stack, a follower of a drag, a
 fan shrunk to fit its column): the corner radius of the tint, the backdrop and

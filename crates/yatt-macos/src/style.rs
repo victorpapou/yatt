@@ -342,6 +342,9 @@ fn edge_image(
 /// - inside, a white 2 px inner shadow along the edge, only inside it.
 ///   Nothing else draws at the edge: no stroke, no glow.
 pub struct Edges {
+    /// The shadow of a carried card, hidden until it is lifted.
+    pub lift: Retained<NSView>,
+    lift_layer: Retained<CALayer>,
     pub outer: Retained<NSView>,
     pub inner: Retained<NSView>,
     /// The selection: a blue ring outside the outline, never on the card itself.
@@ -363,7 +366,14 @@ impl Edges {
         let ring = FlippedView::new(mtm, NSRect::ZERO);
         ring.setLayer(Some(&ring_layer));
         ring.setWantsLayer(true);
+        let lift_layer = lift_image().map_or_else(CALayer::new, |i| edge_layer(Some(&i), LIFT_PAD));
+        lift_layer.setOpacity(0.0);
+        let lift = FlippedView::new(mtm, NSRect::ZERO);
+        lift.setLayer(Some(&lift_layer));
+        lift.setWantsLayer(true);
         with_edge_images(|outer, inner| Self {
+            lift: Retained::into_super(lift),
+            lift_layer,
             outer: layer_view(outer, EDGE_PAD),
             inner: layer_view(inner, 0.0),
             ring: Retained::into_super(ring),
@@ -382,6 +392,12 @@ impl Edges {
     /// cover `scale` times the points.
     pub fn layout_scaled(&self, w: f64, h: f64, scale: f64) {
         let s = scale.max(0.05);
+        let lp = LIFT_PAD * s;
+        self.lift.setFrame(NSRect::new(
+            NSPoint::new(-lp, -lp),
+            NSSize::new(w + 2.0 * lp, h + 2.0 * lp),
+        ));
+        self.lift_layer.setContentsScale(EDGE_SCALE / s);
         let pad = EDGE_PAD * s;
         self.outer.setFrame(NSRect::new(
             NSPoint::new(-pad, -pad),
@@ -403,6 +419,14 @@ impl Edges {
         self.ring_layer.setBorderWidth(RING_WIDTH * s);
     }
 
+    /// Shows the carried card's shadow, or puts it away, easing over.
+    pub fn set_lifted(&self, on: bool) {
+        let layer = self.lift_layer.clone();
+        crate::motion::eased(crate::motion::GLASS_SECS, move || {
+            layer.setOpacity(if on { 1.0 } else { 0.0 })
+        });
+    }
+
     /// Shows or hides the selection ring, easing over.
     pub fn set_selected(&self, on: bool) {
         let layer = self.ring_layer.clone();
@@ -419,6 +443,34 @@ impl Edges {
         self.outer.setAutoresizingMask(mask);
         self.inner.setAutoresizingMask(mask);
     }
+}
+
+/// The carried card's shadow as a 9-slice bitmap, drawn once: only outside the
+/// card, soft and dropped a little.
+fn lift_image() -> Option<CFRetained<CGImage>> {
+    thread_local! {
+        static IMAGE: Option<CFRetained<CGImage>> = edge_image(LIFT_PAD, |cx, card, side| {
+            let all = CGMutablePath::new();
+            unsafe {
+                CGMutablePath::add_rect(Some(&all), std::ptr::null(), CGRect::new(CGPoint::ZERO, CGSize::new(side, side)));
+                CGMutablePath::add_path(Some(&all), std::ptr::null(), Some(card));
+            }
+            CGContext::add_path(Some(cx), Some(&all));
+            CGContext::eo_clip(Some(cx));
+            let black = CGColor::new_srgb(0.0, 0.0, 0.0, LIFT_ALPHA);
+            // Shadow offsets and blur are in device pixels; y runs up here.
+            CGContext::set_shadow_with_color(
+                Some(cx),
+                CGSize::new(0.0, -LIFT_DROP * EDGE_SCALE),
+                LIFT_BLUR * EDGE_SCALE,
+                Some(&black),
+            );
+            CGContext::set_fill_color_with_color(Some(cx), Some(&CGColor::new_srgb(0.0, 0.0, 0.0, 1.0)));
+            CGContext::add_path(Some(cx), Some(card));
+            CGContext::fill_path(Some(cx));
+        });
+    }
+    IMAGE.with(|i| i.clone())
 }
 
 /// The outline and inner-edge bitmaps, drawn once per thread.
@@ -454,9 +506,12 @@ fn with_edge_images<R>(f: impl FnOnce(Option<&CGImage>, Option<&CGImage>) -> R) 
                 let a = 1.0 - (1.0 - INSET_ALPHA).powf(1.0 / n);
                 let white = CGColor::new_srgb(1.0, 1.0, 1.0, a);
                 CGContext::set_stroke_color_with_color(Some(cx), Some(&white));
-                for k in 1..=INSET_STEPS {
+                for k in 0..INSET_STEPS {
                     // The stroke straddles the outline: half of it lies inside.
-                    CGContext::set_line_width(Some(cx), 2.0 * INSET_DEPTH * k as f64 / n);
+                    // Half-widths of DEPTH·(1 − √(k/n)) stack up to a glow that
+                    // fades as (1 − d/DEPTH)², soft all the way, no line.
+                    let half = INSET_DEPTH * (1.0 - (k as f64 / n).sqrt());
+                    CGContext::set_line_width(Some(cx), 2.0 * half);
                     CGContext::add_path(Some(cx), Some(card));
                     CGContext::stroke_path(Some(cx));
                 }
@@ -503,11 +558,17 @@ fn edge_layer(image: Option<&CGImage>, inset: f64) -> Retained<CALayer> {
 /// The outline: black at 30%, blurred 1 pt.
 const OUTLINE_ALPHA: f64 = 0.3;
 const OUTLINE_BLUR: f64 = 1.0;
-/// The inner edge: white, 65% at the edge, fading out over 2 pt in a number of
-/// strokes.
-const INSET_ALPHA: f64 = 0.65;
-const INSET_DEPTH: f64 = 2.0;
-const INSET_STEPS: usize = 12;
+/// The inner edge: a soft white glow, 42% at the edge, fading out on an ease-out
+/// curve over 3.75 pt, drawn as stacked strokes.
+const INSET_ALPHA: f64 = 0.42;
+const INSET_DEPTH: f64 = 3.75;
+const INSET_STEPS: usize = 24;
+
+/// The shadow under a carried card: 20% black, 24 pt blur, 8 pt down.
+const LIFT_PAD: f64 = 40.0;
+const LIFT_ALPHA: f64 = 0.2;
+const LIFT_BLUR: f64 = 24.0;
+const LIFT_DROP: f64 = 8.0;
 
 /// The cards' backdrop (blur and saturation) for a small rounded surface, such
 /// as a column chip, `radius` round at the corners.
@@ -732,21 +793,25 @@ mod tests {
             at(2.0),
             at(3.0)
         );
-        // Right inside the edge more than half way to white (the inset is 65%
-        // white there), still lighter at 1 pt, gone by about 2 pt.
+        // Right inside the edge about a third of the way to white (the glow is
+        // 42% white there), fading softly, gone by about 4 pt.
         let white = 3 * 255;
         assert!(
-            (at(0.25) - centre) * 100 > 55 * (white - centre),
+            (at(0.25) - centre) * 100 > 30 * (white - centre),
             "edge {} vs centre {centre}",
             at(0.25)
         );
         assert!(
-            (at(1.0) - centre) * 100 > 25 * (white - centre),
+            (at(1.0) - centre) * 100 > 8 * (white - centre),
             "1 pt {}",
             at(1.0)
         );
         assert!(at(1.0) > at(1.5) && at(1.5) >= at(2.0));
-        assert!(at(3.0) <= centre + 3, "3 pt {} vs centre {centre}", at(3.0));
+        assert!(
+            at(4.5) <= centre + 3,
+            "4.5 pt {} vs centre {centre}",
+            at(4.5)
+        );
     }
 
     #[test]
@@ -859,7 +924,7 @@ mod tests {
         );
         // The inset: lighter than the tint; the centre is the tint.
         assert!(
-            sum(inset) > sum(centre) + 60,
+            sum(inset) > sum(centre) + 30,
             "inset {inset:?} vs centre {centre:?}"
         );
     }

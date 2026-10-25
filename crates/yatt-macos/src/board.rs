@@ -169,6 +169,8 @@ struct Card {
     muted: bool,
     /// Riding under the lead of a group drag: no squash and stretch.
     light: bool,
+    /// Carried: its lift shadow shows.
+    lifted: bool,
     /// The blur and the tint, sized to the card by hand while it grows.
     parts: [Retained<NSView>; 2],
     /// Growing from the new-task capsule: progress 0…1 and the capsule's size.
@@ -730,7 +732,8 @@ impl Board {
         // tint and under the text.
         let edges = style::Edges::new(mtm);
         for v in [
-            &*edges.ring,
+            &*edges.lift,
+            &edges.ring,
             &edges.outer,
             &glass,
             &face,
@@ -781,6 +784,7 @@ impl Board {
             target_scale: 1.0,
             muted: false,
             light: false,
+            lifted: false,
             parts,
             grow: None,
             shadow_size: Cell::new((0.0, 0.0)),
@@ -963,6 +967,7 @@ impl Board {
                 card.set_muted(false);
                 card.target_scale = if i == 0 { 1.0 } else { physics::trail(i).1 };
                 if i == 0 {
+                    card.set_lifted(true);
                     card.body.spring = physics::LEAD;
                     let look = if drag.group {
                         Look::Lifted {
@@ -998,9 +1003,14 @@ impl Board {
                 }
             }
         }
+        let lead = drag.as_ref().and_then(|d| d.ids.first().copied());
         for (id, card) in cards.iter_mut() {
             if !followers.contains(id) {
                 card.set_light(false);
+            }
+            // Only the carried card (the head of a group) casts the lift shadow.
+            if lead != Some(*id) {
+                card.set_lifted(false);
             }
             card.set_parked(parked.contains(id));
             if card.flying {
@@ -1925,6 +1935,14 @@ impl Card {
         // Whatever moved while it was hidden is applied when it shows.
         self.placed.set([f64::NAN; 8]);
         true
+    }
+
+    /// The carried card casts a soft shadow; set down, it lets go of it.
+    fn set_lifted(&mut self, on: bool) {
+        if self.lifted != on {
+            self.lifted = on;
+            self.edges.set_lifted(on);
+        }
     }
 
     /// Hides the card's text (a card behind the top of a stack).
