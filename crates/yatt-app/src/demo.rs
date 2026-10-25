@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use gpui::{App, AsyncApp, Entity};
 use yatt_core::{Status, TaskId};
-use yatt_macos::{DemoPhase, DemoPointer, MainWindow, Sink, UiEvent};
+use yatt_macos::{DemoMouse, DemoPhase, DemoPointer, MainWindow, Sink, UiEvent};
 
 use crate::workspace::Workspace;
 
@@ -54,6 +54,64 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
         };
 
         wait(600).await;
+        if let Ok(n) = std::env::var("YATT_DEMO_PERF") {
+            // A big board (`YATT_DEMO_PERF=<cards>`, 100 by default): a long
+            // scroll timed step by step, then 20 cards dragged slowly across,
+            // timed by YATT_PERF.
+            let n: usize = n.parse().unwrap_or(100);
+            for i in 0..n {
+                sink(UiEvent::NewTask {
+                    title: format!("Задача {}", i + 1),
+                    status: [Status::Backlog, Status::InProgress, Status::Done][i % 3],
+                });
+                if i % 50 == 49 {
+                    wait(1).await;
+                }
+            }
+            wait(2000).await;
+            let mut steps = Vec::new();
+            for k in 0..240 {
+                let y = 30.0 * (k % 120) as f64;
+                let t = std::time::Instant::now();
+                window.demo_scroll(0, y);
+                wait(8).await;
+                steps.push(t.elapsed().as_secs_f64() * 1000.0);
+            }
+            window.demo_scroll(0, 0.0);
+            steps.sort_by(f64::total_cmp);
+            let mean = steps.iter().sum::<f64>() / steps.len() as f64;
+            eprintln!(
+                "perf: scroll of a {n}-card board: step mean {mean:.1} ms, p50 {:.1} ms, p95 {:.1} ms, max {:.1} ms (8 ms asked)",
+                steps[steps.len() / 2],
+                steps[steps.len() * 95 / 100],
+                steps[steps.len() - 1]
+            );
+            wait(500).await;
+            let backlog = ids(cx, 0);
+            window.demo_select(&backlog[..20.min(backlog.len())]);
+            wait(300).await;
+            let from = centre(backlog[0]);
+            window.demo_pointer(DemoPointer::Down {
+                at: from,
+                shift: false,
+                cmd: false,
+            });
+            let mid = (window.demo_column_x(2), 300.0);
+            drag(from, mid, 90).await;
+            drag(mid, (window.demo_column_x(1), 200.0), 90).await;
+            window.demo_pointer(DemoPointer::Up((window.demo_column_x(1), 200.0)));
+            wait(1200).await;
+            // Fold the board into stacks and click the biggest one open.
+            window.demo_toggle_stack();
+            wait(1500).await;
+            if let Some(&top) = ids(cx, 0).first() {
+                window.demo_real_click(centre(top), 1);
+                wait(1200).await;
+                shot("perf-fan");
+            }
+            eprintln!("demo: finished");
+            return;
+        }
         for title in [
             "Заметки к задаче",
             "Перетаскивание карточек",
@@ -79,6 +137,27 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
         }
         wait(200).await;
         shot("2-list");
+
+        // A real single-card drag, every event sent through the window as the
+        // system would: the top backlog card into "Готово".
+        if let Some(&top) = ids(cx, 0).first() {
+            let from = centre(top);
+            let to = (window.demo_column_x(2), 120.0);
+            window.demo_real_mouse(DemoMouse::Down, from);
+            for i in 1..=20 {
+                let p = ease(from, to, i as f64 / 20.0);
+                window.demo_real_mouse(DemoMouse::Drag, p);
+                wait(16).await;
+            }
+            window.demo_real_mouse(DemoMouse::Up, to);
+            wait(700).await;
+            let landed = ids(cx, 2).contains(&top);
+            eprintln!(
+                "demo: real-event drag of one card: {}",
+                if landed { "landed in Готово" } else { "DID NOT MOVE (wrong)" }
+            );
+            shot("2b-real-drag");
+        }
 
         // A plain drag: the top backlog card into "В работе", under "Срочное".
         let bx = window.demo_column_x(1);

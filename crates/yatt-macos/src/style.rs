@@ -7,8 +7,9 @@ use objc2::runtime::{AnyClass, AnyObject, NSObject};
 use objc2::{AnyThread, msg_send};
 use objc2_app_kit::{
     NSAutoresizingMaskOptions, NSColor, NSFontAttributeName, NSForegroundColorAttributeName,
-    NSGlassEffectView, NSKernAttributeName, NSMutableParagraphStyle, NSParagraphStyleAttributeName,
-    NSTextField, NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState,
+    NSGlassEffectView, NSGlassEffectViewStyle, NSImage, NSImageSymbolConfiguration,
+    NSKernAttributeName, NSMutableParagraphStyle, NSParagraphStyleAttributeName, NSTextField,
+    NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState,
     NSVisualEffectView,
 };
 use objc2_core_foundation::{CFRetained, CGPoint, CGRect, CGSize};
@@ -118,6 +119,9 @@ pub fn card_blur(mtm: MainThreadMarker) -> Retained<NSView> {
     if real_glass() {
         let glass = NSGlassEffectView::new(mtm);
         glass.setCornerRadius(CARD_RADIUS);
+        // The public style with the least frost.
+        glass.setStyle(NSGlassEffectViewStyle::Clear);
+        tune_glass(&glass);
         return Retained::into_super(glass);
     }
     if let Some(layer) = backdrop_layer(CARD_BLUR) {
@@ -141,15 +145,41 @@ pub fn card_blur(mtm: MainThreadMarker) -> Retained<NSView> {
     Retained::into_super(view)
 }
 
-/// `YATT_GLASS=1` puts the system's own Liquid Glass (`NSGlassEffectView`) under
-/// the cards instead of the plain backdrop blur, where the system has it: an
-/// option to compare looks and cost.
+/// The cards' backdrop is the system's own Liquid Glass (`NSGlassEffectView`)
+/// where the system has it; `YATT_GLASS=0`, or an older system, falls back to the
+/// cheaper plain backdrop blur.
 pub fn real_glass() -> bool {
     thread_local! {
-        static ON: bool = std::env::var_os("YATT_GLASS").is_some_and(|v| v != "0")
+        static ON: bool = std::env::var_os("YATT_GLASS").is_none_or(|v| v != "0")
             && AnyClass::get(c"NSGlassEffectView").is_some();
     }
     ON.with(|on| *on)
+}
+
+/// `NSGlassEffectView` has no public blur radius. What it exposes beyond `style`
+/// and `tintColor` are private integer properties (`_variant`, `_subvariant`,
+/// `_scrimState`, `_subduedState`, `_contentLensing`, `_adaptiveAppearance`;
+/// there is no "splay"). Their values are undocumented, so they stay at the
+/// system's defaults unless set for a try with `YATT_GLASS_VARIANT`,
+/// `YATT_GLASS_SCRIM`, `YATT_GLASS_SUBDUED`, `YATT_GLASS_LENSING`,
+/// `YATT_GLASS_ADAPTIVE` (integers).
+fn tune_glass(glass: &NSGlassEffectView) {
+    for (key, var) in [
+        ("_variant", "YATT_GLASS_VARIANT"),
+        ("_scrimState", "YATT_GLASS_SCRIM"),
+        ("_subduedState", "YATT_GLASS_SUBDUED"),
+        ("_contentLensing", "YATT_GLASS_LENSING"),
+        ("_adaptiveAppearance", "YATT_GLASS_ADAPTIVE"),
+    ] {
+        let Some(value) = std::env::var(var)
+            .ok()
+            .and_then(|v| v.parse::<isize>().ok())
+        else {
+            continue;
+        };
+        let number = NSNumber::new_isize(value);
+        unsafe { glass.setValue_forKey(Some(&number), &NSString::from_str(key)) };
+    }
 }
 
 /// A `CABackdropLayer` blurring what is behind it by `radius` points, if the
@@ -434,6 +464,54 @@ const OUTLINE_BLUR: f64 = 1.0;
 const INSET_ALPHA: f64 = 0.65;
 const INSET_DEPTH: f64 = 2.0;
 const INSET_STEPS: usize = 12;
+
+/// Card glyph bitmaps by symbol name and hue.
+type GlyphCache = std::collections::HashMap<(String, usize), Option<Retained<CGImage>>>;
+
+/// A card's glyph (an SF Symbol) in the card's ink, drawn once per symbol and
+/// hue and shown as a layer's contents.
+pub fn glyph_view(mtm: MainThreadMarker, symbol: &str, hue: usize) -> Retained<NSView> {
+    thread_local! {
+        static CACHE: std::cell::RefCell<GlyphCache> =
+            Default::default();
+    }
+    let image = CACHE.with(|cache| {
+        cache
+            .borrow_mut()
+            .entry((symbol.to_string(), hue))
+            .or_insert_with(|| {
+                let ink = text(hue).colorWithAlphaComponent(0.8);
+                let base = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+                    &NSString::from_str(symbol),
+                    None,
+                )?;
+                let config = NSImageSymbolConfiguration::configurationWithPaletteColors(
+                    &NSArray::from_retained_slice(&[ink]),
+                );
+                let tinted = base.imageWithSymbolConfiguration(&config)?;
+                let size = tinted.size();
+                // Fit the symbol into 16 pt, at 2 px per point.
+                let k = 16.0 / size.width.max(size.height).max(1.0);
+                let mut rect = NSRect::new(
+                    NSPoint::ZERO,
+                    NSSize::new(size.width * k * EDGE_SCALE, size.height * k * EDGE_SCALE),
+                );
+                unsafe { tinted.CGImageForProposedRect_context_hints(&mut rect, None, None) }
+            })
+            .clone()
+    });
+    let layer = CALayer::new();
+    if let Some(image) = image.as_deref() {
+        let image: &AnyObject = unsafe { &*(image as *const CGImage).cast::<AnyObject>() };
+        unsafe { layer.setContents(Some(image)) };
+    }
+    layer.setContentsGravity(unsafe { objc2_quartz_core::kCAGravityResizeAspect });
+    layer.setContentsScale(EDGE_SCALE);
+    let view = FlippedView::new(mtm, NSRect::ZERO);
+    view.setLayer(Some(&layer));
+    view.setWantsLayer(true);
+    Retained::into_super(view)
+}
 
 /// Sets a label's text with `kern` points of tracking, in the label's own font,
 /// colour and truncation (an attributed string brings its own and would otherwise

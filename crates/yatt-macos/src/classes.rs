@@ -170,8 +170,23 @@ impl FlippedView {
     }
 }
 
+/// The standard edit commands as they reach the board: from the Edit menu (or
+/// its shortcuts) when no text field is editing, and Delete/Backspace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditCmd {
+    Copy,
+    Cut,
+    Paste,
+    SelectAll,
+    Delete,
+}
+
+pub type EditHandler = Box<dyn Fn(EditCmd)>;
+
 pub struct RootIvars {
     pub on_layout: RefCell<Option<Box<dyn Fn()>>>,
+    /// Copy, cut, paste, select all and delete for the board's selection.
+    pub on_edit: RefCell<Option<EditHandler>>,
     /// Esc anywhere in the window that nothing else handled (`cancelOperation:`).
     pub on_cancel: RefCell<Option<Box<dyn Fn()>>>,
     /// Returns true when it handled the key.
@@ -203,6 +218,33 @@ define_class!(
             }
         }
 
+        // The Edit menu's actions travel the responder chain: a text field that is
+        // editing takes them first; otherwise they land here, for the board.
+        #[unsafe(method(copy:))]
+        fn copy(&self, _sender: Option<&AnyObject>) {
+            self.edit(EditCmd::Copy);
+        }
+
+        #[unsafe(method(cut:))]
+        fn cut(&self, _sender: Option<&AnyObject>) {
+            self.edit(EditCmd::Cut);
+        }
+
+        #[unsafe(method(paste:))]
+        fn paste(&self, _sender: Option<&AnyObject>) {
+            self.edit(EditCmd::Paste);
+        }
+
+        #[unsafe(method(selectAll:))]
+        fn select_all(&self, _sender: Option<&AnyObject>) {
+            self.edit(EditCmd::SelectAll);
+        }
+
+        #[unsafe(method(delete:))]
+        fn delete(&self, _sender: Option<&AnyObject>) {
+            self.edit(EditCmd::Delete);
+        }
+
         #[unsafe(method(cancelOperation:))]
         fn cancel_operation(&self, _sender: Option<&AnyObject>) {
             if let Some(f) = self.ivars().on_cancel.borrow().as_ref() {
@@ -226,9 +268,16 @@ define_class!(
 );
 
 impl RootView {
+    fn edit(&self, cmd: EditCmd) {
+        if let Some(f) = self.ivars().on_edit.borrow().as_ref() {
+            f(cmd);
+        }
+    }
+
     pub fn new(mtm: MainThreadMarker, frame: NSRect) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(RootIvars {
             on_layout: RefCell::new(None),
+            on_edit: RefCell::new(None),
             on_cancel: RefCell::new(None),
             on_key: RefCell::new(None),
         });
@@ -249,8 +298,9 @@ pub enum Fill {
     Chip(usize),
     /// A 1 px divider line.
     Separator,
-    /// The light tint over the column a card is dragged over.
-    Tint,
+    /// The faint tint, in the column's own colour, over the column a card is
+    /// dragged over.
+    Tint(usize),
     /// The backdrop behind the task modal.
     Dim,
     /// The modal panel itself.
@@ -288,7 +338,7 @@ define_class!(
                 Fill::Card { hue, .. } => crate::style::fill(hue),
                 Fill::Chip(i) => crate::style::column_color(i).colorWithAlphaComponent(0.14),
                 Fill::Separator => NSColor::separatorColor(),
-                Fill::Tint => NSColor::labelColor().colorWithAlphaComponent(0.035),
+                Fill::Tint(i) => crate::style::column_color(i).colorWithAlphaComponent(0.045),
                 Fill::Dim => NSColor::blackColor().colorWithAlphaComponent(0.28),
                 // The panel's look comes from the card material inside it.
                 Fill::Panel => NSColor::clearColor(),

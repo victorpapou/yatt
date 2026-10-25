@@ -66,6 +66,11 @@ pub enum UiEvent {
     Rename(TaskId, String),
     SetNotes(TaskId, String),
     Delete(TaskId),
+    /// Copies of tasks, `(title, notes)` in order, on top of `status`.
+    Paste {
+        items: Vec<(String, String)>,
+        status: Status,
+    },
     StartPause,
     StartStopwatch,
     Skip,

@@ -20,13 +20,14 @@ use block2::{RcBlock, StackBlock};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, sel};
+use objc2_app_kit::NSStringDrawing;
 use objc2_app_kit::{
     NSAnimatablePropertyContainer, NSAnimationContext, NSApplication, NSAutoresizingMaskOptions,
     NSBackingStoreType, NSBezelStyle, NSButton, NSColor, NSControlSize, NSEvent,
     NSEventModifierFlags, NSEventType, NSFloatingWindowLevel, NSFocusRingType, NSFont,
     NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold, NSImage, NSLineBreakMode,
-    NSNormalWindowLevel, NSTextAlignment, NSTextField, NSToolbar, NSToolbarDisplayMode,
-    NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem, NSToolbarItemStyle,
+    NSNormalWindowLevel, NSPasteboard, NSPasteboardTypeString, NSTextAlignment, NSTextField,
+    NSToolbar, NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem,
     NSToolbarSpaceItemIdentifier, NSView, NSWindow, NSWindowOrderingMode, NSWindowStyleMask,
     NSWindowTitleVisibility, NSWindowToolbarStyle,
 };
@@ -40,9 +41,17 @@ use yatt_core::{Status, TaskId};
 
 use crate::board::{Board, ColumnGeom};
 pub use crate::board::{DemoPhase, DemoPointer};
+
+/// A real mouse event for the demo script to send through the window.
+#[derive(Debug, Clone, Copy)]
+pub enum DemoMouse {
+    Down,
+    Drag,
+    Up,
+}
 use crate::classes::{
-    ActionTarget, FieldDelegate, Fill, FillView, FlippedView, PassView, RootView, ToolbarDelegate,
-    WindowDelegate, editing_text,
+    ActionTarget, EditCmd, FieldDelegate, Fill, FillView, FlippedView, PassView, RootView,
+    ToolbarDelegate, WindowDelegate, editing_text,
 };
 use crate::modal::Modal;
 use crate::model::{Snapshot, TimerSnap, UiEvent, format_clock};
@@ -51,6 +60,8 @@ use crate::style;
 
 pub type Sink = Rc<dyn Fn(UiEvent)>;
 
+/// The toolbar's timer item: the ring and five digits.
+const TIMER_ITEM_W: f64 = 136.0;
 /// Height of the timer row in the toolbar.
 const TOOLBAR_H: f64 = 40.0;
 /// The progress ring: diameter and stroke, in the toolbar and in minimal mode.
@@ -102,6 +113,8 @@ struct Ui {
     /// The window frame to go back to when leaving minimal mode.
     saved_frame: Cell<NSRect>,
     last: RefCell<Option<Snapshot>>,
+    /// Copied cards, `(title, notes)`, and the text put on the pasteboard with them.
+    clipboard: RefCell<(Vec<(String, String)>, String)>,
     // Kept alive for as long as the window: AppKit holds targets and delegates weakly.
     _retained: RefCell<Vec<Retained<AnyObject>>>,
 }
@@ -137,7 +150,9 @@ struct Column {
 
 impl MainWindow {
     pub fn new(mtm: MainThreadMarker, sink: Sink) -> Self {
-        let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1100.0, 720.0));
+        // Room for three columns of cards, no more; the system keeps the size the
+        // window had last time.
+        let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(980.0, 640.0));
         let style = NSWindowStyleMask::Titled
             | NSWindowStyleMask::Closable
             | NSWindowStyleMask::Miniaturizable
@@ -179,8 +194,8 @@ impl MainWindow {
         timer_item.setView(Some(&header.view));
         #[allow(deprecated)]
         {
-            timer_item.setMinSize(NSSize::new(260.0, TOOLBAR_H));
-            timer_item.setMaxSize(NSSize::new(560.0, TOOLBAR_H));
+            timer_item.setMinSize(NSSize::new(TIMER_ITEM_W, TOOLBAR_H));
+            timer_item.setMaxSize(NSSize::new(TIMER_ITEM_W, TOOLBAR_H));
         }
         let toolbar =
             NSToolbar::initWithIdentifier(NSToolbar::alloc(mtm), ns_string!("yatt.toolbar"));
@@ -298,6 +313,7 @@ impl MainWindow {
             minimal: Cell::new(false),
             saved_frame: Cell::new(NSRect::ZERO),
             last: RefCell::new(None),
+            clipboard: RefCell::default(),
             _retained: RefCell::new(retained),
         });
         *tint_target.borrow_mut() = Some(Rc::downgrade(&ui));
@@ -403,6 +419,43 @@ impl MainWindow {
         }
     }
 
+    /// Development aid: scrolls a column's list to `y`.
+    pub fn demo_scroll(&self, column: usize, y: f64) {
+        self.ui.cards.demo_scroll(column, y);
+    }
+
+    /// Development aid: selects exactly these cards.
+    pub fn demo_select(&self, ids: &[TaskId]) {
+        self.ui.cards.demo_select(ids);
+    }
+
+    /// Development aid: one real mouse event of `kind` at `at` (canvas
+    /// coordinates), sent through the window like the system's.
+    pub fn demo_real_mouse(&self, kind: DemoMouse, at: (f64, f64)) {
+        let canvas = &self.ui.cards.canvas;
+        let p = canvas.convertPoint_toView(NSPoint::new(at.0, at.1), None);
+        let window = &self.ui.window;
+        let kind = match kind {
+            DemoMouse::Down => NSEventType::LeftMouseDown,
+            DemoMouse::Drag => NSEventType::LeftMouseDragged,
+            DemoMouse::Up => NSEventType::LeftMouseUp,
+        };
+        let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+            kind,
+            p,
+            NSEventModifierFlags::empty(),
+            objc2_quartz_core::CACurrentMediaTime(),
+            window.windowNumber(),
+            None,
+            0,
+            1,
+            1.0,
+        );
+        if let Some(event) = event {
+            window.sendEvent(&event);
+        }
+    }
+
     /// Development aid: true while a stack is fanned out.
     pub fn demo_is_fanned(&self) -> bool {
         self.ui.cards.is_fanned()
@@ -465,6 +518,14 @@ impl Ui {
         *this.root.ivars().on_key.borrow_mut() = Some(Box::new({
             let weak = weak.clone();
             move |event: &NSEvent| weak.upgrade().is_some_and(|ui| ui.key_down(event))
+        }));
+        *this.root.ivars().on_edit.borrow_mut() = Some(Box::new({
+            let weak = weak.clone();
+            move |cmd| {
+                if let Some(ui) = weak.upgrade() {
+                    ui.edit(cmd);
+                }
+            }
         }));
         *this.root.ivars().on_cancel.borrow_mut() = Some(Box::new({
             let weak = weak.clone();
@@ -587,7 +648,81 @@ impl Ui {
                 (self.sink)(UiEvent::StartPause);
                 true
             }
+            // Backspace and forward delete remove the selected cards.
+            51 | 117 if !self.cards.selection().is_empty() => {
+                self.edit(EditCmd::Delete);
+                true
+            }
             _ => false,
+        }
+    }
+
+    /// Copy, cut, paste, select all and delete on the board's selection. Copied
+    /// cards also go on the pasteboard as text, one title a line; pasting text
+    /// copied elsewhere makes a card of each line.
+    fn edit(&self, cmd: EditCmd) {
+        let selection = self.cards.selection();
+        let status = Status::ALL[self.cards.focused_column().unwrap_or(0)];
+        let pasteboard = NSPasteboard::generalPasteboard();
+        match cmd {
+            EditCmd::Copy | EditCmd::Cut => {
+                if selection.is_empty() {
+                    return;
+                }
+                let items: Vec<(String, String)> = {
+                    let last = self.last.borrow();
+                    let cards: Vec<&crate::model::CardSnap> = last
+                        .iter()
+                        .flat_map(|s| s.columns.iter())
+                        .flat_map(|c| c.cards.iter())
+                        .collect();
+                    selection
+                        .iter()
+                        .filter_map(|id| cards.iter().find(|c| c.id == *id))
+                        .map(|c| (c.title.clone(), c.notes.clone()))
+                        .collect()
+                };
+                let text = items
+                    .iter()
+                    .map(|(t, _)| t.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                pasteboard.clearContents();
+                unsafe {
+                    pasteboard.setString_forType(&NSString::from_str(&text), NSPasteboardTypeString)
+                };
+                *self.clipboard.borrow_mut() = (items, text);
+                if cmd == EditCmd::Cut {
+                    for id in selection {
+                        (self.sink)(UiEvent::Delete(id));
+                    }
+                }
+            }
+            EditCmd::Paste => {
+                let text = unsafe { pasteboard.stringForType(NSPasteboardTypeString) }
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
+                let clipboard = self.clipboard.borrow();
+                let items = if !clipboard.0.is_empty() && clipboard.1 == text {
+                    clipboard.0.clone()
+                } else {
+                    text.lines()
+                        .map(str::trim)
+                        .filter(|l| !l.is_empty())
+                        .map(|l| (l.to_string(), String::new()))
+                        .collect()
+                };
+                if !items.is_empty() {
+                    (self.sink)(UiEvent::Paste { items, status });
+                }
+            }
+            EditCmd::SelectAll => self.cards.select_all(self.cards.focused_column()),
+            EditCmd::Delete => {
+                for id in selection {
+                    (self.sink)(UiEvent::Delete(id));
+                }
+                self.cards.clear_selection();
+            }
         }
     }
 
@@ -863,7 +998,14 @@ impl Header {
         let stop = button("Стоп", "yatt.stop", UiEvent::Stop);
         let [start_item, stopwatch_item, skip_item, stop_item]: [Retained<NSToolbarItem>; 4] =
             items.try_into().expect("four control items");
-        start_item.setStyle(NSToolbarItemStyle::Prominent);
+        // Icons, not words: ▶ starts the stopwatch; the main button's icon follows
+        // the timer (`primary_icon`).
+        stopwatch_item.setTitle(ns_string!(""));
+        stopwatch_item.setImage(symbol("play.fill", "Секундомер").as_deref());
+        stopwatch_item.setToolTip(Some(ns_string!("Секундомер")));
+        stopwatch.setTitle(ns_string!(""));
+        stopwatch.setImage(symbol("play.fill", "Секундомер").as_deref());
+        start_item.setTitle(ns_string!(""));
         // The view switches: two icons side by side, which the toolbar puts in one
         // shared bubble. Their targets are set in `Ui::wire`.
         let icon_item = |id: &str| {
@@ -969,7 +1111,9 @@ impl Header {
                 b.setHidden(true);
             }
         }
-        self.tasks.setHidden(minimal);
+        // Only the timer: the ring and the digits.
+        self.phase.setHidden(true);
+        self.tasks.setHidden(true);
         self.stack.setHidden(minimal);
         if minimal {
             self.primary.setHidden(false);
@@ -1063,13 +1207,21 @@ impl Header {
             .setStringValue(&NSString::from_str(&t.phase_label));
         self.tasks
             .setStringValue(&NSString::from_str(&t.tasks_label));
-        self.primary.setTitle(&NSString::from_str(&t.primary_label));
+        // The main button: a tomato to start a pomodoro, then pause and play.
+        let (icon, tip) = primary_icon(t);
+        self.primary.setTitle(ns_string!(""));
+        self.primary.setImage(icon.as_deref());
+        self.primary.setToolTip(Some(&NSString::from_str(tip)));
+        // The phase and the tasks it counts for are no longer shown; they stay a
+        // hover away.
+        let summary = format!("{} · {}", t.phase_label, t.tasks_label);
+        self.view.setToolTip(Some(&NSString::from_str(&summary)));
         self.stopwatch.setHidden(!t.can_start_stopwatch);
         self.skip.setHidden(!t.can_skip);
         self.stop.setHidden(!t.can_stop);
-        let title = NSString::from_str(&t.primary_label);
-        self.bar.start.setTitle(&title);
-        self.bar.start.setLabel(&title);
+        self.bar.start.setImage(icon.as_deref());
+        self.bar.start.setLabel(&NSString::from_str(tip));
+        self.bar.start.setToolTip(Some(&NSString::from_str(tip)));
         self.bar.stopwatch.setHidden(!t.can_start_stopwatch);
         self.bar.skip.setHidden(!t.can_skip);
         self.bar.stop.setHidden(!t.can_stop);
@@ -1222,7 +1374,7 @@ impl Ring {
 impl Column {
     fn new(mtm: MainThreadMarker, index: usize) -> Self {
         let view = FlippedView::new(mtm, NSRect::ZERO);
-        let tint = FillView::new(mtm, Fill::Tint);
+        let tint = FillView::new(mtm, Fill::Tint(index));
         tint.setAlphaValue(0.0);
         view.addSubview(&tint);
         let color = style::column_color(index);
@@ -1266,6 +1418,55 @@ impl Column {
 }
 
 // ---- helpers ----
+
+/// An SF Symbol by name.
+fn symbol(name: &str, description: &str) -> Option<Retained<NSImage>> {
+    NSImage::imageWithSystemSymbolName_accessibilityDescription(
+        &NSString::from_str(name),
+        Some(&NSString::from_str(description)),
+    )
+}
+
+/// The main button's icon and tooltip: a red tomato to start a pomodoro, pause
+/// while running, play to resume.
+fn primary_icon(t: &TimerSnap) -> (Option<Retained<NSImage>>, &'static str) {
+    if t.running {
+        (symbol("pause.fill", "Пауза"), "Пауза")
+    } else if t.can_start_stopwatch {
+        (Some(tomato()), "Помидор")
+    } else {
+        (symbol("play.fill", "Продолжить"), "Продолжить")
+    }
+}
+
+/// A small red tomato with a green stem, drawn from the emoji in full colour
+/// (not a template image, so the toolbar keeps its colours).
+fn tomato() -> Retained<NSImage> {
+    thread_local! {
+        static TOMATO: Retained<NSImage> = {
+            let size = NSSize::new(18.0, 18.0);
+            let block = block2::RcBlock::new(move |rect: NSRect| -> objc2::runtime::Bool {
+                let font = NSFont::systemFontOfSize(14.0);
+                let attrs = objc2_foundation::NSDictionary::from_retained_objects(
+                    &[unsafe { objc2_app_kit::NSFontAttributeName }],
+                    &[Retained::into_super(Retained::into_super(font))],
+                );
+                let text = ns_string!("🍅");
+                let fit = unsafe { text.sizeWithAttributes(Some(&attrs)) };
+                let at = NSPoint::new(
+                    rect.origin.x + (rect.size.width - fit.width) / 2.0,
+                    rect.origin.y + (rect.size.height - fit.height) / 2.0,
+                );
+                unsafe { text.drawAtPoint_withAttributes(at, Some(&attrs)) };
+                objc2::runtime::Bool::YES
+            });
+            let image = NSImage::imageWithSize_flipped_drawingHandler(size, false, &block);
+            image.setTemplate(false);
+            image
+        };
+    }
+    TOMATO.with(|t| t.clone())
+}
 
 fn label(mtm: MainThreadMarker, text: &str, size: f64, weight: f64) -> Retained<NSTextField> {
     let l = NSTextField::labelWithString(&NSString::from_str(text), mtm);

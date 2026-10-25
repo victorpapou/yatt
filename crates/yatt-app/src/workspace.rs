@@ -45,6 +45,15 @@ impl Workspace {
             }
             UiEvent::Rename(id, title) => e.execute(Command::Rename { id, title }),
             UiEvent::SetNotes(id, notes) => e.execute(Command::SetNotes { id, notes }),
+            UiEvent::Paste { items, status } => {
+                // Each lands on top, so the last goes in first to keep the order.
+                for (title, notes) in items.into_iter().rev() {
+                    let id = e.create_task(title, status);
+                    if !notes.is_empty() {
+                        e.execute(Command::SetNotes { id, notes });
+                    }
+                }
+            }
             UiEvent::Delete(id) => {
                 e.delete_task(id);
                 if self.expanded == Some(id) {

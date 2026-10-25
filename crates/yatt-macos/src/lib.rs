@@ -25,4 +25,4 @@ pub use model::{
 #[cfg(target_os = "macos")]
 pub use objc2::MainThreadMarker;
 #[cfg(target_os = "macos")]
-pub use window::{DemoPhase, DemoPointer, MainWindow, Sink};
+pub use window::{DemoMouse, DemoPhase, DemoPointer, MainWindow, Sink};
