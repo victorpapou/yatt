@@ -20,7 +20,7 @@ use objc2_foundation::{NSPoint, NSRect, NSSize, NSString, NSTimer, ns_string};
 use objc2_quartz_core::CACurrentMediaTime;
 use yatt_core::{Status, TaskId};
 
-use crate::classes::{ActionTarget, Fill, FillView, FlippedView, SheenView};
+use crate::classes::{ActionTarget, Fill, FillView, FlippedView};
 use crate::editor::{EditorMsg, NotesEditor};
 use crate::model::{CardSnap, UiEvent, format_duration};
 use crate::motion;
@@ -33,7 +33,7 @@ const ENTRY_LINES: usize = 4;
 pub struct Modal {
     pub dim: Retained<FillView>,
     pub panel: Retained<FillView>,
-    /// The card's material, so the panel is the card grown big: blur, tint, sheen.
+    /// The card's material, so the panel is the card grown big: blur and tint.
     face: Retained<FillView>,
     content: Retained<FlippedView>,
     title: Retained<NSTextField>,
@@ -168,14 +168,13 @@ impl Modal {
                 selected: false,
             },
         );
-        let sheen = SheenView::new(mtm, style::CARD_RADIUS);
         let content = FlippedView::new(mtm, NSRect::ZERO);
         content.setWantsLayer(true);
         if let Some(layer) = content.layer() {
             layer.setMasksToBounds(true);
             style::round(&layer, style::CARD_RADIUS);
         }
-        for v in [&*glass as &NSView, &face, &sheen, &content] {
+        for v in [&*glass as &NSView, &face, &content] {
             v.setAutoresizingMask(fill_mask);
             panel.addSubview(v);
         }

@@ -10,11 +10,11 @@ use objc2::{
     msg_send, sel,
 };
 use objc2_app_kit::{
-    NSBezierPath, NSColor, NSControl, NSControlTextEditingDelegate, NSEvent, NSEventModifierFlags,
-    NSEventPhase, NSGradient, NSResponder, NSTextFieldDelegate, NSTextView, NSTrackingArea,
-    NSTrackingAreaOptions, NSView, NSWindingRule, NSWindow, NSWindowDelegate,
+    NSColor, NSControl, NSControlTextEditingDelegate, NSEvent, NSEventModifierFlags, NSEventPhase,
+    NSResponder, NSTextFieldDelegate, NSTextView, NSTrackingArea, NSTrackingAreaOptions, NSView,
+    NSWindow, NSWindowDelegate,
 };
-use objc2_foundation::{NSNotification, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{NSNotification, NSPoint, NSRect, NSString};
 use objc2_web_kit::{WKScriptMessage, WKScriptMessageHandler, WKUserContentController};
 
 pub type KeyHandler = Box<dyn Fn(&NSEvent) -> bool>;
@@ -246,12 +246,12 @@ define_class!(
                     crate::style::round(&layer, crate::style::CARD_RADIUS);
                     // A light hairline; selection gets an accent ring. A running timer
                     // shows as ● on the card itself.
-                    // A faint grey hairline outside; the white inner rim is the sheen's.
-                    layer.setBorderWidth(if selected { 2.5 } else { 0.5 });
+                    // A plain 1 px light rim; selection gets an accent ring.
+                    layer.setBorderWidth(if selected { 2.5 } else { 1.0 });
                     let rim = if selected {
                         NSColor::controlAccentColor()
                     } else {
-                        NSColor::blackColor().colorWithAlphaComponent(0.14)
+                        NSColor::whiteColor().colorWithAlphaComponent(0.6)
                     };
                     layer.setBorderColor(Some(&rim.CGColor()));
                     // A white glow over the card's faint dark shadow.
@@ -298,71 +298,6 @@ impl FillView {
         });
         let view: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
         view.setWantsLayer(true);
-        view
-    }
-}
-
-define_class!(
-    // SAFETY: NSView has no subclassing requirements; no Drop impl.
-    #[unsafe(super(NSView, NSResponder, NSObject))]
-    #[thread_kind = MainThreadOnly]
-    #[ivars = NoIvars]
-    /// The light inner rim of a glass card.
-    pub struct SheenView;
-
-    impl SheenView {
-        #[unsafe(method(isFlipped))]
-        fn is_flipped(&self) -> bool {
-            true
-        }
-
-        #[unsafe(method(drawRect:))]
-        fn draw_rect(&self, _dirty: NSRect) {
-            let white = NSColor::whiteColor();
-            let b = self.bounds();
-            // A crisp light rim inside the hairline, brighter on the top and left edges:
-            // the ring between two rounded rects, filled with a diagonal gradient.
-            let radius = crate::style::CARD_RADIUS;
-            let rect = |inset: f64| {
-                NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
-                    NSRect::new(
-                        NSPoint::new(b.origin.x + inset, b.origin.y + inset),
-                        NSSize::new(b.size.width - 2.0 * inset, b.size.height - 2.0 * inset),
-                    ),
-                    radius - inset,
-                    radius - inset,
-                )
-            };
-            let ring = rect(0.5);
-            ring.appendBezierPath(&rect(1.75));
-            ring.setWindingRule(NSWindingRule::EvenOdd);
-            let gradient = NSGradient::initWithStartingColor_endingColor(
-                NSGradient::alloc(),
-                &white.colorWithAlphaComponent(0.85),
-                &white.colorWithAlphaComponent(0.4),
-            );
-            // Flipped: 45° runs from the top-left corner to the bottom-right.
-            if let Some(g) = gradient {
-                g.drawInBezierPath_angle(&ring, 45.0);
-            }
-        }
-
-        #[unsafe(method_id(hitTest:))]
-        fn hit_test(&self, _point: NSPoint) -> Option<Retained<NSView>> {
-            None
-        }
-    }
-);
-
-impl SheenView {
-    pub fn new(mtm: MainThreadMarker, radius: f64) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(NoIvars);
-        let view: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
-        view.setWantsLayer(true);
-        if let Some(layer) = view.layer() {
-            crate::style::round(&layer, radius);
-            layer.setMasksToBounds(true);
-        }
         view
     }
 }

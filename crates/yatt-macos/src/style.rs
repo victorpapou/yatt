@@ -20,7 +20,9 @@ pub const CARD_W: f64 = 230.0;
 pub const CARD_H: f64 = 101.0;
 pub const CARD_RADIUS: f64 = 20.0;
 /// Blur of what shows through a card, in points.
-pub const CARD_BLUR: f64 = 8.0;
+pub const CARD_BLUR: f64 = 6.0;
+/// How much of the system glass shows under a card (the rest is the sharp backdrop).
+pub const CARD_GLASS_ALPHA: f64 = 0.7;
 
 type Rgb = (u8, u8, u8);
 
@@ -101,6 +103,9 @@ pub fn card_blur(mtm: MainThreadMarker) -> Retained<NSView> {
         let glass = NSGlassEffectView::new(mtm);
         glass.setStyle(objc2_app_kit::NSGlassEffectViewStyle::Clear);
         glass.setCornerRadius(CARD_RADIUS);
+        // The system glass has no blur radius to set: letting some of the sharp
+        // backdrop through makes it read as a lighter blur.
+        glass.setAlphaValue(CARD_GLASS_ALPHA);
         return Retained::into_super(glass);
     }
     let view = FlippedView::new(mtm, NSRect::ZERO);

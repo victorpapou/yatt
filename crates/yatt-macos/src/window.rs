@@ -139,9 +139,10 @@ impl MainWindow {
         window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
         window.setMinSize(NSSize::new(760.0, 480.0));
 
-        // Opaque and theme-aware, like Calendar: the system window background.
+        // Opaque and theme-aware: pure white in light mode, the system's dark
+        // text background in dark mode.
         window.setOpaque(true);
-        window.setBackgroundColor(Some(&NSColor::windowBackgroundColor()));
+        window.setBackgroundColor(Some(&NSColor::textBackgroundColor()));
         let root = RootView::new(mtm, frame);
         root.setAutoresizingMask(
             NSAutoresizingMaskOptions::ViewWidthSizable
@@ -434,16 +435,12 @@ impl Ui {
         } else {
             Status::Backlog
         };
-        // The card takes off from the field and springs into its column.
-        let f = self.capsule.frame();
-        let centre = NSPoint::new(
-            f.origin.x + f.size.width / 2.0,
-            f.origin.y + f.size.height / 2.0,
-        );
+        // The capsule itself, typed text and all, becomes the card and flies to its
+        // column; the field is left empty behind it.
         let at = self
             .cards
             .canvas
-            .convertPoint_fromView(centre, Some(&self.board));
+            .convertRect_fromView(self.capsule.frame(), Some(&self.board));
         self.cards.spawn_from(at, status);
         (self.sink)(UiEvent::NewTask {
             title: title.to_string(),

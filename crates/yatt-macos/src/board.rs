@@ -8,7 +8,7 @@
 //!   rosette whose spread grows with the count; the card under the pointer lifts.
 //!   Dragging the folded stack takes it whole.
 //! - Every card is tinted glass: a blur of what is behind, the card's colour over
-//!   it with a light sheen on top, a hairline rim and a soft white glow.
+//!   it, a 1 px light rim, a soft white glow over a faint dark shadow.
 //! - Click opens a card, ⌘-click toggles it in the selection, ⇧-click selects a
 //!   range within the column.
 //! - Dragging one card is a plain drag: it follows the pointer and the list makes
@@ -40,7 +40,7 @@ use objc2_quartz_core::CACurrentMediaTime;
 use yatt_core::{Status, TaskId};
 
 use crate::classes::{
-    CanvasMsg, CanvasView, Fill, FillView, FlippedView, OverlayView, Scroll, SheenView, Swipe,
+    CanvasMsg, CanvasView, Fill, FillView, FlippedView, OverlayView, Scroll, Swipe,
 };
 use crate::model::{CardSnap, ColumnSnap, UiEvent, format_duration, moves_into};
 use crate::motion;
@@ -54,6 +54,8 @@ const DRAG_THRESHOLD: f64 = 4.0;
 const TRAIN_OFFSET: (f64, f64) = (20.0, -35.0);
 /// A fanned card under the pointer grows a little, keeping its place in the order.
 const HOVER_SCALE: f64 = 1.03;
+/// The new-task field's text inset from the capsule's left edge.
+const FIELD_TEXT_X: f64 = 20.0;
 /// Content blur on a lifted card, in points.
 const LIFT_BLUR: f64 = 5.0;
 /// List layout: first slot's top (below the column chips, which float over the
@@ -141,6 +143,10 @@ struct Card {
     target_scale: f64,
     /// Text hidden: behind the top card of a stack.
     muted: bool,
+    /// The blur and the tint, sized to the card by hand while it grows.
+    parts: [Retained<NSView>; 2],
+    /// Growing from the new-task capsule: progress 0…1 and the capsule's size.
+    grow: Option<(f64, NSSize)>,
 }
 
 struct Press {
@@ -206,8 +212,9 @@ pub struct Board {
     hover: Cell<Option<TaskId>>,
     /// The card standing in for the open task modal, kept invisible.
     hidden: Cell<Option<TaskId>>,
-    /// A task just typed into the new-task field: its card starts here (canvas coordinates).
-    spawn: Cell<Option<(NSPoint, Status)>>,
+    /// A task just typed into the new-task field: its card starts as the field's
+    /// capsule, at this frame (canvas coordinates).
+    spawn: Cell<Option<(NSRect, Status)>>,
     timer: RefCell<Option<Retained<NSTimer>>>,
     last_tick: Cell<f64>,
     /// Tells the window which column to tint while dragging.
@@ -307,10 +314,13 @@ impl Board {
                 if !exists {
                     let mut card = self.make_card(snap);
                     let spawn = self.spawn.get().filter(|(_, s)| *s == col.status);
-                    if let (Some((p, _)), 0) = (spawn, i) {
+                    if let (Some((r, _)), 0) = (spawn, i) {
+                        // Born as the new-task capsule, typed text and all; it grows
+                        // into the card on the way to its slot.
                         self.spawn.set(None);
-                        card.body = Body::at(p.x - CARD_W / 2.0, p.y - CARD_H / 2.0);
+                        card.body = Body::at(r.origin.x, r.origin.y);
                         card.flying = true;
+                        card.grow = Some((0.0, r.size));
                         card.lift(&self.overlay);
                     } else {
                         let (x, y) = self.slot(ci, i);
@@ -347,9 +357,10 @@ impl Board {
         self.kick();
     }
 
-    /// The next new card of `status` starts at `p` (canvas coordinates) and flies to its slot.
-    pub fn spawn_from(&self, p: NSPoint, status: Status) {
-        self.spawn.set(Some((p, status)));
+    /// The next new card of `status` starts as the new-task capsule at `capsule`
+    /// (canvas coordinates) and grows into a card as it flies to its slot.
+    pub fn spawn_from(&self, capsule: NSRect, status: Status) {
+        self.spawn.set(Some((capsule, status)));
     }
 
     /// The card's frame on the canvas, unrotated, where it is headed.
@@ -519,9 +530,6 @@ impl Board {
         let glass = style::card_blur(mtm);
         glass.setFrame(bounds);
         glass.setAutoresizingMask(fill_mask);
-        let sheen = SheenView::new(mtm, style::CARD_RADIUS);
-        sheen.setFrame(bounds);
-        sheen.setAutoresizingMask(fill_mask);
 
         let content = FlippedView::new(mtm, bounds);
         content.setAutoresizingMask(fill_mask);
@@ -577,11 +585,12 @@ impl Board {
         ));
         label.setAlphaValue(0.0);
 
-        for v in [&*glass as &NSView, &face, &sheen, &content, &label] {
+        for v in [&*glass as &NSView, &face, &content, &label] {
             view.addSubview(v);
         }
         self.canvas.addSubview(&view);
 
+        let parts = [glass.clone(), Retained::into_super(face.clone())];
         let mut card = Card {
             view,
             face,
@@ -606,6 +615,8 @@ impl Board {
             scale: 1.0,
             target_scale: 1.0,
             muted: false,
+            parts,
+            grow: None,
         };
         card.set_look(Look::Solid, false);
         card
@@ -859,6 +870,20 @@ impl Board {
                 1.0 - (-dt * 16.0).exp()
             };
             card.scale += (card.target_scale - card.scale) * ease;
+            if let Some((t, from)) = card.grow {
+                // Slower than the scale, and with no overshoot: a smooth morph.
+                let t = if reduce {
+                    1.0
+                } else {
+                    t + (1.0 - t) * (1.0 - (-dt * 7.0).exp())
+                };
+                if t > 0.995 {
+                    card.end_grow();
+                } else {
+                    card.grow = Some((t, from));
+                    moving = true;
+                }
+            }
             if (card.scale - card.target_scale).abs() < 0.002 {
                 card.scale = card.target_scale;
             } else {
@@ -1372,6 +1397,19 @@ impl Card {
         self.look = look;
     }
 
+    /// Finishes the capsule-to-card morph: everything back to card size.
+    fn end_grow(&mut self) {
+        self.grow = None;
+        let bounds = NSRect::new(NSPoint::ZERO, NSSize::new(CARD_W, CARD_H));
+        for part in &self.parts {
+            part.setFrame(bounds);
+        }
+        self.content.setFrame(bounds);
+        for v in [&*self.icon as &NSView, &self.time, &self.dots, &self.face] {
+            v.setAlphaValue(1.0);
+        }
+    }
+
     /// Hides the card's text (a card behind the top of a stack).
     fn set_muted(&mut self, on: bool) {
         if self.muted == on {
@@ -1388,6 +1426,32 @@ impl Card {
     fn apply_frame(&self, overlay_dy: f64) {
         let b = &self.body;
         let dy = if self.lifted { overlay_dy } else { 0.0 };
+        if let Some((t, from)) = self.grow {
+            // Capsule → card: the frame grows, the typed text (now the title) slides
+            // to its place, the colour and the rest of the card fade in.
+            let lerp = |a: f64, b: f64| a + (b - a) * t;
+            let (w, h) = (lerp(from.width, CARD_W), lerp(from.height, CARD_H));
+            self.view.setFrameCenterRotation(0.0);
+            self.view
+                .setFrame(NSRect::new(NSPoint::new(b.x, b.y + dy), NSSize::new(w, h)));
+            self.view.setBoundsSize(NSSize::new(w, h));
+            for part in &self.parts {
+                part.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(w, h)));
+            }
+            // Where the title sits so that it covers the text in the field.
+            let start = (
+                FIELD_TEXT_X - 14.0,
+                (from.height - 20.0) / 2.0 + 1.0 - (CARD_H - 29.0),
+            );
+            self.content.setFrame(NSRect::new(
+                NSPoint::new(lerp(start.0, 0.0), lerp(start.1, 0.0)),
+                NSSize::new(CARD_W, CARD_H),
+            ));
+            for v in [&*self.icon as &NSView, &self.time, &self.dots, &self.face] {
+                v.setAlphaValue(t);
+            }
+            return;
+        }
         let s = self.scale;
         let (w, h) = (CARD_W * s, CARD_H * s);
         self.view.setFrameCenterRotation(0.0);
