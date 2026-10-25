@@ -30,12 +30,12 @@ impl Spring {
 pub const SETTLE: Spring = Spring::new(380.0, 1.0);
 /// Settling into a stack or a list slot.
 pub const PILE: Spring = SETTLE;
-/// A stack opening into its fan: alive and bouncy, as in the reference clip; the
-/// cards fly apart, overshoot their places by about a quarter and spring back,
-/// settled in about 0.55 s, as a wave ([`fan_wave`]).
-pub const FAN_OPEN: Spring = Spring::new(220.0, 0.4);
-/// A fan folding back into its stack: quicker.
-pub const FAN_FOLD: Spring = Spring::new(800.0, 1.0);
+/// A stack opening into its fan, and a fan re-laying itself out: soft, with one
+/// or two small overshoots (about 10%), within 5% of rest after about 0.55 s.
+/// Measured from the reference clips (docs/reference/tima/motion/analysis.md).
+pub const FAN_OPEN: Spring = Spring::new(90.0, 0.58);
+/// A fan folding back into its stack: no overshoot, about 0.3 s (measured).
+pub const FAN_FOLD: Spring = Spring::new(250.0, 1.0);
 
 /// The weighted tilt of a moving card: it leans into its sideways motion, about
 /// 3° per 1000 pt/s and at most 7°, following through a damped response
@@ -47,10 +47,10 @@ pub const SWING_PER_SPEED: f64 = 0.003;
 pub const SWING_MAX: f64 = 7.0;
 
 /// When the `i`-th card of a fan of `n` starts to move as the fan opens, in
-/// seconds: a wave through the fan, at most 35 ms apart and 150 ms in all
-/// whatever the count.
+/// seconds: in the reference every card reacts at once (0–17 ms), so only a
+/// trace of a wave, at most 5 ms apart and 30 ms in all.
 pub fn fan_wave(i: usize, n: usize) -> f64 {
-    let step = (0.15 / n.max(1) as f64).min(0.035);
+    let step = (0.03 / n.max(1) as f64).min(0.005);
     i as f64 * step
 }
 /// The lead of a dragged group: nearly attached, a touch of lag.
@@ -418,8 +418,8 @@ mod tests {
     #[test]
     fn the_fan_opens_as_a_short_wave() {
         assert_eq!(fan_wave(0, 8), 0.0);
-        assert!(fan_wave(1, 3) <= 0.035 + 1e-12);
-        assert!(fan_wave(19, 20) <= 0.15 + 1e-12);
+        assert!(fan_wave(1, 3) <= 0.005 + 1e-12);
+        assert!(fan_wave(19, 20) <= 0.03 + 1e-12);
         assert!(fan_wave(5, 8) > fan_wave(4, 8));
     }
 
