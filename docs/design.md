@@ -15,8 +15,9 @@ content and colour. Nothing is cross-faded or swapped for a separate view.
 
 ## Card material
 
-A flat tint of the card's colour at about 40% over a blur of what is behind it,
-a plain 1 px light rim (white, 60%) with continuous corners, and a soft white glow
+A flat tint of the card's colour at 55% (white cards 65%) over a 4 pt blur of
+what is behind it (Tailwind's backdrop-blur-sm), so text behind is only a soft patch;
+then a plain 1 px light rim (white, 60%) with continuous corners, and a soft white glow
 over a faint dark shadow. No gradients.
 
 ## Nothing jumps

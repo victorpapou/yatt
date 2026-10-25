@@ -2,8 +2,9 @@
 //! (docs/reference/card-motion.md).
 
 use objc2::MainThreadMarker;
+use objc2::msg_send;
 use objc2::rc::Retained;
-use objc2::runtime::AnyClass;
+use objc2::runtime::{AnyClass, NSObject};
 use objc2_app_kit::{
     NSAutoresizingMaskOptions, NSColor, NSGlassEffectView, NSView, NSVisualEffectBlendingMode,
     NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
@@ -19,10 +20,8 @@ use crate::classes::FlippedView;
 pub const CARD_W: f64 = 230.0;
 pub const CARD_H: f64 = 101.0;
 pub const CARD_RADIUS: f64 = 20.0;
-/// Blur of what shows through a card, in points.
-pub const CARD_BLUR: f64 = 6.0;
-/// How much of the system glass shows under a card (the rest is the sharp backdrop).
-pub const CARD_GLASS_ALPHA: f64 = 0.7;
+/// Blur of what shows through a card, in points (Tailwind's backdrop-blur-sm).
+pub const CARD_BLUR: f64 = 4.0;
 
 type Rgb = (u8, u8, u8);
 
@@ -73,7 +72,9 @@ fn rgb((r, g, b): Rgb, alpha: f64) -> Retained<NSColor> {
 /// The card's tint: translucent, so the cards and board behind it show through
 /// the blur.
 pub fn fill(hue: usize) -> Retained<NSColor> {
-    rgb(HUES[hue % HUES.len()].0, 0.38)
+    // Dense enough that text behind is only a soft patch under the light blur.
+    let white = hue % HUES.len() == HUES.len() - 1;
+    rgb(HUES[hue % HUES.len()].0, if white { 0.65 } else { 0.55 })
 }
 
 pub fn text(hue: usize) -> Retained<NSColor> {
@@ -95,30 +96,54 @@ pub fn text_css(hue: usize) -> String {
     format!("#{r:02x}{g:02x}{b:02x}")
 }
 
-/// The blur under a card's tint, with no material colour of its own, so the card
-/// stays see-through in its own colour: the system's clear glass where there is
-/// one, a Core Image blur of what is behind otherwise.
+/// The blur under a card's tint: what is behind it in the window (other cards,
+/// text, grid lines), blurred by [`CARD_BLUR`] points with no material colour of
+/// its own. A backdrop layer with a Gaussian blur filter, the way the system's own
+/// blur views work inside (private Core Animation classes, looked up at run time);
+/// a system within-window blur where those are missing.
 pub fn card_blur(mtm: MainThreadMarker) -> Retained<NSView> {
-    if AnyClass::get(c"NSGlassEffectView").is_some() {
-        let glass = NSGlassEffectView::new(mtm);
-        glass.setStyle(objc2_app_kit::NSGlassEffectViewStyle::Clear);
-        glass.setCornerRadius(CARD_RADIUS);
-        // The system glass has no blur radius to set: letting some of the sharp
-        // backdrop through makes it read as a lighter blur.
-        glass.setAlphaValue(CARD_GLASS_ALPHA);
-        return Retained::into_super(glass);
+    if let Some(layer) = backdrop_layer(CARD_BLUR) {
+        round(&layer, CARD_RADIUS);
+        layer.setMasksToBounds(true);
+        // A layer-hosting view: AppKit keeps the layer sized to the view.
+        let view = FlippedView::new(mtm, NSRect::ZERO);
+        view.setLayer(Some(&layer));
+        view.setWantsLayer(true);
+        return Retained::into_super(view);
     }
-    let view = FlippedView::new(mtm, NSRect::ZERO);
+    let view = NSVisualEffectView::new(mtm);
+    view.setMaterial(NSVisualEffectMaterial::Popover);
+    view.setBlendingMode(NSVisualEffectBlendingMode::WithinWindow);
+    view.setState(NSVisualEffectState::Active);
     view.setWantsLayer(true);
-    view.setLayerUsesCoreImageFilters(true);
-    if let Some(blur) = gaussian(CARD_BLUR) {
-        view.setBackgroundFilters(&NSArray::from_retained_slice(&[blur]));
-    }
     if let Some(layer) = view.layer() {
         round(&layer, CARD_RADIUS);
         layer.setMasksToBounds(true);
     }
     Retained::into_super(view)
+}
+
+/// A `CABackdropLayer` blurring what is behind it by `radius` points, if the
+/// running system has the classes.
+fn backdrop_layer(radius: f64) -> Option<Retained<CALayer>> {
+    let backdrop = AnyClass::get(c"CABackdropLayer")?;
+    let filter_class = AnyClass::get(c"CAFilter")?;
+    let filter: Option<Retained<NSObject>> =
+        unsafe { msg_send![filter_class, filterWithType: ns_string!("gaussianBlur")] };
+    let filter = filter?;
+    let layer: Option<Retained<CALayer>> = unsafe { msg_send![backdrop, layer] };
+    let layer = layer?;
+    unsafe {
+        filter.setValue_forKey(Some(&NSNumber::new_f64(radius)), ns_string!("inputRadius"));
+        filter.setValue_forKey(
+            Some(&NSNumber::new_bool(true)),
+            ns_string!("inputNormalizeEdges"),
+        );
+        let filters: Retained<NSArray> =
+            Retained::cast_unchecked(NSArray::from_retained_slice(&[filter]));
+        layer.setFilters(Some(&filters));
+    }
+    Some(layer)
 }
 
 /// A Gaussian blur filter of `radius` points.
