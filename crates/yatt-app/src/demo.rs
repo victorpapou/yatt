@@ -71,6 +71,7 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             }
             wait(900).await;
             shot(&format!("fan-{n}"));
+            window.capture_layers_png(&format!("{dir}/fan-{n}-layers.png"));
             eprintln!("demo: finished");
             return;
         }
@@ -245,6 +246,7 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             let mid = (dx - 140.0, 200.0);
             drag(from, mid, 9).await;
             shot("5-train");
+            window.capture_layers_png(&format!("{dir}/5b-train-layers.png"));
             let end = (dx, 70.0);
             drag(mid, end, 8).await;
             window.demo_pointer(DemoPointer::Up(end));
@@ -344,6 +346,11 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             }
             wait(450).await;
             shot("9-fan");
+            let misfits = window.demo_misfit_parts();
+            eprintln!(
+                "demo: card parts in an open fan: {}",
+                if misfits.is_empty() { "all the card's size".into() } else { misfits.join("; ") }
+            );
             window.demo_pointer(DemoPointer::Hover(None));
             // A real drag of one card out of the open fan into "Бэклог".
             if let Some(&one) = ids(cx, 1).get(1) {
@@ -353,6 +360,14 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
                 for i in 1..=16 {
                     window.demo_real_mouse(DemoMouse::Drag, ease(from, to, i as f64 / 16.0));
                     wait(16).await;
+                    if i == 8 {
+                        window.capture_layers_png(&format!("{dir}/9c-out-of-fan.png"));
+                        let misfits = window.demo_misfit_parts();
+                        eprintln!(
+                            "demo: card parts while pulling a card out of a fan: {}",
+                            if misfits.is_empty() { "all the card's size".into() } else { misfits.join("; ") }
+                        );
+                    }
                 }
                 window.demo_real_mouse(DemoMouse::Up, to);
                 wait(700).await;

@@ -47,7 +47,7 @@ const HUES: [(Rgb, Rgb); 6] = [
     ((0xEC, 0xF5, 0x72), (0x4F, 0x54, 0x1A)),
     ((0x7F, 0xD0, 0x96), (0x22, 0x54, 0x3A)),
     // The "white" card: a light neutral grey, so it reads as a card of its own.
-    ((0xE9, 0xE9, 0xEC), (0x2E, 0x2E, 0x34)),
+    ((0xE4, 0xE4, 0xE8), (0x2E, 0x2E, 0x34)),
 ];
 
 /// Filled SF Symbols in the spirit of the clip's event glyphs.
@@ -91,10 +91,12 @@ pub fn fill(hue: usize) -> Retained<NSColor> {
     // Over the system's glass the tint is lighter, so less of the frost shows
     // through as colour mud; over the plain blur it is denser.
     let white = hue % HUES.len() == HUES.len() - 1;
+    // The grey card is denser than the colours: a pale, thin grey over other
+    // cards reads as a white halo round the card in front, not as a card.
     let alpha = match (real_glass(), white) {
-        (true, true) => 0.55,
+        (true, true) => 0.75,
         (true, false) => 0.45,
-        (false, true) => 0.65,
+        (false, true) => 0.85,
         (false, false) => 0.55,
     };
     rgb(HUES[hue % HUES.len()].0, alpha)

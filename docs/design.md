@@ -7,13 +7,16 @@ content and colour. Nothing is cross-faded or swapped for a separate view.
 
 - New task: the new-task capsule, typed text and all, grows into the card on its
   way to the column; the text becomes the card's title.
-- Card to modal: the panel starts as the card itself (same frame, angle, colour
-  and text) and grows on one quick spring (about 0.25 s). The morph itself drives
-  the hand-over: the card's text fades out over the first half of the way, the
-  panel's controls and its white body (only the header keeps the card's colour)
-  fade in over the second. Closing runs the same curve backwards, the open layout
-  kept as the panel shrinks, and hands back to the card when the panel lies
-  exactly on it.
+- Card to modal: the panel is the card itself, one element (same frame, angle,
+  material, colour and text), growing on one quick, lightly damped spring (about
+  0.25 s). Its coloured face stays on top and eases from the card's height to the
+  header's; below it the same card shows its white body, growing downward as the
+  card grows (none of it at card size), so the editor is the card's own content
+  area, not a plate that comes in. The title and the editor stay at the card's
+  top left; the card's text fades out over the first half of the way, the
+  panel's controls fade in over the second, driven by the morph itself. Closing
+  runs it backwards and hands back to the card when the panel lies exactly on
+  it.
 - Stack to fan: the stacked cards themselves spread out and fold back.
 - One card to a group drag: the pressed card leads and the selected cards follow
   right under it, as they are.
@@ -87,6 +90,11 @@ tabular digits, tracked +0.15, at 50%.
   animations on a view's layer and a plain setter would jump.
 - Cards already in a list that move over to make room, or close a gap, glide on
   a critically damped spring (ease in and out, no overshoot).
+- One motion preset for cards, `physics::JELLY`: jelly rather than spring, soft
+  and heavily damped (ζ 0.75, one slow give of about 3%, settled in about 0.4 s),
+  with squash and stretch. Stacks, list slots and drops use it; a fan opens with
+  it a little brisker and as a wave (each card up to 12 ms after the one before,
+  60 ms in all) and folds with it quicker.
 - Cards are firm jelly, the one exception to "no bounce": they move on springs
   of a small engine (`physics.rs`), land with a short underdamped settle (ζ 0.8,
   about 1.5% overshoot, still within half a second) and squash and stretch a
@@ -150,5 +158,7 @@ interval p95 of about 16–18 ms on the plain blur.
 Each column's title and count sit in a small glass chip: the cards' backdrop
 (4 pt blur, saturation 1.5) under a light tint of the column's colour, 10 pt at
 the ends, the count 6 pt after the title and a little dimmer. The colours:
-«Бэклог» grey, «В работе» yellow, «Готово» green; the drop highlight over a
+«Бэклог» grey, «В работе» yellow, «Готово» green; the grey card is denser than
+the colours (85%), or its pale tint over other cards reads as a white halo round
+the card in front; the drop highlight over a
 column is a faint wash of the same colour.

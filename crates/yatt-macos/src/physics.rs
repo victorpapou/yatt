@@ -21,29 +21,41 @@ impl Spring {
     }
 }
 
-/// Settling into a stack or fan: stiff and a little underdamped (ζ 0.8), so the
-/// card overshoots a touch, about 1.5%, and settles at once, like firm jelly.
-pub const PILE: Spring = Spring::new(420.0, 0.8);
-/// A stack opening into its fan: quick, settled in about 0.3 s whatever the
-/// number of cards, with only a trace of the jelly.
-pub const FAN_OPEN: Spring = Spring::new(900.0, 0.85);
-/// A fan folding back into its stack: quicker still, about 0.22 s.
-pub const FAN_FOLD: Spring = Spring::new(1500.0, 0.9);
+/// The cards' one motion preset, jelly rather than spring: soft and heavily
+/// damped (ζ 0.75), so a card arrives with one slow, small give (about 3%) and
+/// no quick wobble, settled in about 0.4 s. Squash and stretch come with it
+/// (`squash`).
+pub const JELLY: Spring = Spring::new(380.0, 0.75);
+/// Settling into a stack or a list slot: the jelly.
+pub const PILE: Spring = JELLY;
+/// A stack opening into its fan: the jelly, a little brisker (about 0.35 s),
+/// with a short wave through the cards ([`fan_wave`]).
+pub const FAN_OPEN: Spring = Spring::new(560.0, 0.75);
+/// A fan folding back into its stack: the jelly too, quicker (about 0.3 s).
+pub const FAN_FOLD: Spring = Spring::new(700.0, 0.75);
+
+/// When the `i`-th card of a fan of `n` starts to move as the fan opens, in
+/// seconds: a wave through the fan, at most 12 ms apart and 60 ms in all
+/// whatever the count.
+pub fn fan_wave(i: usize, n: usize) -> f64 {
+    let step = (0.06 / n.max(1) as f64).min(0.012);
+    i as f64 * step
+}
 /// The card under the cursor while dragging: nearly attached, a touch of lag and
 /// a little jelly (ζ 0.7).
 pub const LEAD: Spring = Spring::new(1200.0, 0.7);
 /// Followers of a dragged group tilt a little with their speed, at most this.
 pub const FOLLOWER_MAX_TILT: f64 = 2.0;
-/// A card already in a list moving over to make room or close a gap: smooth,
-/// critically damped, no overshoot (ease in and out).
-pub const SHIFT: Spring = Spring::new(300.0, 1.0);
-/// A card settling into its list slot after a drop: the same jelly landing.
-pub const SLOT: Spring = Spring::new(560.0, 0.8);
+/// A card already in a list moving over to make room or close a gap: soft and
+/// nearly critically damped (ease in and out, no visible overshoot).
+pub const SHIFT: Spring = Spring::new(300.0, 0.92);
+/// A card settling into its list slot after a drop: the jelly.
+pub const SLOT: Spring = JELLY;
 /// A new card flying from the new-task field into its column.
 pub const FLY: Spring = Spring::new(220.0, 0.8);
 /// The task modal growing out of its card and shrinking back: no wobble, the
 /// panel's text has to stay readable all the way.
-pub const MORPH: Spring = Spring::new(520.0, 1.0);
+pub const MORPH: Spring = Spring::new(520.0, 0.88);
 /// Rotation follows faster than position, so tilt reads as a reaction to motion.
 pub const ROTATION: Spring = Spring::new(500.0, 0.8);
 
@@ -86,6 +98,21 @@ pub fn trail_delay(i: usize, n: usize) -> f64 {
 
 /// The lead's speed (pt/s) at which the tail's delays are halved.
 const TRAIL_HALF_SPEED: f64 = 900.0;
+
+/// The lead's speed for the tail, smoothed over about 120 ms so a jittery pointer
+/// never makes the followers jump back and forth along the path.
+pub fn smooth_speed(previous: f64, raw: f64, dt: f64) -> f64 {
+    let k = 1.0 - (-dt.max(0.0) / 0.12).exp();
+    previous + (raw - previous) * k
+}
+
+/// Moves a follower's current delay towards `target` no faster than half a
+/// second per second: it then replays the lead's path at between half and one
+/// and a half times the lead's pace, never jumping along it.
+pub fn ease_delay(current: f64, target: f64, dt: f64) -> f64 {
+    let most = 0.5 * dt.max(0.0);
+    current + (target - current).clamp(-most, most)
+}
 
 /// The same, shortened as the lead moves faster: the tail hurries after a quick
 /// swing instead of strewing out behind it, and trails fully when slow.
@@ -325,6 +352,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_fan_opens_as_a_short_wave() {
+        assert_eq!(fan_wave(0, 8), 0.0);
+        assert!(fan_wave(1, 3) <= 0.012 + 1e-12);
+        assert!(fan_wave(19, 20) <= 0.06 + 1e-12);
+        assert!(fan_wave(5, 8) > fan_wave(4, 8));
+    }
+
+    #[test]
     fn settling_is_a_short_jelly_wobble() {
         let mut b = Body::at(0.0, 0.0);
         b.target(100.0, 0.0, 0.0);
@@ -335,7 +370,7 @@ mod tests {
             max = max.max(b.x);
             t += 1.0 / 120.0;
         }
-        assert!(max > 100.5 && max < 103.0, "overshoot {max}");
+        assert!(max > 100.5 && max < 104.0, "overshoot {max}");
         assert!(t < 0.8, "settled after {t}s");
     }
 
@@ -368,6 +403,47 @@ mod tests {
         let z: Vec<f64> = (0..20).map(group_z).collect();
         assert!(z.windows(2).all(|w| w[0] > w[1]));
         assert!(z[19] > 900.0);
+    }
+
+    #[test]
+    fn a_fast_zigzag_drag_moves_the_tail_smoothly() {
+        // The lead swings left and right at 3000 pt/s, reversing every 0.1 s;
+        // a follower replaying its path (speed smoothed) never steps further in
+        // one frame than the lead does, nor jumps backwards along the path.
+        let dt = 1.0 / 120.0;
+        let mut path: Vec<(f64, f64, f64)> = Vec::new();
+        let (mut x, mut dir, mut speed) = (0.0f64, 1.0f64, 0.0f64);
+        let mut delay = trail_delay(3, 4);
+        let mut last: Option<(f64, f64)> = None;
+        let mut max_lead_step = 0.0f64;
+        let mut max_step = 0.0f64;
+        for k in 0..240 {
+            let t = k as f64 * dt;
+            if k % 12 == 0 {
+                dir = -dir;
+            }
+            let step = 3000.0 * dt * dir;
+            x += step;
+            max_lead_step = max_lead_step.max(step.abs());
+            path.push((t, x, 0.0));
+            let raw = if path.len() > 6 {
+                let b = path[path.len() - 7];
+                (x - b.1).abs() / (t - b.0)
+            } else {
+                0.0
+            };
+            speed = smooth_speed(speed, raw, dt);
+            delay = ease_delay(delay, trail_delay_at(3, 4, speed), dt);
+            let (fx, fy) = path_at(&path, t - delay).unwrap();
+            if let Some(p) = last {
+                max_step = max_step.max((fx - p.0).hypot(fy - p.1));
+            }
+            last = Some((fx, fy));
+        }
+        assert!(
+            max_step <= max_lead_step * 1.5 + 1e-6,
+            "follower stepped {max_step}, lead {max_lead_step}"
+        );
     }
 
     #[test]

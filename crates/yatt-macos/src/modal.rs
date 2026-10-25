@@ -24,7 +24,7 @@ use objc2_app_kit::{
     NSFontWeightRegular, NSLineBreakMode, NSTextField, NSView,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString, NSTimer, ns_string};
-use objc2_quartz_core::CACurrentMediaTime;
+use objc2_quartz_core::{CACornerMask, CACurrentMediaTime};
 use yatt_core::{Status, TaskId};
 
 use crate::board::{Face, card_face, set_meta, set_title, time_text};
@@ -38,17 +38,50 @@ use crate::window::{Sink, animate};
 
 const ENTRY_LINES: usize = 4;
 
-/// How open the panel looks at `openness` (0 = the card, 1 = the panel): the
-/// card's text gives way over the first half, the controls and the white body
-/// come in over the second; smoothly, so nothing pops.
-fn blend(content: &NSView, card_box: &NSView, sheet: &NSView, openness: f64) {
+/// The card's parts that change as it opens into the panel.
+struct Parts {
+    content: Retained<FlippedView>,
+    card_box: Retained<FlippedView>,
+    face: Retained<FillView>,
+    sheet: Retained<FillView>,
+}
+
+/// How open the panel looks at `openness` (0 = the card, 1 = the panel), for a
+/// panel `size` big. It is the card all the way: its coloured face stays on top
+/// and eases from the card's height to the header's, and below it the same card
+/// shows its white body, growing downward as the card grows (none of it at card
+/// size). The title, the editor and the rest stay put at the card's top left and
+/// show as it grows round them; the card's own text gives way over the first
+/// half, the panel's controls come in over the second, so nothing pops.
+fn blend(parts: &Parts, openness: f64, size: NSSize) {
     let ease = |a: f64, b: f64| {
         let t = ((openness - a) / (b - a)).clamp(0.0, 1.0);
         t * t * (3.0 - 2.0 * t)
     };
-    card_box.setAlphaValue(1.0 - ease(0.15, 0.55));
-    content.setAlphaValue(ease(0.45, 0.95));
-    sheet.setAlphaValue(ease(0.45, 0.9));
+    parts.card_box.setAlphaValue(1.0 - ease(0.15, 0.55));
+    parts.content.setAlphaValue(ease(0.45, 0.95));
+    let (w, h) = (size.width.max(1.0), size.height.max(1.0));
+    let head = (style::CARD_H + (HEADER_H - style::CARD_H) * ease(0.1, 0.7)).min(h);
+    motion::quietly(|| {
+        parts
+            .face
+            .setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(w, head)));
+        parts.sheet.setFrame(NSRect::new(
+            NSPoint::new(0.0, head),
+            NSSize::new(w, h - head),
+        ));
+        // The face rounds only its top corners once the body shows under it.
+        if let Some(layer) = parts.face.layer() {
+            layer.setMaskedCorners(if h - head > 0.5 {
+                CACornerMask::LayerMinXMinYCorner | CACornerMask::LayerMaxXMinYCorner
+            } else {
+                CACornerMask::LayerMinXMinYCorner
+                    | CACornerMask::LayerMaxXMinYCorner
+                    | CACornerMask::LayerMinXMaxYCorner
+                    | CACornerMask::LayerMaxXMaxYCorner
+            });
+        }
+    });
 }
 
 /// The panel's header: title and stats, in the card's colour.
@@ -90,8 +123,8 @@ pub struct Modal {
 /// Springs the panel's frame towards a target rect: origin (with the rotation, so a
 /// card in a fan unturns as it grows and turns back as it lands) and size each
 /// ride a body.
-/// Told how far along a morph is.
-type ProgressFn = Box<dyn Fn(f64)>;
+/// Told how far along a morph is (0 to 1) and the panel's frame, unturned.
+type ProgressFn = Box<dyn Fn(f64, NSRect)>;
 
 struct Morph {
     panel: Retained<FillView>,
@@ -142,7 +175,7 @@ impl Morph {
         if motion::reduce_motion() {
             self.jump(r, deg);
             if let Some(f) = self.on_progress.borrow().as_ref() {
-                f(1.0);
+                f(1.0, r);
             }
             self.finish();
             return;
@@ -184,7 +217,8 @@ impl Morph {
             } else {
                 ((s.x - self.from_w.get()) / span).clamp(0.0, 1.0)
             };
-            f(if rest { 1.0 } else { p });
+            let frame = NSRect::new(NSPoint::new(o.x, o.y), NSSize::new(s.x, s.y));
+            f(if rest { 1.0 } else { p }, frame);
         }
         if rest {
             if let Some(t) = self.timer.borrow_mut().take() {
@@ -247,13 +281,13 @@ impl Modal {
         let size = panel.frame().size;
         edges.follow(size.width, size.height);
         panel.addSubview(&edges.outer);
-        for v in [&*glass as &NSView, &face] {
-            v.setAutoresizingMask(fill_mask);
-            panel.addSubview(v);
-        }
+        glass.setAutoresizingMask(fill_mask);
+        panel.addSubview(&glass);
+        // The card's coloured face on top and its white body below; `blend`
+        // sizes both as the card opens.
         let sheet = FillView::new(mtm, Fill::Sheet);
-        sheet.setAlphaValue(0.0);
         panel.addSubview(&sheet);
+        panel.addSubview(&face);
         panel.addSubview(&edges.inner);
         content.setAutoresizingMask(fill_mask);
         panel.addSubview(&content);
@@ -411,6 +445,15 @@ impl Modal {
         }
     }
 
+    fn parts(&self) -> Parts {
+        Parts {
+            content: self.content.clone(),
+            card_box: self.card_box.clone(),
+            face: self.face.clone(),
+            sheet: self.sheet.clone(),
+        }
+    }
+
     /// Undo or redo in the notes editor.
     pub fn editor_undo(&self, redo: bool) {
         self.editor.undo(redo);
@@ -454,10 +497,9 @@ impl Modal {
         self.stats
             .setFrame(NSRect::new(NSPoint::new(pad, 52.0), NSSize::new(iw, 16.0)));
         self.rules[0].setFrame(NSRect::new(NSPoint::new(0.0, 80.0), NSSize::new(w, 1.0)));
-        self.sheet.setFrame(NSRect::new(
-            NSPoint::new(0.0, HEADER_H),
-            NSSize::new(w, (h - HEADER_H).max(0.0)),
-        ));
+        if self.open.get().is_some() {
+            blend(&self.parts(), 1.0, NSSize::new(w, h));
+        }
         let bottom_h = 16.0 * ENTRY_LINES as f64 + 64.0;
         self.editor.view.setFrame(NSRect::new(
             NSPoint::new(pad - 4.0, 92.0),
@@ -523,14 +565,11 @@ impl Modal {
         // One element all the way: as the panel grows, the card's text fades out
         // over the first half and the panel's controls and white body fade in
         // over the second, driven by the morph itself.
-        self.sheet.setAlphaValue(0.0);
-        let (content, card_box, sheet) = (
-            self.content.clone(),
-            self.card_box.clone(),
-            self.sheet.clone(),
-        );
-        *self.morph.on_progress.borrow_mut() = Some(Box::new(move |p| {
-            blend(&content, &card_box, &sheet, p);
+        self.content.setBoundsOrigin(NSPoint::ZERO);
+        let parts = self.parts();
+        blend(&parts, 0.0, from.size);
+        *self.morph.on_progress.borrow_mut() = Some(Box::new(move |p, frame| {
+            blend(&parts, p, frame.size);
         }));
         self.morph.to(target, 0.0, None);
         if let Some(window) = self.panel.window() {
@@ -561,17 +600,12 @@ impl Modal {
         self.open.set(None);
         // The controls hand back to the card's text first, then the panel shrinks
         // with that text on it all the way.
-        let (panel, content, dim, card_box, sheet) = (
-            self.panel.clone(),
-            self.content.clone(),
-            self.dim.clone(),
-            self.card_box.clone(),
-            self.sheet.clone(),
-        );
+        let (panel, dim) = (self.panel.clone(), self.dim.clone());
         let gone = to.is_none();
-        // The same blend backwards, the open layout kept as the panel shrinks.
-        *self.morph.on_progress.borrow_mut() = Some(Box::new(move |p| {
-            blend(&content, &card_box, &sheet, 1.0 - p);
+        // The same blend backwards: the card closes round its contents.
+        let parts = self.parts();
+        *self.morph.on_progress.borrow_mut() = Some(Box::new(move |p, frame| {
+            blend(&parts, 1.0 - p, frame.size);
         }));
         animate(true, motion::MODAL_CLOSE_SECS, move || {
             if gone {

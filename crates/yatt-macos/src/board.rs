@@ -171,6 +171,8 @@ struct Card {
     light: bool,
     /// Carried: its lift shadow shows.
     lifted: bool,
+    /// Holds still until then (a fan opening as a wave), in media time.
+    hold_until: f64,
     /// The blur and the tint, sized to the card by hand while it grows.
     parts: [Retained<NSView>; 2],
     /// Growing from the new-task capsule: progress 0…1 and the capsule's size.
@@ -209,6 +211,10 @@ struct Drag {
     index: usize,
     /// The lead's recent path, `(time, x, y)`, oldest first, for the followers.
     path: Vec<(f64, f64, f64)>,
+    /// The lead's smoothed speed, which shortens the tail.
+    tail_speed: f64,
+    /// Each follower's current delay, eased towards what the speed asks for.
+    tail_delays: Vec<f64>,
 }
 
 /// A dropped group on its way into its column, all of it at once: it keeps the
@@ -504,6 +510,34 @@ impl Board {
         Some((p.x, p.y))
     }
 
+    /// Development aid: every card whose tint, backdrop or inner edge is not
+    /// exactly the card's own size (a layer that would show round it as a halo).
+    pub fn demo_misfit_parts(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for (id, card) in self.cards.borrow().iter() {
+            if card.view.isHidden() || card.grow.is_some() {
+                continue;
+            }
+            let b = card.view.bounds().size;
+            let parts: [(&str, &NSView); 3] = [
+                ("backdrop", &card.parts[0]),
+                ("tint", &card.face),
+                ("inner edge", &card.edges.inner),
+            ];
+            for (name, v) in parts {
+                let f = v.frame();
+                if f.origin.x.abs() > 0.5
+                    || f.origin.y.abs() > 0.5
+                    || (f.size.width - b.width).abs() > 0.5
+                    || (f.size.height - b.height).abs() > 0.5
+                {
+                    out.push(format!("{id:?} {name}: {f:?} in a card of {b:?}"));
+                }
+            }
+        }
+        out
+    }
+
     /// Development aid: selects exactly these cards.
     pub fn demo_select(self: &Rc<Self>, ids: &[TaskId]) {
         *self.selected.borrow_mut() = ids.iter().copied().collect();
@@ -787,6 +821,7 @@ impl Board {
             muted: false,
             light: false,
             lifted: false,
+            hold_until: 0.0,
             parts,
             grow: None,
             shadow_size: Cell::new((0.0, 0.0)),
@@ -879,7 +914,13 @@ impl Board {
                             (0.0, 0.0, 0.0)
                         };
                         let at = (centre.0 + dx - w / 2.0, centre.1 + dy - h / 2.0, deg);
+                        // A new place: the cards set off as a short wave.
+                        let moved =
+                            (card.body.tx - at.0).abs() > 2.0 || (card.body.ty - at.1).abs() > 2.0;
                         self.send_home(card, Space::Canvas, at);
+                        if moved && shown {
+                            card.hold_until = CACurrentMediaTime() + physics::fan_wave(i, shown_n);
+                        }
                         card.body.spring = physics::FAN_OPEN;
                         card.set_muted(false);
                         // Newer cards on top, as on the stack.
@@ -1206,6 +1247,11 @@ impl Board {
             // comes near.
             // Out of sight (a culled row, or a card hidden in a stack or under a
             // dragged group): it lands at once and draws when it shows again.
+            // Waiting for its turn in a fan's wave.
+            if card.hold_until > now {
+                moving = true;
+                continue;
+            }
             if card.culled || (card.parked.get() && card.view.isHidden()) {
                 card.body.settle();
                 card.scale = card.target_scale;
@@ -1281,7 +1327,17 @@ impl Board {
             && let Some((x, y)) = lead_at(&d.ids, &cards)
         {
             d.path.push((now, x, y));
-            follow_path(&mut cards, &d.ids, 1, &mut d.path, now, overlay_dy);
+            follow_path(
+                &mut cards,
+                &d.ids,
+                1,
+                &mut d.path,
+                now,
+                dt,
+                &mut d.tail_speed,
+                &mut d.tail_delays,
+                overlay_dy,
+            );
         }
         // A dropped group lands together; it keeps its stacking order until the
         // last of its cards is down in its column.
@@ -1726,6 +1782,8 @@ impl Board {
             target: Some(col),
             index: 0,
             path: Vec::new(),
+            tail_speed: 0.0,
+            tail_delays: Vec::new(),
         });
         // Rings off, followers stacked, the tail hidden: right away, not at the
         // first change of target.
@@ -2092,29 +2150,44 @@ fn follow_path(
     from: usize,
     path: &mut Vec<(f64, f64, f64)>,
     now: f64,
+    dt: f64,
+    speed: &mut f64,
+    delays: &mut Vec<f64>,
     overlay_dy: f64,
 ) {
     let keep = now - physics::trail_delay(ids.len(), ids.len()) - 0.1;
     let old = path.partition_point(|p| p.0 < keep).saturating_sub(1);
     path.drain(..old);
-    // The lead's speed over the last few frames: a quick swing shortens the tail.
-    let speed = match (path.last(), path.iter().rev().find(|p| p.0 < now - 0.05)) {
+    // The lead's speed over the last few frames, smoothed: a quick swing
+    // shortens the tail, without jitter.
+    let raw = match (path.last(), path.iter().rev().find(|p| p.0 < now - 0.05)) {
         (Some(a), Some(b)) => (a.1 - b.1).hypot(a.2 - b.2) / (a.0 - b.0).max(1e-3),
         _ => 0.0,
     };
+    *speed = physics::smooth_speed(*speed, raw, dt);
+    let speed = *speed;
+    if delays.len() < ids.len() {
+        delays.resize(ids.len(), f64::NAN);
+    }
     for (i, id) in ids.iter().enumerate().skip(from.max(1)) {
         let Some(card) = cards.get_mut(id) else {
             continue;
         };
-        let delay = physics::trail_delay_at(i, ids.len(), speed);
+        let target = physics::trail_delay_at(i, ids.len(), speed);
+        let delay = if delays[i].is_nan() {
+            target
+        } else {
+            physics::ease_delay(delays[i], target, dt)
+        };
+        delays[i] = delay;
         let Some((x, y)) = physics::path_at(path, now - delay) else {
             continue;
         };
         let y = y + physics::trail(i).0;
         // Its speed along the path, for the jelly squash and a little tilt.
         let b = card.body;
-        let dt = 1.0 / 120.0;
-        let (vx, vy) = ((x - b.x) / dt, (y - b.y) / dt);
+        let step = dt.max(1.0 / 240.0);
+        let (vx, vy) = ((x - b.x) / step, (y - b.y) / step);
         let r = physics::tilt(vx, physics::FOLLOWER_MAX_TILT);
         card.body = Body {
             spring: b.spring,

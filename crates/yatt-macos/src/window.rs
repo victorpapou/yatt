@@ -444,6 +444,11 @@ impl MainWindow {
         self.ui.cards.demo_view_center(id)
     }
 
+    /// Development aid: card parts that are not the card's own size.
+    pub fn demo_misfit_parts(&self) -> Vec<String> {
+        self.ui.cards.demo_misfit_parts()
+    }
+
     /// Development aid: selects exactly these cards.
     pub fn demo_select(&self, ids: &[TaskId]) {
         self.ui.cards.demo_select(ids);
