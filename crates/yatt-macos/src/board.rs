@@ -496,9 +496,9 @@ impl Board {
         view.setWantsLayer(true);
         if let Some(layer) = view.layer() {
             layer.setShadowColor(Some(&NSColor::blackColor().CGColor()));
-            // A soft, wide, faint grey shadow.
-            layer.setShadowOpacity(0.1);
-            layer.setShadowRadius(12.0);
+            // A light dark shadow under the face's white glow.
+            layer.setShadowOpacity(0.07);
+            layer.setShadowRadius(14.0);
             layer.setShadowOffset(NSSize::new(0.0, -2.0));
         }
         let fill_mask = NSAutoresizingMaskOptions::ViewWidthSizable
@@ -1310,8 +1310,8 @@ impl Card {
     /// A deeper shadow while held.
     fn set_raised(&self, on: bool) {
         if let Some(layer) = self.view.layer() {
-            layer.setShadowOpacity(if on { 0.18 } else { 0.1 });
-            layer.setShadowRadius(if on { 16.0 } else { 12.0 });
+            layer.setShadowOpacity(if on { 0.18 } else { 0.07 });
+            layer.setShadowRadius(if on { 16.0 } else { 14.0 });
             layer.setShadowOffset(NSSize::new(0.0, if on { -8.0 } else { -2.0 }));
         }
     }

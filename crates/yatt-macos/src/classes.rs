@@ -254,6 +254,11 @@ define_class!(
                         NSColor::blackColor().colorWithAlphaComponent(0.14)
                     };
                     layer.setBorderColor(Some(&rim.CGColor()));
+                    // A white glow over the card's faint dark shadow.
+                    layer.setShadowColor(Some(&NSColor::whiteColor().CGColor()));
+                    layer.setShadowOpacity(0.65);
+                    layer.setShadowRadius(8.0);
+                    layer.setShadowOffset(objc2_foundation::NSSize::new(0.0, 0.0));
                 }
                 Fill::Badge => crate::style::round(&layer, 9.0),
                 Fill::Chip(_) => crate::style::round(&layer, 10.0),
