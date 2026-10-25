@@ -10,11 +10,11 @@ use objc2::{
     msg_send, sel,
 };
 use objc2_app_kit::{
-    NSColor, NSControl, NSControlTextEditingDelegate, NSEvent, NSEventModifierFlags, NSEventPhase,
-    NSGradient, NSResponder, NSTextFieldDelegate, NSTextView, NSTrackingArea,
+    NSBezierPath, NSColor, NSControl, NSControlTextEditingDelegate, NSEvent, NSEventModifierFlags,
+    NSEventPhase, NSGradient, NSResponder, NSTextFieldDelegate, NSTextView, NSTrackingArea,
     NSTrackingAreaOptions, NSView, NSWindow, NSWindowDelegate,
 };
-use objc2_foundation::{NSNotification, NSPoint, NSRect, NSString};
+use objc2_foundation::{NSNotification, NSPoint, NSRect, NSSize, NSString};
 use objc2_web_kit::{WKScriptMessage, WKScriptMessageHandler, WKUserContentController};
 
 pub type KeyHandler = Box<dyn Fn(&NSEvent) -> bool>;
@@ -230,7 +230,7 @@ define_class!(
             let fill = self.ivars().fill.get();
             let color = match fill {
                 Fill::Card { hue, .. } => crate::style::fill(hue),
-                Fill::Badge => NSColor::whiteColor().colorWithAlphaComponent(0.55),
+                Fill::Badge => NSColor::whiteColor().colorWithAlphaComponent(0.38),
                 Fill::Separator => NSColor::separatorColor(),
                 Fill::Tint => NSColor::labelColor().colorWithAlphaComponent(0.035),
                 Fill::Dim => NSColor::blackColor().colorWithAlphaComponent(0.28),
@@ -243,17 +243,17 @@ define_class!(
                     crate::style::round(&layer, crate::style::CARD_RADIUS);
                     // A light hairline; selection gets an accent ring. A running timer
                     // shows as ● on the card itself.
-                    layer.setBorderWidth(if selected { 2.5 } else { 0.75 });
+                    layer.setBorderWidth(if selected { 2.5 } else { 1.0 });
                     let rim = if selected {
                         NSColor::controlAccentColor()
                     } else {
-                        NSColor::whiteColor().colorWithAlphaComponent(0.8)
+                        NSColor::whiteColor().colorWithAlphaComponent(0.55)
                     };
                     layer.setBorderColor(Some(&rim.CGColor()));
-                    // A soft white glow around the glass.
+                    // A soft blurred white halo instead of a drop shadow.
                     layer.setShadowColor(Some(&NSColor::whiteColor().CGColor()));
-                    layer.setShadowOpacity(0.85);
-                    layer.setShadowRadius(7.0);
+                    layer.setShadowOpacity(1.0);
+                    layer.setShadowRadius(5.0);
                     layer.setShadowOffset(objc2_foundation::NSSize::new(0.0, 0.0));
                 }
                 Fill::Badge => crate::style::round(&layer, 9.0),
@@ -314,14 +314,33 @@ define_class!(
         #[unsafe(method(drawRect:))]
         fn draw_rect(&self, _dirty: NSRect) {
             let white = NSColor::whiteColor();
+            let b = self.bounds();
+            // A lighter glow along the top, gone by the middle.
             let gradient = NSGradient::initWithStartingColor_endingColor(
                 NSGradient::alloc(),
-                &white.colorWithAlphaComponent(0.32),
+                &white.colorWithAlphaComponent(0.42),
                 &white.colorWithAlphaComponent(0.0),
             );
+            let top = NSRect::new(b.origin, NSSize::new(b.size.width, b.size.height * 0.6));
             // Flipped: 90° runs from the top edge down.
             if let Some(g) = gradient {
-                g.drawInRect_angle(self.bounds(), 90.0);
+                g.drawInRect_angle(top, 90.0);
+            }
+            // A soft inner rim: two strokes fading inwards.
+            let radius = crate::style::CARD_RADIUS;
+            for (inset, alpha, width) in [(1.0, 0.45, 2.0), (2.5, 0.15, 3.0)] {
+                let r = NSRect::new(
+                    NSPoint::new(b.origin.x + inset, b.origin.y + inset),
+                    NSSize::new(b.size.width - 2.0 * inset, b.size.height - 2.0 * inset),
+                );
+                let path = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
+                    r,
+                    radius - inset,
+                    radius - inset,
+                );
+                path.setLineWidth(width);
+                white.colorWithAlphaComponent(alpha).setStroke();
+                path.stroke();
             }
         }
 
@@ -569,6 +588,35 @@ define_class!(
 );
 
 impl OverlayView {
+    pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(NoIvars);
+        unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] }
+    }
+}
+
+define_class!(
+    // SAFETY: NSView has no subclassing requirements; no Drop impl.
+    #[unsafe(super(NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = NoIvars]
+    /// A flipped view that takes clicks only on its subviews; the rest falls through.
+    pub struct PassView;
+
+    impl PassView {
+        #[unsafe(method(isFlipped))]
+        fn is_flipped(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method_id(hitTest:))]
+        fn hit_test(&self, point: NSPoint) -> Option<Retained<NSView>> {
+            let hit: Option<Retained<NSView>> = unsafe { msg_send![super(self), hitTest: point] };
+            hit.filter(|v| !std::ptr::eq::<NSView>(&**v, &**self))
+        }
+    }
+);
+
+impl PassView {
     pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(NoIvars);
         unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] }

@@ -31,8 +31,8 @@ use objc2::rc::Retained;
 use objc2::{DefinedClass, MainThreadMarker};
 use objc2_app_kit::{
     NSAnimatablePropertyContainer, NSAutoresizingMaskOptions, NSColor, NSFont, NSFontWeightBold,
-    NSFontWeightSemibold, NSImage, NSImageView, NSLineBreakMode, NSTextAlignment, NSTextField,
-    NSView,
+    NSFontWeightMedium, NSFontWeightSemibold, NSImage, NSImageView, NSLineBreakMode,
+    NSTextAlignment, NSTextField, NSView,
 };
 use objc2_core_image::CIFilter;
 use objc2_foundation::{
@@ -55,12 +55,13 @@ use crate::window::{Sink, animate};
 const DRAG_THRESHOLD: f64 = 4.0;
 /// Where a trailing card rests relative to the one ahead of it: up and to the right.
 const TRAIN_OFFSET: (f64, f64) = (20.0, -35.0);
-/// A fanned card under the pointer grows a little.
-const HOVER_SCALE: f64 = 1.04;
+/// A fanned card under the pointer grows a little, keeping its place in the order.
+const HOVER_SCALE: f64 = 1.03;
 /// Content blur on a lifted card, in points.
 const LIFT_BLUR: f64 = 5.0;
-/// List layout: first slot's top, and the gap between cards.
-const LIST_TOP: f64 = 8.0;
+/// List layout: first slot's top (below the column chips, which float over the
+/// cards), and the gap between cards.
+const LIST_TOP: f64 = 52.0;
 const LIST_GAP: f64 = 10.0;
 const PITCH: f64 = CARD_H + LIST_GAP;
 /// Room left under the last card for the new-task field floating over the board.
@@ -269,6 +270,15 @@ impl Board {
             self.scroll_column(ci, 0.0);
         }
         self.retarget();
+        // A resize moves the columns under the cards: put the cards there now
+        // instead of letting them spring after.
+        let dragged = self.dragged();
+        for (id, card) in self.cards.borrow_mut().iter_mut() {
+            if !dragged.contains(id) && !card.flying {
+                card.body.settle();
+                card.apply_frame(overlay_dy);
+            }
+        }
         self.kick();
     }
 
@@ -365,21 +375,19 @@ impl Board {
         }
     }
 
-    pub fn is_stacked(&self, column: usize) -> bool {
-        self.layouts.get()[column] != Layout::List
+    pub fn is_stacked(&self) -> bool {
+        self.layouts.get()[0] != Layout::List
     }
 
-    /// Switches a column between the list and a collapsed stack.
-    pub fn toggle_stack(self: &Rc<Self>, column: usize) {
-        let mut layouts = self.layouts.get();
-        layouts[column] = match layouts[column] {
-            Layout::List => Layout::Stack { fanned: false },
-            Layout::Stack { .. } => Layout::List,
+    /// Switches the whole board between lists and collapsed stacks.
+    pub fn toggle_stack(self: &Rc<Self>) {
+        let layout = if self.is_stacked() {
+            Layout::List
+        } else {
+            Layout::Stack { fanned: false }
         };
-        self.layouts.set(layouts);
-        let mut scroll = self.scroll.get();
-        scroll[column] = 0.0;
-        self.scroll.set(scroll);
+        self.layouts.set([layout; 3]);
+        self.scroll.set([0.0; 3]);
         self.retarget();
         self.kick();
     }
@@ -473,7 +481,7 @@ impl Board {
     /// Top-left of a stack's top card, centred in the column.
     fn stack_anchor(&self, ci: usize) -> (f64, f64) {
         let g = self.geom.get()[ci];
-        ((g.x + (g.w - CARD_W) / 2.0).round(), 18.0)
+        ((g.x + (g.w - CARD_W) / 2.0).round(), LIST_TOP + 10.0)
     }
 
     // ---- cards ----
@@ -489,7 +497,8 @@ impl Board {
         view.setWantsLayer(true);
         if let Some(layer) = view.layer() {
             layer.setShadowColor(Some(&NSColor::blackColor().CGColor()));
-            layer.setShadowOpacity(0.08);
+            // No drop shadow at rest: the white halo on the tint does the edge.
+            layer.setShadowOpacity(0.0);
             layer.setShadowRadius(6.0);
             layer.setShadowOffset(NSSize::new(0.0, -2.0));
         }
@@ -547,14 +556,14 @@ impl Board {
             NSPoint::new(14.0, CARD_H - 44.0),
             NSSize::new(CARD_W - 28.0, 15.0),
         ));
-        let title = text_label(mtm, &snap.title, 13.5, unsafe { NSFontWeightBold });
+        let title = text_label(mtm, &snap.title, 14.0, unsafe { NSFontWeightSemibold });
         title.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
         title.setFrame(NSRect::new(
             NSPoint::new(14.0, CARD_H - 29.0),
             NSSize::new(CARD_W - 28.0, 18.0),
         ));
         let badge_bg = FillView::new(mtm, Fill::Badge);
-        let badge = text_label(mtm, "", 11.0, unsafe { NSFontWeightSemibold });
+        let badge = text_label(mtm, "", 11.0, unsafe { NSFontWeightMedium });
         badge.setAlignment(NSTextAlignment::Center);
         for v in [&*icon as &NSView, &dots, &time, &title, &badge_bg, &badge] {
             content.addSubview(v);
@@ -654,7 +663,7 @@ impl Board {
                     // A rosette round the stack's centre, kept clear of the canvas top.
                     let a = self.stack_anchor(ci);
                     let reach = physics::fan_radius(n, w) + 0.5 * (w * w + h * h).sqrt();
-                    let centre = (a.0 + w / 2.0, (a.1 + h / 2.0).max(reach + 8.0));
+                    let centre = (a.0 + w / 2.0, (a.1 + h / 2.0).max(reach + LIST_TOP));
                     for (i, id) in ids.iter().enumerate() {
                         let Some(card) = cards.get_mut(id) else {
                             continue;
@@ -663,9 +672,8 @@ impl Board {
                         card.body
                             .target(centre.0 + dx - w / 2.0, centre.1 + dy - h / 2.0, deg);
                         card.body.spring = physics::PILE;
-                        let hovered = hover == Some(*id);
-                        card.z = if hovered { 500.0 } else { (n - i) as f64 };
-                        card.target_scale = if hovered { HOVER_SCALE } else { 1.0 };
+                        card.z = (n - i) as f64;
+                        card.target_scale = if hover == Some(*id) { HOVER_SCALE } else { 1.0 };
                         card.set_look(Look::Solid, true);
                         card.set_badge("");
                     }
@@ -889,8 +897,8 @@ impl Board {
         let h = self.height.get();
         let speed = if y > h - AUTOSCROLL_EDGE {
             (y - (h - AUTOSCROLL_EDGE)) / AUTOSCROLL_EDGE
-        } else if y < AUTOSCROLL_EDGE {
-            -(AUTOSCROLL_EDGE - y) / AUTOSCROLL_EDGE
+        } else if y < LIST_TOP + AUTOSCROLL_EDGE {
+            -(LIST_TOP + AUTOSCROLL_EDGE - y) / AUTOSCROLL_EDGE
         } else {
             return;
         };
@@ -1216,19 +1224,23 @@ impl Board {
         }
         if let Some(col) = drag.target {
             let before = self.order.borrow()[col].clone();
+            // The cards land in the order they had on the board, whichever one led.
+            let flat: Vec<TaskId> = self.order.borrow().iter().flatten().copied().collect();
+            let mut ids = drag.ids.clone();
+            ids.sort_by_key(|id| flat.iter().position(|x| x == id));
             // Reorder right away so the cards spring to their new places before the
             // snapshot comes back.
             {
                 let mut order = self.order.borrow_mut();
                 for o in order.iter_mut() {
-                    o.retain(|id| !drag.ids.contains(id));
+                    o.retain(|id| !ids.contains(id));
                 }
                 let at = drag.index.min(order[col].len());
-                for (i, id) in drag.ids.iter().enumerate() {
+                for (i, id) in ids.iter().enumerate() {
                     order[col].insert(at + i, *id);
                 }
             }
-            for e in moves_into(&before, &drag.ids, drag.index, self.statuses[col]) {
+            for e in moves_into(&before, &ids, drag.index, self.statuses[col]) {
                 (self.sink)(e);
             }
         }
@@ -1293,7 +1305,7 @@ impl Card {
     /// A deeper shadow while held.
     fn set_raised(&self, on: bool) {
         if let Some(layer) = self.view.layer() {
-            layer.setShadowOpacity(if on { 0.2 } else { 0.08 });
+            layer.setShadowOpacity(if on { 0.18 } else { 0.0 });
             layer.setShadowRadius(if on { 16.0 } else { 6.0 });
             layer.setShadowOffset(NSSize::new(0.0, if on { -8.0 } else { -2.0 }));
         }
@@ -1324,13 +1336,17 @@ impl Card {
             self.label.setStringValue(&NSString::from_str(text));
         }
         let ink = style::text(self.hue);
-        for l in [&self.time, &self.title, &self.badge] {
-            l.setTextColor(Some(&ink));
-        }
+        // Dark tones of the hue at reduced opacity, as in the reference.
+        self.title
+            .setTextColor(Some(&ink.colorWithAlphaComponent(0.85)));
+        self.time
+            .setTextColor(Some(&ink.colorWithAlphaComponent(0.6)));
+        self.badge
+            .setTextColor(Some(&ink.colorWithAlphaComponent(0.6)));
         self.dots
-            .setTextColor(Some(&ink.colorWithAlphaComponent(0.45)));
-        self.icon.setContentTintColor(Some(&ink));
-        self.time.setAlphaValue(0.75);
+            .setTextColor(Some(&ink.colorWithAlphaComponent(0.35)));
+        self.icon
+            .setContentTintColor(Some(&ink.colorWithAlphaComponent(0.85)));
         let filters: Retained<NSArray<CIFilter>> = if lifted {
             blur_filter().map_or_else(NSArray::new, |f| NSArray::from_retained_slice(&[f]))
         } else {

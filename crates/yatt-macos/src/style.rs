@@ -68,11 +68,20 @@ fn rgb((r, g, b): Rgb, alpha: f64) -> Retained<NSColor> {
 
 /// The card's tint: translucent, so the blur behind it shows through as glass.
 pub fn fill(hue: usize) -> Retained<NSColor> {
-    rgb(HUES[hue % HUES.len()].0, 0.74)
+    rgb(HUES[hue % HUES.len()].0, 0.9)
 }
 
 pub fn text(hue: usize) -> Retained<NSColor> {
     rgb(HUES[hue % HUES.len()].1, 1.0)
+}
+
+/// Each column's colour, for its header chip: backlog, in progress, done.
+pub fn column_color(i: usize) -> Retained<NSColor> {
+    match i {
+        0 => NSColor::systemGrayColor(),
+        1 => NSColor::systemBlueColor(),
+        _ => NSColor::systemGreenColor(),
+    }
 }
 
 /// The card's text colour as CSS, for the notes editor.

@@ -122,9 +122,9 @@ impl Body {
 
 /// The `i`-th card of a collapsed stack (0 = top): how far down its centre sits
 /// and its scale. The cards behind are a touch narrower and peek out below the
-/// top card as thin slivers; past the third they hide behind it.
+/// top card as thin slivers, two of them; the rest hide behind the second.
 pub fn pile(i: usize) -> (f64, f64) {
-    let i = i.min(3) as f64;
+    let i = i.min(2) as f64;
     (8.0 * i, 1.0 - 0.06 * i)
 }
 
@@ -241,6 +241,6 @@ mod tests {
         let (_, _, b) = fan(1, 9, 230.0);
         assert!(b - a < 15.0 && fan_radius(9, 230.0) > fan_radius(3, 230.0));
         assert!(trail_scale(1) < 1.0 && trail_scale(3) < trail_scale(1));
-        assert_eq!(pile(5), pile(3));
+        assert_eq!(pile(5), pile(2));
     }
 }

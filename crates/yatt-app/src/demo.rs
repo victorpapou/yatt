@@ -136,8 +136,8 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             wait(700).await;
         }
 
-        // Fold "В работе" into a stack, fan it with a click, then drag it whole to "Готово".
-        window.demo_toggle_stack(1);
+        // Fold the board into stacks, fan "В работе" with a click, then drag it whole to "Готово".
+        window.demo_toggle_stack();
         wait(600).await;
         shot("8-stack");
         if let Some(&top) = ids(cx, 1).first() {
@@ -167,7 +167,7 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             drag(mid, end, 8).await;
             window.demo_pointer(DemoPointer::Up(end));
             wait(700).await;
-            window.demo_toggle_stack(1);
+            window.demo_toggle_stack();
         }
 
         // The task modal and timer-only mode.
