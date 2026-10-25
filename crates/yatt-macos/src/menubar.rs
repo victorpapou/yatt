@@ -1,6 +1,6 @@
-//! The timer in the system's menu bar: a small disc (a template image, so it
-//! follows the menu bar's light or dark look) filled with the time left of a
-//! pomodoro, or the time so far of the stopwatch, with its minutes after it.
+//! The timer in the system's menu bar: a pomodoro's time left as a small pie (a
+//! template image, so it follows the menu bar's light or dark look), the
+//! stopwatch's minutes as text, a still dimmed pie when idle.
 //! A click shows a short menu: open the window, pause or resume, stop.
 
 use std::cell::RefCell;
@@ -20,11 +20,14 @@ use crate::classes::ActionTarget;
 
 const SIDE: f64 = 16.0;
 
+/// The disc in whole degrees, the label, dimmed, paused.
+type Shown = (Option<i64>, Option<String>, bool, bool);
+
 pub struct StatusBar {
     item: Retained<NSStatusItem>,
     pause: Retained<NSMenuItem>,
     /// What is drawn now: the disc in whole degrees, the label, dimmed, paused.
-    shown: RefCell<Option<(i64, Option<String>, bool, bool)>>,
+    shown: RefCell<Option<Shown>>,
     _targets: Vec<Retained<AnyObject>>,
 }
 
@@ -74,27 +77,29 @@ impl StatusBar {
     }
 }
 
-/// The disc: an outline, and a wedge `fill` of the way round clockwise from
-/// the top; fainter when `dimmed`.
+/// The pie: a wedge `fill` of the way round clockwise from the top over a
+/// faint full disc (the time gone), no outline; all fainter when `dimmed`.
 fn disc(fill: f64, dimmed: bool) -> Retained<NSImage> {
     let draw = RcBlock::new(move |_rect: NSRect| -> Bool {
         let alpha = if dimmed { 0.45 } else { 1.0 };
         let c = NSPoint::new(SIDE / 2.0, SIDE / 2.0);
         let r = SIDE / 2.0 - 1.5;
-        NSColor::blackColor().colorWithAlphaComponent(alpha).set();
-        let ring = NSBezierPath::bezierPathWithOvalInRect(NSRect::new(
+        NSColor::blackColor()
+            .colorWithAlphaComponent(0.2 * alpha)
+            .set();
+        NSBezierPath::bezierPathWithOvalInRect(NSRect::new(
             NSPoint::new(c.x - r, c.y - r),
             NSSize::new(2.0 * r, 2.0 * r),
-        ));
-        ring.setLineWidth(1.25);
-        ring.stroke();
+        ))
+        .fill();
         if fill > 0.0 {
+            NSColor::blackColor().colorWithAlphaComponent(alpha).set();
             let wedge = NSBezierPath::bezierPath();
             wedge.moveToPoint(c);
             // y up: the top is 90°, clockwise goes down from there.
             wedge.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise(
                 c,
-                r - 1.5,
+                r,
                 90.0,
                 90.0 - 360.0 * fill.min(1.0),
                 true,
@@ -115,7 +120,7 @@ impl MenuBar for StatusBar {
         // Drawn again only when something visible changed: a degree of the
         // disc, the minutes, the state.
         let key = (
-            (look.fill * 360.0).round() as i64,
+            look.disc.map(|d| (d * 360.0).round() as i64),
             look.label.clone(),
             look.dimmed,
             look.paused,
@@ -125,11 +130,12 @@ impl MenuBar for StatusBar {
         }
         let mtm = MainThreadMarker::new().expect("main thread");
         if let Some(b) = self.item.button(mtm) {
-            b.setImage(Some(&disc(look.fill, look.dimmed)));
+            b.setImage(look.disc.map(|d| disc(d, look.dimmed)).as_deref());
+            let gap = if look.disc.is_some() { " " } else { "" };
             let title = look
                 .label
                 .as_deref()
-                .map(|l| format!(" {l}"))
+                .map(|l| format!("{gap}{l}"))
                 .unwrap_or_default();
             b.setTitle(&NSString::from_str(&title));
         }

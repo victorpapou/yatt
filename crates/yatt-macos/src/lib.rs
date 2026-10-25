@@ -10,6 +10,8 @@ mod board;
 #[cfg(target_os = "macos")]
 mod classes;
 #[cfg(target_os = "macos")]
+mod durations;
+#[cfg(target_os = "macos")]
 mod editor;
 #[cfg(target_os = "macos")]
 mod menubar;

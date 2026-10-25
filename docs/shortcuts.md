@@ -21,7 +21,7 @@ editor takes them before the board ever sees them.
 | Esc | Clear the selection; fold the fans | End editing | Close the task panel |
 | ⌘. | Stop the timer | Stop the timer | Stop the timer |
 | ⌘] | Skip the phase | Skip the phase | Skip the phase |
-| ⌘⇧M | Timer-only mode | Timer-only mode | Timer-only mode |
+| Hold 🍅 in the toolbar (0.4 s) | Pomodoro lengths: work / break, presets 25/5, 40/10, 50/15 | the same | the same |
 | ⌘B / ⌘I / ⌘K, Tab, ↩ in lists | — | — | The editor's own (bold, italic, link, indent, new item); the app menu has none of them |
 
 Conflicts found and how they are resolved:

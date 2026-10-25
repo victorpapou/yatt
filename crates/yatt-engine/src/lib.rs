@@ -135,6 +135,14 @@ impl Engine {
         self.apply_timer(fx);
     }
 
+    /// The pomodoro's work and break lengths, in minutes. Kept with the timer;
+    /// a running interval takes the new length at once, its time so far kept.
+    pub fn set_durations(&mut self, work_min: u32, break_min: u32) {
+        self.timer.settings.work_secs = work_min.clamp(1, 240) * 60;
+        self.timer.settings.short_break_secs = break_min.clamp(1, 120) * 60;
+        self.apply_timer(Vec::new());
+    }
+
     pub fn skip(&mut self) {
         let fx = self.timer.skip(self.now());
         self.apply_timer(fx);
@@ -336,6 +344,19 @@ mod tests {
         f.at(100);
         assert_eq!(f.total(a), 20_000);
         assert!(f.engine.timer.active_tasks.is_empty());
+    }
+
+    #[test]
+    fn durations_change_the_running_interval_keeping_its_time() {
+        let mut f = Fixture::new();
+        f.task("a", Status::InProgress);
+        f.at(0).start_or_pause(Mode::Pomodoro);
+        f.at(600).set_durations(50, 15);
+        let now = f.engine.now();
+        assert_eq!(f.engine.timer.settings.work_secs, 50 * 60);
+        assert_eq!(f.engine.timer.settings.short_break_secs, 15 * 60);
+        assert_eq!(f.engine.timer.elapsed_ms(now), 600_000);
+        assert_eq!(f.engine.timer.remaining_ms(now), Some(40 * 60_000));
     }
 
     #[test]

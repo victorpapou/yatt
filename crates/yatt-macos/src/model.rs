@@ -50,6 +50,9 @@ pub struct TimerSnap {
     /// Phase progress in 0.0..=1.0.
     pub progress: f32,
     pub running: bool,
+    /// The pomodoro's lengths, in minutes.
+    pub work_min: u32,
+    pub break_min: u32,
     /// For the menu bar.
     pub menu_bar: yatt_platform::MenuBarTimer,
 }
@@ -97,6 +100,11 @@ pub enum UiEvent {
         status: Status,
     },
     StartPause,
+    /// The pomodoro's work and break lengths, in minutes.
+    SetDurations {
+        work_min: u32,
+        break_min: u32,
+    },
     StartStopwatch,
     Skip,
     Stop,

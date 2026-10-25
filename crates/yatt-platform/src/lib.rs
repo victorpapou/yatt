@@ -65,26 +65,25 @@ pub enum MenuBarTimer {
     },
 }
 
-/// The menu bar item: a small disc filled `fill` of the way round (0..=1)
-/// clockwise from the top, maybe a short label after it, dimmed when nothing
-/// runs.
+/// The menu bar item: a pie `disc` of the way round (0..=1) clockwise from the
+/// top, or none, maybe a short label, dimmed when nothing runs.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MenuBarLook {
-    pub fill: f64,
+    pub disc: Option<f64>,
     pub label: Option<String>,
     pub dimmed: bool,
     pub paused: bool,
 }
 
-/// One full turn of the disc for a stopwatch: an hour (it has no end).
-pub const STOPWATCH_TURN_MS: i64 = 3_600_000;
+/// What an idle timer shows: a still three-quarter pie, dimmed.
+pub const IDLE_DISC: f64 = 0.75;
 
-/// Pomodoro: the time left, as the disc, no text. Stopwatch: the time so far,
-/// a turn an hour, and the minutes as text (no seconds, so it does not tick).
+/// Pomodoro: the time left as a pie, no text. Stopwatch: no pie (it has no
+/// end), only the minutes so far as text (no seconds, so it does not tick).
 pub fn menu_bar_look(t: MenuBarTimer) -> MenuBarLook {
     match t {
         MenuBarTimer::Idle => MenuBarLook {
-            fill: 0.0,
+            disc: Some(IDLE_DISC),
             label: None,
             dimmed: true,
             paused: false,
@@ -94,17 +93,17 @@ pub fn menu_bar_look(t: MenuBarTimer) -> MenuBarLook {
             total_ms,
             paused,
         } => MenuBarLook {
-            fill: if total_ms > 0 {
+            disc: Some(if total_ms > 0 {
                 (remaining_ms as f64 / total_ms as f64).clamp(0.0, 1.0)
             } else {
                 0.0
-            },
+            }),
             label: None,
             dimmed: paused,
             paused,
         },
         MenuBarTimer::Stopwatch { elapsed_ms, paused } => MenuBarLook {
-            fill: (elapsed_ms.rem_euclid(STOPWATCH_TURN_MS)) as f64 / STOPWATCH_TURN_MS as f64,
+            disc: None,
             label: Some(minutes_label(elapsed_ms)),
             dimmed: paused,
             paused,
@@ -187,24 +186,24 @@ mod tests {
     #[test]
     fn menu_bar_shows_what_the_timer_does() {
         let idle = menu_bar_look(MenuBarTimer::Idle);
-        assert!(idle.dimmed && idle.fill == 0.0 && idle.label.is_none());
+        assert!(idle.dimmed && idle.disc == Some(IDLE_DISC) && idle.label.is_none());
         let p = menu_bar_look(MenuBarTimer::Pomodoro {
             remaining_ms: 15 * 60_000,
             total_ms: 25 * 60_000,
             paused: false,
         });
-        assert!((p.fill - 0.6).abs() < 1e-9 && p.label.is_none() && !p.dimmed);
+        assert!((p.disc.unwrap() - 0.6).abs() < 1e-9 && p.label.is_none() && !p.dimmed);
         let paused = menu_bar_look(MenuBarTimer::Pomodoro {
             remaining_ms: 1,
             total_ms: 0,
             paused: true,
         });
-        assert!(paused.paused && paused.dimmed && paused.fill == 0.0);
+        assert!(paused.paused && paused.dimmed && paused.disc == Some(0.0));
         let s = menu_bar_look(MenuBarTimer::Stopwatch {
             elapsed_ms: 90 * 60_000 + 59_000,
             paused: false,
         });
-        assert!((s.fill - 0.5 - 59.0 / 3600.0).abs() < 1e-9);
+        assert_eq!(s.disc, None);
         assert_eq!(s.label.as_deref(), Some("1 ч 30 мин"));
     }
 

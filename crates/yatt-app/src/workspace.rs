@@ -70,6 +70,10 @@ impl Workspace {
                 }
             }
             UiEvent::StartPause => e.start_or_pause(Mode::Pomodoro),
+            UiEvent::SetDurations {
+                work_min,
+                break_min,
+            } => e.set_durations(work_min, break_min),
             UiEvent::StartStopwatch => e.start_or_pause(Mode::Stopwatch),
             UiEvent::Skip => e.skip(),
             UiEvent::Stop => e.stop(),
@@ -172,6 +176,8 @@ impl Workspace {
             can_stop: t.phase != Phase::Idle,
             progress: t.progress(now),
             running: t.is_running(),
+            work_min: t.settings.work_secs / 60,
+            break_min: t.settings.short_break_secs / 60,
             menu_bar: match (t.phase, t.planned_secs()) {
                 (Phase::Idle, _) => MenuBarTimer::Idle,
                 (_, Some(p)) => MenuBarTimer::Pomodoro {

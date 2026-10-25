@@ -778,3 +778,52 @@ pub fn editing_text(window: &NSWindow) -> bool {
     }
     false
 }
+
+// ---- a button that also knows a long press ----
+
+pub type HoldHandler = Box<dyn Fn(&NSView)>;
+
+pub struct HoldIvars {
+    /// Held down for [`HOLD_SECS`]: this runs instead of the click.
+    pub on_hold: RefCell<Option<HoldHandler>>,
+}
+
+/// How long a press must last to count as a hold.
+pub const HOLD_SECS: f64 = 0.4;
+
+define_class!(
+    // SAFETY: NSButton has no subclassing requirements; no Drop impl.
+    #[unsafe(super(objc2_app_kit::NSButton, NSControl, NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = HoldIvars]
+    pub struct HoldButton;
+
+    impl HoldButton {
+        #[unsafe(method(mouseDown:))]
+        fn mouse_down(&self, event: &NSEvent) {
+            let Some(window) = self.window() else { return };
+            let until = objc2_foundation::NSDate::dateWithTimeIntervalSinceNow(HOLD_SECS);
+            let up = window.nextEventMatchingMask_untilDate_inMode_dequeue(
+                objc2_app_kit::NSEventMask::LeftMouseUp,
+                Some(&until),
+                unsafe { objc2_foundation::NSDefaultRunLoopMode },
+                false,
+            );
+            if up.is_some() {
+                // A click: the button's own tracking takes the mouse-up.
+                unsafe { msg_send![super(self), mouseDown: event] }
+            } else if let Some(f) = self.ivars().on_hold.borrow().as_ref() {
+                f(self);
+            }
+        }
+    }
+);
+
+impl HoldButton {
+    pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(HoldIvars {
+            on_hold: RefCell::new(None),
+        });
+        unsafe { msg_send![super(this), init] }
+    }
+}

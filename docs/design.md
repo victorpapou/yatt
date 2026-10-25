@@ -210,3 +210,27 @@ itself, however many entries there are.
 A stack, and its fan, centre in the column between the header and the
 new-task capsule. A fan may stick out 36 pt past its column on each side before
 it shrinks; the pile's layers step down 3.5% a layer.
+
+## Menu bar
+
+A status item (`menubar.rs`; the mapping is `yatt_platform::menu_bar_look`,
+tested): a pomodoro (work or break) shows its time left as a small pie, a
+template image so it follows the menu bar's light or dark look, over a faint
+disc for the time gone, no outline and no text. The stopwatch has no end, so
+no pie: only its minutes as text («<1 мин», «12 мин», «1 ч 05 мин»), never
+seconds, so it does not tick. Idle: a still three-quarter pie, dimmed; paused
+dims too. It is drawn again only when a degree of the pie, the minutes or the
+state change. Its menu: open yatt, pause or resume, stop.
+
+## Pomodoro lengths
+
+Hold the 🍅 in the toolbar (0.4 s) for a popover: work and break minutes with
+steppers (5 min a step) and the presets 25/5, 40/10, 50/15. They are kept with
+the timer (stored), and a running interval takes the new length at once,
+keeping its time so far, so nothing recorded is lost; a plain click still
+starts or pauses. Long breaks keep their own length.
+
+## Timer-only mode
+
+Off for now (`MINIMAL_MODE`): its toolbar button and menu item are gone, the
+code stays.

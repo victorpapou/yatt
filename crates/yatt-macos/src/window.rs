@@ -142,6 +142,10 @@ struct Header {
     /// Lists or stacks, for the whole board.
     stack: Retained<NSButton>,
     ring: Ring,
+    /// The 🍅 in the toolbar: a click starts or pauses, holding it opens the
+    /// pomodoro's lengths.
+    hold: Retained<crate::classes::HoldButton>,
+    durations: Rc<crate::durations::Durations>,
     /// The same controls as native toolbar items.
     bar: Bar,
     minimal: Cell<bool>,
@@ -1210,6 +1214,25 @@ impl Header {
             b.setToolTip(Some(&NSString::from_str(tip)));
         }
         start_item.setTitle(ns_string!(""));
+        // The 🍅 item is a button of its own, so it can tell a hold from a click.
+        let durations = Rc::new(crate::durations::Durations::new(mtm, sink));
+        let hold = crate::classes::HoldButton::new(mtm);
+        hold.setBezelStyle(NSBezelStyle::Toolbar);
+        hold.setBordered(true);
+        unsafe {
+            hold.setTarget(start_item.target().as_deref());
+            hold.setAction(start_item.action());
+        }
+        {
+            let durations = durations.clone();
+            *hold.ivars().on_hold.borrow_mut() = Some(Box::new(move |v| durations.open(v)));
+        }
+        hold.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(36.0, 36.0)));
+        hold.setEnabled(true);
+        start_item.setView(Some(&hold));
+        // Its own bubble, as the image items get.
+        start_item.setBordered(true);
+        start_item.setAutovalidates(false);
         // The view switches: two icons side by side, which the toolbar puts in one
         // shared bubble. Their targets are set in `Ui::wire`.
         let icon_item = |id: &str| {
@@ -1251,6 +1274,8 @@ impl Header {
             mini,
             stack,
             ring,
+            hold,
+            durations,
             bar: Bar {
                 start: start_item,
                 stopwatch: stopwatch_item,
@@ -1427,7 +1452,11 @@ impl Header {
         self.stop.setHidden(!t.can_stop);
         self.bar.start.setImage(icon.as_deref());
         self.bar.start.setLabel(&NSString::from_str(tip));
-        self.bar.start.setToolTip(Some(&NSString::from_str(tip)));
+        let hint = format!("{tip} · удерживайте: длительность");
+        self.bar.start.setToolTip(Some(&NSString::from_str(&hint)));
+        self.hold.setImage(icon.as_deref());
+        self.hold.setToolTip(Some(&NSString::from_str(&hint)));
+        self.durations.show_values(t.work_min, t.break_min);
         self.bar.stopwatch.setHidden(!t.can_start_stopwatch);
         self.bar.skip.setHidden(!t.can_skip);
         self.bar.stop.setHidden(!t.can_stop);
