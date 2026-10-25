@@ -1951,11 +1951,7 @@ impl Card {
             return;
         }
         // Jelly: a little longer along the way the card moves, thinner across it.
-        let (sx, sy) = if self.light {
-            (1.0, 1.0)
-        } else {
-            physics::squash(b.vx, b.vy)
-        };
+        let (sx, sy) = physics::squash(b.vx, b.vy);
         let (w, h) = (CARD_W * s * sx, CARD_H * s * sy);
         self.view.setFrameCenterRotation(0.0);
         self.view.setFrame(NSRect::new(
@@ -2036,9 +2032,17 @@ fn follow_path(
             continue;
         };
         let y = y + physics::trail(i).0;
-        let spring = card.body.spring;
+        // Its speed along the path, for the jelly squash and a little tilt.
+        let b = card.body;
+        let dt = 1.0 / 120.0;
+        let (vx, vy) = ((x - b.x) / dt, (y - b.y) / dt);
+        let r = physics::tilt(vx, physics::FOLLOWER_MAX_TILT);
         card.body = Body {
-            spring,
+            spring: b.spring,
+            vx: b.vx + (vx - b.vx) * 0.3,
+            vy: b.vy + (vy - b.vy) * 0.3,
+            r,
+            tr: r,
             ..Body::at(x, y)
         };
         card.apply_frame(overlay_dy);

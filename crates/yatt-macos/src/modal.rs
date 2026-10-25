@@ -363,6 +363,11 @@ impl Modal {
         }
     }
 
+    /// Undo or redo in the notes editor.
+    pub fn editor_undo(&self, redo: bool) {
+        self.editor.undo(redo);
+    }
+
     pub fn debug_print_editor(&self) {
         self.editor.debug_print_html();
     }

@@ -87,6 +87,9 @@ window.yatt = {
   },
   flush() { if (timer) flush() },
   focus() { editor.commands.focus('end') },
+  // ⌘Z and ⌘⇧Z reach the app's menu first; it hands them back here.
+  undo() { editor.commands.undo() },
+  redo() { editor.commands.redo() },
 }
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { e.preventDefault(); flush(); post('close') }

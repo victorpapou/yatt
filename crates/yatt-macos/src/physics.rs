@@ -29,8 +29,11 @@ pub const PILE: Spring = Spring::new(420.0, 0.8);
 pub const FAN_OPEN: Spring = Spring::new(900.0, 0.85);
 /// A fan folding back into its stack: quicker still, about 0.22 s.
 pub const FAN_FOLD: Spring = Spring::new(1500.0, 0.9);
-/// The card under the cursor while dragging: nearly attached, a touch of lag.
-pub const LEAD: Spring = Spring::new(1200.0, 0.95);
+/// The card under the cursor while dragging: nearly attached, a touch of lag and
+/// a little jelly (ζ 0.7).
+pub const LEAD: Spring = Spring::new(1200.0, 0.7);
+/// Followers of a dragged group tilt a little with their speed, at most this.
+pub const FOLLOWER_MAX_TILT: f64 = 2.0;
 /// A card settling into its list slot after a drop: the same jelly landing.
 pub const SLOT: Spring = Spring::new(560.0, 0.8);
 /// A new card flying from the new-task field into its column.
@@ -47,15 +50,16 @@ pub const ROTATION: Spring = Spring::new(500.0, 0.8);
 pub const TRAIL_DELAY: f64 = 0.055;
 /// Followers drawn under the lead of a dragged group; the rest hide until the drop.
 pub const TRAIL_SHOWN: usize = 8;
-/// Each drawn follower sits this much lower than the one ahead and this much
-/// smaller, so it peeks out under it as a sliver: a stack being carried.
-const TRAIL_STEP: f64 = 6.0;
+/// Each drawn follower is this much smaller than the one ahead (never below
+/// 0.6), centred under the lead: at rest none of it shows outside the lead; only
+/// the lag along the path shows it while the group moves.
 const TRAIL_SHRINK: f64 = 0.05;
 
-/// The `i`-th drawn follower (1-based): its offset down from the lead and scale.
+/// The `i`-th drawn follower (1-based): its offset down from the lead (none) and
+/// its scale.
 pub fn trail(i: usize) -> (f64, f64) {
     let i = i.min(TRAIL_SHOWN) as f64;
-    (TRAIL_STEP * i, 1.0 - TRAIL_SHRINK * i)
+    (0.0, (1.0 - TRAIL_SHRINK * i).max(0.6))
 }
 
 /// How long ago the lead was where the `i`-th follower (1-based) is now: a plain
@@ -102,8 +106,8 @@ pub fn tilt(vx: f64, max: f64) -> f64 {
 }
 
 /// Stretch per point/second of speed, and the most a card stretches.
-const STRETCH_PER_SPEED: f64 = 0.000_06;
-const MAX_STRETCH: f64 = 0.07;
+const STRETCH_PER_SPEED: f64 = 0.000_04;
+const MAX_STRETCH: f64 = 0.045;
 
 /// Squash and stretch for a velocity: the card gets longer along the way it moves
 /// and thinner across it, keeping roughly its area. Returns (x, y) scale factors.
@@ -324,8 +328,8 @@ mod tests {
         assert_eq!(path_at(&path, -1.0), Some((0.0, 0.0)));
         assert_eq!(path_at(&path, 9.0), Some((100.0, 30.0)));
         assert_eq!(path_at(&[], 0.0), None);
-        // Each sliver smaller and lower than the one ahead; no more than three.
-        assert!(trail(2).1 < trail(1).1 && trail(2).0 > trail(1).0);
+        // Each smaller than the one ahead, centred under it.
+        assert!(trail(2).1 < trail(1).1 && trail(2).0 == 0.0);
         assert_eq!(trail(TRAIL_SHOWN + 3), trail(TRAIL_SHOWN));
     }
 
@@ -336,6 +340,22 @@ mod tests {
         let z: Vec<f64> = (0..20).map(group_z).collect();
         assert!(z.windows(2).all(|w| w[0] > w[1]));
         assert!(z[19] > 900.0);
+    }
+
+    #[test]
+    fn a_resting_follower_lies_inside_the_lead() {
+        // At rest a follower is where the lead is (its path delay has caught up),
+        // scaled about the same centre: its frame is inside the lead's.
+        let (w, h) = (230.0, 101.0);
+        let lead = (0.0, 0.0, w, h);
+        for i in 1..=TRAIL_SHOWN {
+            let (dy, s) = trail(i);
+            let (fw, fh) = (w * s, h * s);
+            let (x0, y0) = ((w - fw) / 2.0, (h - fh) / 2.0 + dy);
+            assert!(x0 >= lead.0 && y0 >= lead.1, "follower {i}");
+            assert!(x0 + fw <= lead.2 && y0 + fh <= lead.3, "follower {i}");
+            assert!(s >= 0.6);
+        }
     }
 
     #[test]

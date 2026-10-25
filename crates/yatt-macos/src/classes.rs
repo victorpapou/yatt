@@ -703,6 +703,21 @@ impl FieldDelegate {
 }
 
 /// The window's current first responder is a text editor (a field being edited or a text view).
+/// Whether the first responder is inside a web view (the notes editor).
+pub fn editing_in_web_view(window: &NSWindow) -> bool {
+    let Some(r) = window.firstResponder() else {
+        return false;
+    };
+    let mut view = r.downcast::<NSView>().ok();
+    while let Some(v) = view {
+        if v.isKindOfClass(objc2_web_kit::WKWebView::class()) {
+            return true;
+        }
+        view = unsafe { v.superview() };
+    }
+    false
+}
+
 pub fn editing_text(window: &NSWindow) -> bool {
     let Some(r) = window.firstResponder() else {
         return false;

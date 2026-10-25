@@ -122,6 +122,19 @@ impl NotesEditor {
         }
     }
 
+    /// The editor's own undo or redo (ProseMirror's history), for ⌘Z and ⌘⇧Z,
+    /// which the app's menu takes before the page can see them.
+    pub fn undo(&self, redo: bool) {
+        eval(
+            &self.view,
+            if redo {
+                "window.yatt.redo()"
+            } else {
+                "window.yatt.undo()"
+            },
+        );
+    }
+
     pub fn focus(&self) {
         if self.ready.get() {
             eval(&self.view, "window.yatt.focus()");

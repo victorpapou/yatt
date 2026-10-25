@@ -32,7 +32,7 @@ pub const CARD_W: f64 = 230.0;
 pub const CARD_H: f64 = 101.0;
 pub const CARD_RADIUS: f64 = 20.0;
 /// Blur of what shows through a card, in points.
-pub const CARD_BLUR: f64 = 4.0;
+pub const CARD_BLUR: f64 = 2.5;
 /// Saturation boost of what shows through a card.
 pub const CARD_SATURATE: f64 = 1.2;
 
@@ -170,12 +170,13 @@ pub fn card_blur(mtm: MainThreadMarker) -> Retained<NSView> {
     Retained::into_super(view)
 }
 
-/// The cards' backdrop is the system's own Liquid Glass (`NSGlassEffectView`)
-/// where the system has it; `YATT_GLASS=0`, or an older system, falls back to the
-/// cheaper plain backdrop blur.
+/// The cards' backdrop: a plain backdrop blur of exactly [`CARD_BLUR`] points
+/// with the saturation boost, the lightest frost there is. `YATT_GLASS=1` puts
+/// the system's Liquid Glass (`NSGlassEffectView`) there instead, where the
+/// system has it; it has no blur radius to turn down, so it stays an option.
 pub fn real_glass() -> bool {
     thread_local! {
-        static ON: bool = std::env::var_os("YATT_GLASS").is_none_or(|v| v != "0")
+        static ON: bool = std::env::var_os("YATT_GLASS").is_some_and(|v| v != "0")
             && AnyClass::get(c"NSGlassEffectView").is_some();
     }
     ON.with(|on| *on)
@@ -215,7 +216,7 @@ fn backdrop_layer(radius: f64) -> Option<Retained<CALayer>> {
     let filter = |kind: &NSString| -> Option<Retained<NSObject>> {
         unsafe { msg_send![filter_class, filterWithType: kind] }
     };
-    // Like CSS `backdrop-filter: blur(4px) saturate(1.08)`.
+    // Like CSS `backdrop-filter: blur(<radius>px) saturate(1.2)`.
     let blur = filter(ns_string!("gaussianBlur"))?;
     let saturate = filter(ns_string!("colorSaturate"))?;
     let layer: Option<Retained<CALayer>> = unsafe { msg_send![backdrop, layer] };

@@ -17,20 +17,26 @@ content and colour. Nothing is cross-faded or swapped for a separate view.
 
 ## Header
 
-The timer row is a native `NSToolbar`, unified with the titlebar, in separate
-items, each its own bubble: [progress ring (a donut that fills clockwise from the
-top), digits, phase over the tasks] … [Старт] [Секундомер] [Пропустить] [Стоп]
-[list/stack and minimal-mode icons, sharing one bubble]. The toolbar puts
-neighbouring items into one shared bubble, so fixed spaces separate them. Minimal mode hides the toolbar
+The timer row is a native `NSToolbar`, unified with the titlebar: the progress
+ring and the digits as plain text (an item that tells AppKit it wants no glass,
+`glassBehavior` 0), then … [🍅 / ⏸ / ▶] [▶ stopwatch] [Пропустить] [Стоп] [view
+icons, sharing one bubble]. The toolbar puts neighbouring items into one shared
+bubble, so fixed spaces separate them. A changed digit does the system's numeric
+transition: the old glyph shrinks to 0.8, blurs to 4 pt and fades up, the new
+one grows in from below, sharpening, on a critically damped spring of about 0.3
+s; the other digits hold still. Minimal mode hides the toolbar
 and shows the same row, larger, as the whole window.
 
 ## Card material
 
-A flat tint of the card's colour at 55% (white cards 65%) over a 4 pt blur of
-what is behind it with a saturation boost (CSS `backdrop-filter: blur(4px)
-saturate(1.2)`), so text behind is only a soft patch. Continuous corners, no
-gradients. `YATT_GLASS=1` swaps the blur for the system's own Liquid Glass
-(`NSGlassEffectView`), to compare look and cost.
+A flat tint of the card's colour at 55% (the grey card 65%) over a 2.5 pt blur
+of what is behind it with a saturation boost (CSS `backdrop-filter: blur(2.5px)
+saturate(1.2)`). Continuous corners, no gradients. `YATT_GLASS=1` puts the
+system's Liquid Glass (`NSGlassEffectView`, clear style, a lighter tint and the
+same saturation boost under it) there instead. It has no blur radius to turn
+down: its private knobs (`_variant`, `_scrimState`, `_subduedState`,
+`_contentLensing`, `_adaptiveAppearance`; no "splay") are integers without
+documented meanings, settable for a try with `YATT_GLASS_VARIANT` and friends.
 
 The edge is exactly two layers (`style::Edges`), and nothing else: no stroke, no
 glow, no layer shadow.
@@ -39,6 +45,10 @@ glow, no layer shadow.
    outside the card.
 2. Inside, a white inner edge: 65% white at the edge, fading out over 2 pt,
    only inside the card, over the tint and under the text.
+
+Everything scales with the card (a sliver of a stack, a follower of a drag, a
+fan shrunk to fit its column): the corner radius of the tint, the backdrop and
+the ring, and the edge bitmaps, which are shown at a matching density.
 
 All sizes are points: the bitmaps are drawn at 2 px per point and shown at that
 scale, never multiplied by the screen's backing factor. (Core Graphics blurs
@@ -72,16 +82,23 @@ tabular digits, tracked +0.15, at 50%.
   about 1.5% overshoot, still within half a second) and squash and stretch a
   little with their speed. Panels and the new-task morph stay critically damped:
   their text has to read the whole way.
-- A dragged group: the lead follows the pointer; the first follower rides exactly
-  under it with no lag; the rest chase the lead with a lag that grows along an
-  ease-out curve over the index (big steps right behind the head, smaller ones
-  towards the end). The bigger the group, the less the whole tail lags. While
-  they ride under the lead they shed their own blur (the lead's covers them) and
-  are drawn from a cached bitmap. The selection ring shows while choosing, not
-  while dragging, and the column opens one card's room for the whole group: it
-  lands as a stack.
-- A fan is the reference rosette; past eight cards the rest wrap onto an inner
-  ring, and such a big fan keeps clear of the window's sides.
+- A dragged group: the lead follows the pointer on a slightly jelly spring
+  (ζ 0.7); up to eight followers replay the lead's own path, each 55 ms later
+  than the one before (the first with no delay), each 5% smaller (never below
+  0.6), centred under the lead so none shows outside it at rest; the rest hide
+  until the drop. All of them squash a little (at most 4.5%) with their speed;
+  the followers tilt up to 2°. The selection ring shows while choosing, not while
+  dragging. The column opens one card's room for the whole group, and the group
+  lands together, keeping the stacking order it flew in until the last card is
+  down.
+- A fan is the swatch layout of the reference frames
+  (docs/reference/tima/swatch): from the newest card, just right of the top and
+  turned about −70°, the cards wind clockwise round one centre about 40° apart
+  (fewer cards go less far round), each turned about 13° further, to the oldest
+  at the upper left at about +38°; newer cards on top. The radius grows with the
+  count (about 0.36 card widths for nine). The whole rosette shrinks uniformly to
+  fit its column and the board's height (angles unchanged, never below 0.6), and
+  draws up to 20 cards; it opens in about 0.3 s and folds in about 0.22 s.
 - A click on a fan folds it within 0.22 s (sooner than the system's double-click
   interval, which can be 0.8 s); a double-click on a fanned card opens it. A
   click on empty board folds it at once.
@@ -97,3 +114,22 @@ up where cards overlap, and no part of a card drawing outside its shape when it
 scales (the blur and the tint are sized by hand; only the text scales). Cards
 that ride the overlay to a new home land there together, once all of them are at
 rest, so a card that settles first never drops under the others.
+
+## Large boards
+
+Cost follows what is on screen, not the board's size: list rows more than half
+a screen outside their column's visible area are hidden and let go of their
+backdrop; rows out of sight jump to their slots instead of animating; a fan or
+a drag draws a bounded number of cards; card glyphs are cached bitmaps; a card
+at rest is not touched by the frame timer. With `YATT_PERF=1` and
+`YATT_DEMO_PERF=1000`, a 1000-card board scrolls and drags 20 cards at a frame
+interval p95 of about 16–18 ms on the plain blur.
+
+## Diagnostics
+
+- `YATT_PERF=1`: frame intervals of every drag, and the time from a stack click
+  to its first fan frame, on stderr.
+- `YATT_EVENTLOG=1`: every mouse and scroll event (window, hit view, first
+  responder) and the board's decisions, in `/tmp/yatt-events.log`.
+- `YATT_DEMO=<dir>`: the scripted demo with captures; `YATT_DEMO_PERF=<cards>`,
+  `YATT_DEMO_FAN=<cards>` and `YATT_DEMO_TOOLBAR=1` are short variants.

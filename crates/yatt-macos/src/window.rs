@@ -52,7 +52,7 @@ pub enum DemoMouse {
 }
 use crate::classes::{
     ActionTarget, EditCmd, FieldDelegate, Fill, FillView, FlippedView, PassView, PlainToolbarItem,
-    RootView, ToolbarDelegate, WindowDelegate, editing_text,
+    RootView, ToolbarDelegate, WindowDelegate, editing_in_web_view, editing_text,
 };
 use crate::modal::Modal;
 use crate::model::{Snapshot, TimerSnap, UiEvent, format_clock};
@@ -363,6 +363,11 @@ impl MainWindow {
     pub fn text_undo(&self, redo: bool) -> bool {
         if !editing_text(&self.ui.window) {
             return false;
+        }
+        // The notes editor keeps its own history.
+        if self.ui.modal.open_task().is_some() && editing_in_web_view(&self.ui.window) {
+            self.ui.modal.editor_undo(redo);
+            return true;
         }
         let action = if redo { sel!(redo:) } else { sel!(undo:) };
         unsafe {
