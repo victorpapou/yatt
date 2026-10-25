@@ -90,6 +90,9 @@ pub struct Modal {
 /// Springs the panel's frame towards a target rect: origin (with the rotation, so a
 /// card in a fan unturns as it grows and turns back as it lands) and size each
 /// ride a body.
+/// Told how far along a morph is.
+type ProgressFn = Box<dyn Fn(f64)>;
+
 struct Morph {
     panel: Retained<FillView>,
     origin: Cell<Body>,
@@ -99,7 +102,7 @@ struct Morph {
     done: RefCell<Option<Box<dyn Fn()>>>,
     /// Told each frame how far along the current morph is, 0 at its start and 1
     /// at its end, measured on the width.
-    on_progress: RefCell<Option<Box<dyn Fn(f64)>>>,
+    on_progress: RefCell<Option<ProgressFn>>,
     from_w: Cell<f64>,
     to_w: Cell<f64>,
 }
