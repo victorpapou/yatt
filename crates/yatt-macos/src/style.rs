@@ -50,6 +50,34 @@ const HUES: [(Rgb, Rgb); 6] = [
     ((0xE4, 0xE4, 0xE8), (0x2E, 0x2E, 0x34)),
 ];
 
+/// The same colours for the dark appearance: deep tints of each hue, the text a
+/// pale version of it, so a card reads as the same colour on a dark board.
+const HUES_DARK: [(Rgb, Rgb); 6] = [
+    ((0x2C, 0x45, 0x9C), (0xD6, 0xE0, 0xFF)),
+    ((0x9C, 0x33, 0x48), (0xFF, 0xD9, 0xE0)),
+    ((0x63, 0x24, 0x9A), (0xEC, 0xD9, 0xFF)),
+    ((0x7A, 0x80, 0x22), (0xF7, 0xFA, 0xCF)),
+    ((0x2F, 0x78, 0x4A), (0xD5, 0xF5, 0xDF)),
+    ((0x3A, 0x3A, 0x40), (0xEC, 0xEC, 0xF0)),
+];
+
+thread_local! {
+    static DARK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the window shows in the dark appearance (set as it changes).
+pub fn dark() -> bool {
+    DARK.with(|d| d.get())
+}
+
+pub fn set_dark(on: bool) {
+    DARK.with(|d| d.set(on));
+}
+
+fn palette() -> &'static [(Rgb, Rgb); 6] {
+    if dark() { &HUES_DARK } else { &HUES }
+}
+
 /// Filled SF Symbols in the spirit of the clip's event glyphs.
 const GLYPHS: [&str; 6] = [
     "paperplane.fill",
@@ -162,16 +190,21 @@ pub fn fill(hue: usize) -> Retained<NSColor> {
         (false, true) => 0.85,
         (false, false) => 0.55,
     };
-    rgb(HUES[hue % HUES.len()].0, alpha)
+    let alpha: f64 = if dark() {
+        (alpha + 0.2_f64).min(0.9)
+    } else {
+        alpha
+    };
+    rgb(palette()[hue % HUES.len()].0, alpha)
 }
 
 /// A card colour, solid: for the colour picker.
 pub fn swatch(hue: usize) -> Retained<NSColor> {
-    rgb(HUES[hue % HUES.len()].0, 1.0)
+    rgb(palette()[hue % HUES.len()].0, 1.0)
 }
 
 pub fn text(hue: usize) -> Retained<NSColor> {
-    rgb(HUES[hue % HUES.len()].1, 1.0)
+    rgb(palette()[hue % HUES.len()].1, 1.0)
 }
 
 /// Each column's colour, for its header chip: backlog, in progress, done.
@@ -186,7 +219,7 @@ pub fn column_color(i: usize) -> Retained<NSColor> {
 
 /// The card's text colour as CSS, for the notes editor.
 pub fn text_css(hue: usize) -> String {
-    let (r, g, b) = HUES[hue % HUES.len()].1;
+    let (r, g, b) = palette()[hue % HUES.len()].1;
     format!("#{r:02x}{g:02x}{b:02x}")
 }
 
@@ -451,6 +484,16 @@ impl Edges {
         })
     }
 
+    /// The inner edge for the current appearance.
+    pub fn restyle(&self) {
+        with_edge_images(|_, inner| {
+            if let (Some(layer), Some(image)) = (self.inner.layer(), inner) {
+                let image: &AnyObject = unsafe { &*(image as *const CGImage).cast::<AnyObject>() };
+                unsafe { layer.setContents(Some(image)) };
+            }
+        });
+    }
+
     /// Fits both layers to a `w` × `h` card at the origin of its view.
     pub fn layout(&self, w: f64, h: f64) {
         self.layout_scaled(w, h, 1.0);
@@ -543,10 +586,43 @@ fn lift_image() -> Option<CFRetained<CGImage>> {
     IMAGE.with(|i| i.clone())
 }
 
+/// The outline, and the inner edge for light and dark.
+type EdgeImages = (
+    Option<CFRetained<CGImage>>,
+    Option<CFRetained<CGImage>>,
+    Option<CFRetained<CGImage>>,
+);
+
+/// The white inner edge at `alpha`.
+fn inner_edge(alpha: f64) -> Option<CFRetained<CGImage>> {
+    edge_image(0.0, move |cx, card, _side| {
+        // Clip to the card and stroke its outline again and again, each
+        // time wider and faint: the strokes pile up at the edge and thin
+        // out inwards, a white band fading over INSET_DEPTH points.
+        // (A shadow would be blurred in device pixels, not points, and
+        // reads at only half its alpha right at the edge.)
+        CGContext::add_path(Some(cx), Some(card));
+        CGContext::clip(Some(cx));
+        let n = INSET_STEPS as f64;
+        let a = 1.0 - (1.0 - alpha).powf(1.0 / n);
+        let white = CGColor::new_srgb(1.0, 1.0, 1.0, a);
+        CGContext::set_stroke_color_with_color(Some(cx), Some(&white));
+        for k in 0..INSET_STEPS {
+            // The stroke straddles the outline: half of it lies inside.
+            // Half-widths of DEPTH·(1 − √(k/n)) stack up to a glow that
+            // fades as (1 − d/DEPTH)², soft all the way, no line.
+            let half = INSET_DEPTH * (1.0 - (k as f64 / n).sqrt());
+            CGContext::set_line_width(Some(cx), 2.0 * half);
+            CGContext::add_path(Some(cx), Some(card));
+            CGContext::stroke_path(Some(cx));
+        }
+    })
+}
+
 /// The outline and inner-edge bitmaps, drawn once per thread.
 fn with_edge_images<R>(f: impl FnOnce(Option<&CGImage>, Option<&CGImage>) -> R) -> R {
     thread_local! {
-        static IMAGES: (Option<CFRetained<CGImage>>, Option<CFRetained<CGImage>>) = (
+        static IMAGES: EdgeImages = (
             edge_image(EDGE_PAD, |cx, card, side| {
                 // Clip to outside the card, then let a filled card cast its
                 // shadow: only the part outside remains.
@@ -564,31 +640,16 @@ fn with_edge_images<R>(f: impl FnOnce(Option<&CGImage>, Option<&CGImage>) -> R) 
                 CGContext::add_path(Some(cx), Some(card));
                 CGContext::fill_path(Some(cx));
             }),
-            edge_image(0.0, |cx, card, _side| {
-                // Clip to the card and stroke its outline again and again, each
-                // time wider and faint: the strokes pile up at the edge and thin
-                // out inwards, a white band fading over INSET_DEPTH points.
-                // (A shadow would be blurred in device pixels, not points, and
-                // reads at only half its alpha right at the edge.)
-                CGContext::add_path(Some(cx), Some(card));
-                CGContext::clip(Some(cx));
-                let n = INSET_STEPS as f64;
-                let a = 1.0 - (1.0 - INSET_ALPHA).powf(1.0 / n);
-                let white = CGColor::new_srgb(1.0, 1.0, 1.0, a);
-                CGContext::set_stroke_color_with_color(Some(cx), Some(&white));
-                for k in 0..INSET_STEPS {
-                    // The stroke straddles the outline: half of it lies inside.
-                    // Half-widths of DEPTH·(1 − √(k/n)) stack up to a glow that
-                    // fades as (1 − d/DEPTH)², soft all the way, no line.
-                    let half = INSET_DEPTH * (1.0 - (k as f64 / n).sqrt());
-                    CGContext::set_line_width(Some(cx), 2.0 * half);
-                    CGContext::add_path(Some(cx), Some(card));
-                    CGContext::stroke_path(Some(cx));
-                }
-            }),
+            inner_edge(INSET_ALPHA),
+            inner_edge(INSET_ALPHA_DARK),
         );
     }
-    IMAGES.with(|(outer, inner)| f(outer.as_deref(), inner.as_deref()))
+    IMAGES.with(|(outer, light, dark)| {
+        f(
+            outer.as_deref(),
+            if self::dark() { dark } else { light }.as_deref(),
+        )
+    })
 }
 
 /// Where the selection ring sits: `RING_GAP` points outside the card (clear of
@@ -631,6 +692,8 @@ const OUTLINE_BLUR: f64 = 1.0;
 /// The inner edge: a soft white glow, 51% at the edge, fading out on an ease-out
 /// curve over 3.75 pt, drawn as stacked strokes.
 const INSET_ALPHA: f64 = 0.51;
+/// On a dark card the white edge is fainter, or it reads as a frame.
+const INSET_ALPHA_DARK: f64 = 0.2;
 const INSET_DEPTH: f64 = 3.75;
 const INSET_STEPS: usize = 24;
 
@@ -654,7 +717,7 @@ pub fn chip_blur(mtm: MainThreadMarker, radius: f64) -> Retained<NSView> {
 }
 
 /// Card glyph bitmaps by symbol name and hue.
-type GlyphCache = std::collections::HashMap<(String, usize), Option<Retained<CGImage>>>;
+type GlyphCache = std::collections::HashMap<(String, usize, bool), Option<Retained<CGImage>>>;
 
 /// Gives a card's backdrop (as made by [`card_blur`]) the corner radius of a card
 /// at `scale` of its size.
@@ -681,7 +744,7 @@ pub fn glyph_image(symbol: &str, hue: usize) -> Option<Retained<CGImage>> {
     CACHE.with(|cache| {
         cache
             .borrow_mut()
-            .entry((symbol.to_string(), hue))
+            .entry((symbol.to_string(), hue, dark()))
             .or_insert_with(|| {
                 let ink = text(hue).colorWithAlphaComponent(0.8);
                 let base = NSImage::imageWithSystemSymbolName_accessibilityDescription(

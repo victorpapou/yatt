@@ -655,6 +655,13 @@ impl Modal {
         );
     }
 
+    /// The window turned light or dark: the panel's material in the new colours
+    /// (the next `update` sets the ink).
+    pub fn restyle(&self) {
+        self.face.repaint();
+        self.sheet.repaint();
+    }
+
     /// Refreshes what the open task shows, without touching what is being typed.
     pub fn update(&self, snap: &CardSnap, status: Status) {
         if self.title.currentEditor().is_none() && *self.title_known.borrow() != snap.title {

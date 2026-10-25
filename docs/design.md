@@ -25,7 +25,7 @@ content and colour. Nothing is cross-faded or swapped for a separate view.
 
 The timer row is a native `NSToolbar`, unified with the titlebar: the progress
 ring and the digits as plain text (an item that tells AppKit it wants no glass,
-`glassBehavior` 0), then … [🍅 / ⏸ / ▶] [▶ stopwatch] [Пропустить] [Стоп] [view
+`glassBehavior` 0), then … [🍅 / ⏸ / ▶] [▶ stopwatch] [⏭ skip] [■ stop] (icons with tooltips) [view
 icons, sharing one bubble]. The toolbar puts neighbouring items into one shared
 bubble, so fixed spaces separate them. A changed digit does the system's numeric
 transition: the old glyph shrinks to 0.8, blurs to 4 pt and fades up, the new
@@ -179,3 +179,32 @@ the ends, the count 6 pt after the title and a little dimmer. The colours:
 the colours (85%), or its pale tint over other cards reads as a white halo round
 the card in front; the drop highlight over a
 column is a faint wash of the same colour.
+
+## Light and dark
+
+The app follows the system appearance live (`viewDidChangeEffectiveAppearance`
+on the root view): the board, chips, dividers and the panel's body use system
+colours; the cards switch palette. In dark, each hue is a deep tint of itself
+(denser, +0.2 alpha) with a pale text of the same hue, and the white inner edge
+is fainter (20% instead of 51%) so it does not read as a frame. Card glyphs are
+cached per appearance. Changed fills ease over (`motion::soften`).
+`YATT_APPEARANCE=dark|light` pins one for the demo's captures.
+
+## The task panel
+
+No Done or Delete buttons: the panel closes by Esc or a click outside, as
+before. A palette button at the header's right opens a native popover
+(transient, closes on a click outside): the card colours as swatches, the
+status (the three columns, a segmented control), a grid of icons (24 SF
+Symbols, six a row; more icons are more rows) and «Удалить задачу». Colour and
+icon are stored on the task (`color`, `icon`, migration 2), undoable, and every
+card follows them at once. The time entries are one quiet line (the latest and
+how many); a click opens a menu with «Скопировать всё» and every entry, each
+copied exactly as written («25.10 15:32 – 15:36 · 0:04:10»). A menu scrolls by
+itself, however many entries there are.
+
+## Stacks in the column
+
+A stack, and its fan, centre in the column between the header and the
+new-task capsule. A fan may stick out 36 pt past its column on each side before
+it shrinks; the pile's layers step down 3.5% a layer.

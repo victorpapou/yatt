@@ -22,7 +22,8 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, sel};
 use objc2_app_kit::NSStringDrawing;
 use objc2_app_kit::{
-    NSAnimatablePropertyContainer, NSAnimationContext, NSApplication, NSAutoresizingMaskOptions,
+    NSAnimatablePropertyContainer, NSAnimationContext, NSAppearanceCustomization,
+    NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSAutoresizingMaskOptions,
     NSBackingStoreType, NSBezelStyle, NSButton, NSColor, NSControlSize, NSEvent,
     NSEventModifierFlags, NSEventType, NSFloatingWindowLevel, NSFocusRingType, NSFont,
     NSFontWeightMedium, NSFontWeightRegular, NSImage, NSLineBreakMode, NSNormalWindowLevel,
@@ -640,6 +641,26 @@ impl Ui {
             let weak = weak.clone();
             move |event: &NSEvent| weak.upgrade().is_some_and(|ui| ui.key_down(event))
         }));
+        *this.root.ivars().on_appearance.borrow_mut() = Some(Box::new({
+            let weak = weak.clone();
+            move || {
+                if let Some(ui) = weak.upgrade() {
+                    ui.restyle();
+                }
+            }
+        }));
+        // `YATT_APPEARANCE=dark|light`: one appearance whatever the system's
+        // (for the demo's captures of both).
+        if let Ok(name) = std::env::var("YATT_APPEARANCE") {
+            let name = if name == "dark" {
+                unsafe { NSAppearanceNameDarkAqua }
+            } else {
+                unsafe { NSAppearanceNameAqua }
+            };
+            this.window
+                .setAppearance(objc2_app_kit::NSAppearance::appearanceNamed(name).as_deref());
+        }
+        this.restyle();
         *this.root.ivars().on_edit.borrow_mut() = Some(Box::new({
             let weak = weak.clone();
             move |cmd| {
@@ -1013,6 +1034,27 @@ impl Ui {
         self.cards.render(&snap.columns);
         self.sync_modal(snap);
         *self.last.borrow_mut() = Some(snap.clone());
+    }
+
+    /// Follows the system's light or dark appearance: the cards' colours, their
+    /// edges and the open panel.
+    fn restyle(self: &Rc<Self>) {
+        let appearance = self.root.effectiveAppearance();
+        let names = NSArray::from_slice(&[unsafe { NSAppearanceNameAqua }, unsafe {
+            NSAppearanceNameDarkAqua
+        }]);
+        let dark = appearance
+            .bestMatchFromAppearancesWithNames(&names)
+            .is_some_and(|n| &*n == unsafe { NSAppearanceNameDarkAqua });
+        if dark == style::dark() {
+            return;
+        }
+        style::set_dark(dark);
+        self.cards.restyle();
+        self.modal.restyle();
+        if let Some(snap) = self.last.borrow().clone() {
+            self.sync_modal(&snap);
+        }
     }
 
     /// Opens, closes or refreshes the modal to match `snap.expanded`.

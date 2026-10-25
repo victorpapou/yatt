@@ -396,6 +396,13 @@ impl Board {
 
     /// Brings cards in line with a snapshot: new ones fade in at their spot (or fly
     /// in from the new-task field), gone ones fade out, the rest spring to their places.
+    /// The window turned light or dark: every card in the new colours.
+    pub fn restyle(&self) {
+        for card in self.cards.borrow_mut().values_mut() {
+            card.restyle();
+        }
+    }
+
     pub fn render(self: &Rc<Self>, columns: &[ColumnSnap; 3]) {
         let dragging: HashSet<TaskId> = self.dragged().into_iter().collect();
         let mut seen = HashSet::new();
@@ -1994,6 +2001,19 @@ impl Card {
         if hue != self.hue || glyph != self.glyph {
             self.hue = hue;
             self.glyph = glyph;
+            self.restyle();
+        }
+        set_title(&self.title, &snap.title);
+        set_meta(&self.time, &time_text(snap));
+        self.tracking = snap.tracking;
+        self.refill();
+    }
+
+    /// Ink, glyph and edge in the current colours (a new colour, icon or
+    /// appearance).
+    fn restyle(&mut self) {
+        let (hue, glyph) = (self.hue, self.glyph);
+        {
             let ink = style::text(hue);
             self.title.setTextColor(Some(&ink));
             self.time
@@ -2007,10 +2027,8 @@ impl Card {
             self.content.replaceSubview_with(&self.icon, &icon);
             self.icon = icon;
         }
-        set_title(&self.title, &snap.title);
-        set_meta(&self.time, &time_text(snap));
-        self.tracking = snap.tracking;
-        self.refill();
+        self.edges.restyle();
+        self.face.repaint();
     }
 
     fn set_selected(&mut self, on: bool) {

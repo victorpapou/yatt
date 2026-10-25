@@ -218,6 +218,8 @@ pub struct RootIvars {
     pub on_cancel: RefCell<Option<Box<dyn Fn()>>>,
     /// Returns true when it handled the key.
     pub on_key: RefCell<Option<KeyHandler>>,
+    /// The window turned light or dark.
+    pub on_appearance: RefCell<Option<Box<dyn Fn()>>>,
 }
 
 define_class!(
@@ -231,6 +233,13 @@ define_class!(
         #[unsafe(method(isFlipped))]
         fn is_flipped(&self) -> bool {
             true
+        }
+
+        #[unsafe(method(viewDidChangeEffectiveAppearance))]
+        fn did_change_appearance(&self) {
+            if let Some(f) = self.ivars().on_appearance.borrow().as_ref() {
+                f();
+            }
         }
 
         #[unsafe(method(acceptsFirstResponder))]
@@ -307,6 +316,7 @@ impl RootView {
             on_edit: RefCell::new(None),
             on_cancel: RefCell::new(None),
             on_key: RefCell::new(None),
+            on_appearance: RefCell::new(None),
         });
         unsafe { msg_send![super(this), initWithFrame: frame] }
     }
@@ -420,6 +430,12 @@ impl FillView {
         if let Some(layer) = self.layer() {
             layer.setCornerRadius(crate::style::CARD_RADIUS * scale);
         }
+    }
+
+    /// Draws again in the current colours (the appearance changed), easing over.
+    pub fn repaint(&self) {
+        crate::motion::soften(self);
+        self.setNeedsDisplay(true);
     }
 
     pub fn set_fill(&self, fill: Fill) {
