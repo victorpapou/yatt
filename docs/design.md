@@ -66,8 +66,8 @@ corner curve, so they cost a picture per card, not a shadow pass per frame. A
 layer shadow would also show through the translucent glass, darkening the card
 from inside.
 
-Type on a card: the title 15 pt semibold, tracked −0.2, at 92% of the card's
-ink; the meta line (time, ● while running, ✎ with notes) 11 pt medium with
+Type: nothing heavier than medium; the hierarchy comes from size and opacity.
+On a card the title is 15 pt medium, tracked −0.2, at 92% of the card's ink; the meta line (time, ● while running, ✎ with notes) 11 pt medium with
 tabular digits, tracked +0.15, at 50%.
 
 ## Motion
@@ -134,3 +134,11 @@ interval p95 of about 16–18 ms on the plain blur.
   responder) and the board's decisions, in `/tmp/yatt-events.log`.
 - `YATT_DEMO=<dir>`: the scripted demo with captures; `YATT_DEMO_PERF=<cards>`,
   `YATT_DEMO_FAN=<cards>` and `YATT_DEMO_TOOLBAR=1` are short variants.
+
+## Columns
+
+Each column's title and count sit in a small glass chip: the cards' backdrop
+(4 pt blur, saturation 1.5) under a light tint of the column's colour, 10 pt at
+the ends, the count 6 pt after the title and a little dimmer. The colours:
+«Бэклог» grey, «В работе» yellow, «Готово» green; the drop highlight over a
+column is a faint wash of the same colour.

@@ -25,9 +25,9 @@ use objc2_app_kit::{
     NSAnimatablePropertyContainer, NSAnimationContext, NSApplication, NSAutoresizingMaskOptions,
     NSBackingStoreType, NSBezelStyle, NSButton, NSColor, NSControlSize, NSEvent,
     NSEventModifierFlags, NSEventType, NSFloatingWindowLevel, NSFocusRingType, NSFont,
-    NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold, NSImage, NSLineBreakMode,
-    NSNormalWindowLevel, NSPasteboard, NSPasteboardTypeString, NSTextAlignment, NSTextField,
-    NSToolbar, NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem,
+    NSFontWeightMedium, NSFontWeightRegular, NSImage, NSLineBreakMode, NSNormalWindowLevel,
+    NSPasteboard, NSPasteboardTypeString, NSTextAlignment, NSTextField, NSToolbar,
+    NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem,
     NSToolbarSpaceItemIdentifier, NSView, NSWindow, NSWindowOrderingMode, NSWindowStyleMask,
     NSWindowTitleVisibility, NSWindowToolbarStyle,
 };
@@ -148,6 +148,8 @@ struct Column {
     view: Retained<FlippedView>,
     tint: Retained<FillView>,
     chip: Retained<FillView>,
+    /// The card material under the chip: blur and saturation.
+    chip_glass: Retained<NSView>,
     title: Retained<NSTextField>,
     count: Retained<NSTextField>,
     highlighted: Cell<bool>,
@@ -274,6 +276,7 @@ impl MainWindow {
         board.addSubview(&cards.canvas);
         let heads = PassView::new(mtm);
         for c in &columns {
+            heads.addSubview(&c.chip_glass);
             heads.addSubview(&c.chip);
         }
         board.addSubview(&heads);
@@ -968,7 +971,7 @@ impl Header {
         let digits_box = FlippedView::new(mtm, NSRect::ZERO);
         view.addSubview(&digits_box);
 
-        let phase = label(mtm, "", 15.0, unsafe { NSFontWeightSemibold });
+        let phase = label(mtm, "", 15.0, unsafe { NSFontWeightMedium });
         let tasks = label(mtm, "", 12.0, unsafe { NSFontWeightRegular });
         tasks.setTextColor(Some(&NSColor::secondaryLabelColor()));
         tasks.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
@@ -1149,7 +1152,7 @@ impl Header {
             ));
             self.phase
                 .setFont(Some(&NSFont::systemFontOfSize_weight(15.0, unsafe {
-                    NSFontWeightSemibold
+                    NSFontWeightMedium
                 })));
             self.phase.setFrame(NSRect::new(
                 NSPoint::new(PAD + 2.0, top + dh + 2.0),
@@ -1195,7 +1198,7 @@ impl Header {
         let text_w = (width - text_x - 12.0).max(40.0);
         self.phase
             .setFont(Some(&NSFont::systemFontOfSize_weight(13.0, unsafe {
-                NSFontWeightSemibold
+                NSFontWeightMedium
             })));
         self.phase.setFrame(NSRect::new(
             NSPoint::new(text_x, mid - 17.0),
@@ -1520,18 +1523,21 @@ impl Column {
         tint.setAlphaValue(0.0);
         view.addSubview(&tint);
         let color = style::column_color(index);
-        // A flat pill tinted in the column's colour, with the text in that colour.
+        // A small glass pill: the cards' blur under a light tint of the column's
+        // colour, the text in that colour, the count a little dimmer.
         let chip = FillView::new(mtm, Fill::Chip(index));
-        let title = label(mtm, "", 11.5, unsafe { NSFontWeightSemibold });
+        let chip_glass = style::chip_blur(mtm, CHIP_H / 2.0);
+        let title = label(mtm, "", 11.5, unsafe { NSFontWeightMedium });
         title.setTextColor(Some(&color));
         let count = label(mtm, "0", 11.0, unsafe { NSFontWeightMedium });
-        count.setTextColor(Some(&color.colorWithAlphaComponent(0.7)));
+        count.setTextColor(Some(&color.colorWithAlphaComponent(0.6)));
         chip.addSubview(&title);
         chip.addSubview(&count);
         Self {
             view,
             tint,
             chip,
+            chip_glass,
             title,
             count,
             highlighted: Cell::new(false),
@@ -1544,11 +1550,16 @@ impl Column {
             self.title.fittingSize().width.ceil(),
             self.count.fittingSize().width.ceil(),
         );
-        let (pad, gap, text_h) = (9.0, 5.0, 14.0);
-        self.chip.setFrame(NSRect::new(
+        // The same room on every side of the text: the chip is CHIP_H tall and
+        // its text 14, so 3 above and below; at the ends a little more, for the
+        // round caps. The count sits a short gap after the title.
+        let (pad, gap, text_h) = (10.0, 6.0, 14.0);
+        let frame = NSRect::new(
             NSPoint::new(x, CHIP_TOP),
             NSSize::new(pad + tw + gap + cw + pad, CHIP_H),
-        ));
+        );
+        self.chip.setFrame(frame);
+        self.chip_glass.setFrame(frame);
         let y = ((CHIP_H - text_h) / 2.0).round();
         self.title
             .setFrame(NSRect::new(NSPoint::new(pad, y), NSSize::new(tw, text_h)));

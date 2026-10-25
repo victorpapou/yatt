@@ -20,8 +20,8 @@ use objc2::rc::{Retained, Weak as ObjcWeak};
 use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadMarker};
 use objc2_app_kit::{
-    NSAnimatablePropertyContainer, NSButton, NSColor, NSControlSize, NSFont, NSFontWeightRegular,
-    NSFontWeightSemibold, NSLineBreakMode, NSTextField, NSView,
+    NSAnimatablePropertyContainer, NSButton, NSColor, NSControlSize, NSFont, NSFontWeightMedium,
+    NSFontWeightRegular, NSLineBreakMode, NSTextField, NSView,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString, NSTimer, ns_string};
 use objc2_quartz_core::CACurrentMediaTime;
@@ -223,7 +223,7 @@ impl Modal {
 
         let title = NSTextField::textFieldWithString(ns_string!(""), mtm);
         title.setFont(Some(&NSFont::systemFontOfSize_weight(20.0, unsafe {
-            NSFontWeightSemibold
+            NSFontWeightMedium
         })));
         title.setBordered(false);
         title.setBezeled(false);

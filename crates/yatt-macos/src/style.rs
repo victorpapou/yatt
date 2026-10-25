@@ -108,7 +108,8 @@ pub fn text(hue: usize) -> Retained<NSColor> {
 pub fn column_color(i: usize) -> Retained<NSColor> {
     match i {
         0 => NSColor::systemGrayColor(),
-        1 => NSColor::systemBlueColor(),
+        // «В работе»: yellow, a shade deep enough for its text to read.
+        1 => NSColor::colorWithSRGBRed_green_blue_alpha(0.86, 0.62, 0.0, 1.0),
         _ => NSColor::systemGreenColor(),
     }
 }
@@ -507,6 +508,19 @@ const OUTLINE_BLUR: f64 = 1.0;
 const INSET_ALPHA: f64 = 0.65;
 const INSET_DEPTH: f64 = 2.0;
 const INSET_STEPS: usize = 12;
+
+/// The cards' backdrop (blur and saturation) for a small rounded surface, such
+/// as a column chip, `radius` round at the corners.
+pub fn chip_blur(mtm: MainThreadMarker, radius: f64) -> Retained<NSView> {
+    let view = FlippedView::new(mtm, NSRect::ZERO);
+    if let Some(layer) = backdrop_layer(CARD_BLUR) {
+        round(&layer, radius);
+        layer.setMasksToBounds(true);
+        view.setLayer(Some(&layer));
+    }
+    view.setWantsLayer(true);
+    Retained::into_super(view)
+}
 
 /// Card glyph bitmaps by symbol name and hue.
 type GlyphCache = std::collections::HashMap<(String, usize), Option<Retained<CGImage>>>;

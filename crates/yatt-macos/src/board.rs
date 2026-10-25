@@ -37,9 +37,9 @@ use objc2::runtime::{NSObjectProtocol, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker};
 use objc2_app_kit::{
     NSAnimatablePropertyContainer, NSAutoresizingMaskOptions, NSCursor, NSEvent, NSFont,
-    NSFontWeightBold, NSFontWeightMedium, NSFontWeightSemibold, NSLineBreakMode,
-    NSScrollElasticity, NSScrollView, NSScrollerStyle, NSTextAlignment, NSTextField, NSView,
-    NSViewBoundsDidChangeNotification, NSViewLayerContentsRedrawPolicy, NSWindowOrderingMode,
+    NSFontWeightMedium, NSLineBreakMode, NSScrollElasticity, NSScrollView, NSScrollerStyle,
+    NSTextAlignment, NSTextField, NSView, NSViewBoundsDidChangeNotification,
+    NSViewLayerContentsRedrawPolicy, NSWindowOrderingMode,
 };
 use objc2_core_image::CIFilter;
 use objc2_foundation::{
@@ -717,7 +717,7 @@ impl Board {
         content.setAutoresizingMask(fill_mask);
 
         // While leading a group drag: the target column, and how many cards come along.
-        let label = text_label(mtm, "", 22.0, unsafe { NSFontWeightSemibold });
+        let label = text_label(mtm, "", 22.0, unsafe { NSFontWeightMedium });
         label.setAlignment(NSTextAlignment::Center);
         label.setTextColor(Some(&style::text(hue)));
         label.setAlphaValue(0.0);
@@ -2155,7 +2155,7 @@ pub(crate) fn card_face(mtm: MainThreadMarker, id: TaskId, title: &str, hue: usi
         NSSize::new(16.0, 16.0),
     ));
 
-    let dots = text_label(mtm, "···", 13.0, unsafe { NSFontWeightBold });
+    let dots = text_label(mtm, "···", 13.0, unsafe { NSFontWeightMedium });
     dots.setAlignment(NSTextAlignment::Right);
     dots.setFrame(NSRect::new(
         NSPoint::new(CARD_W - 44.0, 10.0),
@@ -2178,7 +2178,7 @@ pub(crate) fn card_face(mtm: MainThreadMarker, id: TaskId, title: &str, hue: usi
 
     // Title: two steps up in size, semibold, tracked in a little as display text
     // is, nearly full ink.
-    let title_label = text_label(mtm, "", 15.0, unsafe { NSFontWeightSemibold });
+    let title_label = text_label(mtm, "", 15.0, unsafe { NSFontWeightMedium });
     title_label.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
     title_label.setFrame(NSRect::new(
         NSPoint::new(TEXT_X, TITLE_Y),
