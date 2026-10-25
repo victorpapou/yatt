@@ -30,10 +30,33 @@ impl Spring {
 pub const SETTLE: Spring = Spring::new(380.0, 1.0);
 /// Settling into a stack or a list slot.
 pub const PILE: Spring = SETTLE;
-/// A stack opening into its fan, and a fan re-laying itself out: soft, with one
-/// or two small overshoots (about 10%), within 5% of rest after about 0.55 s.
-/// Measured from the reference clips (docs/reference/tima/motion/analysis.md).
-pub const FAN_OPEN: Spring = Spring::new(90.0, 0.58);
+/// A fanned card is not tied to a slot by one spring; it is a loose body lying on
+/// the fan's spiral (docs/reference/tima/motion/analysis.md):
+///
+/// - across the spiral, toward or away from the fan's centre, a firm pull back
+///   onto it, like gravity onto a floor: about 10% past, within 5% of rest in
+///   about 0.5 s;
+/// - along the spiral, round the centre, a looser pull toward its place, so the
+///   cards slide round it (one slot per new card, as measured: 6–19% past, at
+///   rest after 0.5–0.65 s), turning as they go round ([`FAN_PHASE_TURN`]);
+/// - neighbours that slide closer than [`FAN_CONTACT`] of their gap shove each
+///   other apart ([`FAN_CONTACT_K`]);
+/// - a card dropped into an open fan rakes the others in toward the centre
+///   ([`FAN_KICK`], fading by slot from the drop, [`FAN_KICK_FALL`]); they
+///   spring back out onto the spiral.
+pub const FAN_RADIAL: Spring = Spring::new(110.0, 0.55);
+pub const FAN_ALONG: Spring = Spring::new(70.0, 0.6);
+/// How far a card turns per degree it goes round the fan (the fan's own turn
+/// over its sweep).
+pub const FAN_PHASE_TURN: f64 = FAN_TURN / FAN_SWEEP;
+/// Neighbours closer round the centre than this share of their gap at rest push
+/// apart, with this stiffness (per second², on the arc).
+pub const FAN_CONTACT: f64 = 0.5;
+pub const FAN_CONTACT_K: f64 = 400.0;
+/// The inward speed (pt/s) a card dropped into an open fan gives the card next
+/// to it, falling off by e every this many slots further away.
+pub const FAN_KICK: f64 = 120.0;
+pub const FAN_KICK_FALL: f64 = 3.0;
 /// A fan folding back into its stack: no overshoot, about 0.3 s (measured).
 pub const FAN_FOLD: Spring = Spring::new(250.0, 1.0);
 
@@ -235,6 +258,9 @@ pub struct Body {
     pub ty: f64,
     pub tr: f64,
     pub spring: Spring,
+    /// On a fan: the target's offset from the fan's centre. The body then moves
+    /// round that centre ([`FAN_RADIAL`], [`FAN_ALONG`]) instead of by `spring`.
+    pub orbit: Option<(f64, f64)>,
     /// Whether the angle hangs and swings (cards), or just eases to its target
     /// (the task panel).
     pub swings: bool,
@@ -253,14 +279,62 @@ impl Body {
             ty: y,
             tr: 0.0,
             spring: PILE,
+            orbit: None,
             swings: true,
         }
     }
 
+    /// A new place; any fan orbit is dropped ([`Body::round`] sets it again).
     pub fn target(&mut self, x: f64, y: f64, r: f64) {
         self.tx = x;
         self.ty = y;
         self.tr = r;
+        self.orbit = None;
+    }
+
+    /// Moves round a fan's centre: the target sits `(dx, dy)` from it.
+    pub fn round(&mut self, dx: f64, dy: f64) {
+        self.orbit = Some((dx, dy));
+    }
+
+    /// Where the body sits round its fan: (centre, unit vector out from the
+    /// centre, how far round it is from its target in radians, distance out).
+    fn polar(&self, (ox, oy): (f64, f64)) -> ((f64, f64), (f64, f64), f64, f64) {
+        let c = (self.tx - ox, self.ty - oy);
+        let (px, py) = (self.x - c.0, self.y - c.1);
+        let rho = px.hypot(py);
+        let at = oy.atan2(ox);
+        let (ang, u) = if rho < 1e-3 {
+            (at, (at.cos(), at.sin()))
+        } else {
+            (py.atan2(px), (px / rho, py / rho))
+        };
+        let off = (ang - at + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU)
+            - std::f64::consts::PI;
+        (c, u, off, rho)
+    }
+
+    /// How far round its fan the body is from its target, in radians (0 off a fan).
+    pub fn phase_off(&self) -> f64 {
+        self.orbit.map_or(0.0, |o| self.polar(o).2)
+    }
+
+    /// Adds `dv` (pt/s) along the fan, clockwise (y down).
+    pub fn push_along(&mut self, dv: f64) {
+        if let Some(o) = self.orbit {
+            let (_, u, _, _) = self.polar(o);
+            self.vx += -u.1 * dv;
+            self.vy += u.0 * dv;
+        }
+    }
+
+    /// Adds `dv` (pt/s) in toward the fan's centre.
+    pub fn push_in(&mut self, dv: f64) {
+        if let Some(o) = self.orbit {
+            let (_, u, _, _) = self.polar(o);
+            self.vx -= u.0 * dv;
+            self.vy -= u.1 * dv;
+        }
     }
 
     /// Advances by `dt` seconds, in small substeps so stiff springs stay stable.
@@ -270,8 +344,23 @@ impl Body {
         let (k, c) = (self.spring.k, self.spring.damping());
         let w0 = std::f64::consts::TAU / SWING_PERIOD;
         for _ in 0..steps {
-            self.vx += (-k * (self.x - self.tx) - c * self.vx) * h;
-            self.vy += (-k * (self.y - self.ty) - c * self.vy) * h;
+            let mut tr = self.tr;
+            if let Some(o) = self.orbit {
+                // Across the spiral, firm; along it, loose.
+                let (_, u, off, rho) = self.polar(o);
+                let t = (-u.1, u.0);
+                let v_out = self.vx * u.0 + self.vy * u.1;
+                let v_along = self.vx * t.0 + self.vy * t.1;
+                let reach = o.0.hypot(o.1);
+                let a_out = -FAN_RADIAL.k * (rho - reach) - FAN_RADIAL.damping() * v_out;
+                let a_along = -FAN_ALONG.k * reach * off - FAN_ALONG.damping() * v_along;
+                self.vx += (a_out * u.0 + a_along * t.0) * h;
+                self.vy += (a_out * u.1 + a_along * t.1) * h;
+                tr += FAN_PHASE_TURN * off.to_degrees();
+            } else {
+                self.vx += (-k * (self.x - self.tx) - c * self.vx) * h;
+                self.vy += (-k * (self.y - self.ty) - c * self.vy) * h;
+            }
             self.x += self.vx * h;
             self.y += self.vy * h;
             // The angle leans into the sideways motion (clockwise moving right,
@@ -282,12 +371,12 @@ impl Body {
                 0.0
             };
             let zeta = if self.swings { SWING_ZETA } else { 1.0 };
-            let swing = self.r - self.tr - lean;
+            let swing = self.r - tr - lean;
             self.vr += (-w0 * w0 * swing - 2.0 * zeta * w0 * self.vr) * h;
             self.r += self.vr * h;
             let limit = SWING_MAX;
-            if (self.r - self.tr).abs() > limit {
-                self.r = self.tr + limit.copysign(self.r - self.tr);
+            if (self.r - tr).abs() > limit {
+                self.r = tr + limit.copysign(self.r - tr);
                 self.vr = 0.0;
             }
         }
@@ -311,6 +400,31 @@ impl Body {
         self.vy = 0.0;
         self.vr = 0.0;
     }
+}
+
+/// Neighbours on one fan, in slot order (newest first), shove each other apart
+/// round the centre when they slide closer than [`FAN_CONTACT`] of their gap at
+/// rest.
+pub fn fan_contact(ring: &mut [&mut Body], dt: f64) {
+    for j in 1..ring.len() {
+        let (Some(a), Some(b)) = (ring[j - 1].orbit, ring[j].orbit) else {
+            continue;
+        };
+        let gap = (b.1.atan2(b.0) - a.1.atan2(a.0)).rem_euclid(std::f64::consts::TAU);
+        let now = gap + ring[j].phase_off() - ring[j - 1].phase_off();
+        let short = FAN_CONTACT * gap - now;
+        if short > 0.0 {
+            let dv = FAN_CONTACT_K * short * b.0.hypot(b.1) * dt / 2.0;
+            ring[j - 1].push_along(-dv);
+            ring[j].push_along(dv);
+        }
+    }
+}
+
+/// The inward speed a card `i` slots from where a card was dropped into its fan
+/// gets ([`FAN_KICK`]).
+pub fn fan_kick(i: usize) -> f64 {
+    FAN_KICK * (-(i.max(1) as f64 - 1.0) / FAN_KICK_FALL).exp()
 }
 
 /// The `i`-th card of a collapsed stack (0 = top): how far down its centre sits
@@ -494,14 +608,67 @@ mod tests {
     fn a_turned_target_is_reached() {
         // A fan card swings into its angle and stays there.
         let mut b = Body::at(0.0, 0.0);
-        b.spring = FAN_OPEN;
         b.target(30.0, -20.0, 40.0);
+        b.round(30.0, -20.0);
         let mut t = 0.0;
         while !b.at_rest() && t < 3.0 {
             b.step(1.0 / 120.0);
             t += 1.0 / 120.0;
         }
         assert!((b.r - 40.0).abs() < 0.05 && t < 2.0, "{} after {t}s", b.r);
+    }
+
+    #[test]
+    fn a_fanned_card_slides_round_its_spiral() {
+        // Moved one slot round (40°) a fan of radius 100: it goes round the
+        // centre, not along the chord (which dips to 94 from it), overshoots a
+        // little and settles.
+        let rad = 100.0_f64;
+        let (a0, a1) = (0.0_f64, 40.0_f64.to_radians());
+        let mut b = Body::at(rad * a0.cos(), rad * a0.sin());
+        b.target(rad * a1.cos(), rad * a1.sin(), 0.0);
+        b.round(rad * a1.cos(), rad * a1.sin());
+        let (mut low, mut past, mut t) = (f64::MAX, 0.0_f64, 0.0);
+        while !b.at_rest() && t < 3.0 {
+            b.step(1.0 / 120.0);
+            t += 1.0 / 120.0;
+            low = low.min(b.x.hypot(b.y));
+            past = past.max(b.phase_off());
+        }
+        assert!(low > 96.0, "dipped to {low}");
+        assert!(past > 0.01 && past < 0.25 * a1, "past by {past}");
+        assert!(t < 1.5, "{t}s");
+    }
+
+    #[test]
+    fn a_drop_rakes_the_fan_in_and_it_springs_back() {
+        let mut b = Body::at(100.0, 0.0);
+        b.target(100.0, 0.0, 0.0);
+        b.round(100.0, 0.0);
+        b.push_in(fan_kick(1));
+        let (mut low, mut high, mut t) = (f64::MAX, 0.0_f64, 0.0);
+        while !b.at_rest() && t < 3.0 {
+            b.step(1.0 / 120.0);
+            t += 1.0 / 120.0;
+            low = low.min(b.x);
+            high = high.max(b.x);
+        }
+        assert!(low < 96.0 && high > 100.0 && high < 102.0, "{low} {high}");
+        assert!(fan_kick(6) < fan_kick(1) / 4.0);
+    }
+
+    #[test]
+    fn fan_neighbours_shove_apart() {
+        // Two neighbours 40° apart at rest, pressed together: they push apart.
+        let mut a = Body::at(100.0, 0.0);
+        a.target(100.0, 0.0, 0.0);
+        a.round(100.0, 0.0);
+        let at = 40.0_f64.to_radians();
+        let mut b = Body::at(100.0, 0.0);
+        b.target(100.0 * at.cos(), 100.0 * at.sin(), 0.0);
+        b.round(100.0 * at.cos(), 100.0 * at.sin());
+        fan_contact(&mut [&mut a, &mut b], 1.0 / 60.0);
+        assert!(a.vy < 0.0 && b.vy > 0.0, "{} {}", a.vy, b.vy);
     }
 
     #[test]

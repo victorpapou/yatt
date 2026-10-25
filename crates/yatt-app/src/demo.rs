@@ -92,6 +92,19 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
                     window.demo_scroll_at(top, 10.0);
                 }
             });
+            // A new card dropped into the open fan: the old top card (now the
+            // second) and a deeper one, as the fan re-lays itself out.
+            sink(UiEvent::NewTask {
+                title: "Новая".into(),
+                status: Status::Backlog,
+            });
+            wait(300).await;
+            let deep = backlog[3];
+            frames("fan-insert", lead, &|_| {
+                if let Some((x, y, r, s)) = window.demo_card_state(deep) {
+                    eprintln!("deep,{x:.1},{y:.1},{r:.2},{s:.3}");
+                }
+            });
             frames("fan-fold", lead, &|f| {
                 if f == 0 {
                     window.demo_scroll_at(top, -10.0);

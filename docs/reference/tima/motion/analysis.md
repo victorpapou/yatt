@@ -41,3 +41,49 @@ Motion 733 ms (energy, incl. the stack's own settle); the orange card: angle
 Still unmeasured: per-card scale (the clip's cards do not visibly scale) and
 the active card's own path as it is dropped in (it is hidden behind the fan
 for most of the way).
+
+## The other clips
+
+- https://x.com/artntek/status/2092930171347046747 holds one video only:
+  `/video/1` is the same 9.8 s clip analysed above.
+- `event-stack-shifting.mp4` (15.3 s): the camera zooms and pans, so positions
+  are not comparable between frames; card angles are (zoom and pan keep
+  them). `track_angles.py` follows four cards by hue (`stack-shifting-curves.csv`).
+  - Fan opening (10.3 s), the yellow card: +19° → −36°, past by 3° (5%),
+    within 5% after about 0.2 s, at rest after about 0.47 s.
+  - Re-layout (11.4 s): every card turns at once, within one 67 ms sample of
+    each other; small give (under 10%), at rest in about 0.4 s.
+  - Back toward the stack (12.9 s): yellow +6° → −33°, no overshoot, 0.33 s.
+
+## The fan as a whole when a card joins (`spread.py`)
+
+The 90th-percentile distance of the cards' coloured pixels from their centroid,
+in the second clip: 46 → 50 → 49, 49 → 54, 54 → 52 → 56 → 55 (360 px frames).
+The fan grows with each new card and overshoots its new size a little; once
+(6.2 s) it first pulls in toward its centre by about 4% before spreading out:
+the "rake". The cards go round the centre by one slot each, on the spiral,
+not across it.
+
+## The model now (crates/yatt-macos/src/physics.rs, `Body` with an orbit)
+
+A fanned card is a loose body on the spiral, not a spring to a fixed point:
+firm across the spiral (k 110, ζ 0.55), loose along it (k 70, ζ 0.6), turning
+as it goes round; neighbours closer than half their gap shove apart; a card
+dropped into an open fan gives the others an inward kick (120 pt/s next to it,
+falling off by e every 3 slots), and they spring back out. Fold: critically
+damped, k 250. The cards start together (at most 5 ms apart).
+
+## Ours against the reference, after this change
+
+`YATT_DEMO_COMPARE=1`, 1/60 s steps (`compare/ours.csv`, `metrics.py`):
+
+| Action | Reference | Ours |
+|---|---|---|
+| card joins, a moved card | past 6–19%, 1–3 crossings, rest 0.35–0.65 s | past 4–14%, 1 crossing, rest 0.52–0.68 s |
+| card joins, a deep card | (same) | past 8–11%, 0–1 crossing, rest 0.58–0.68 s |
+| fan opens | past ≈5% in angle, rest ≈0.47 s | past 11–13% in position, rest 0.43–0.77 s |
+| fold | no overshoot, ≈0.3 s | no overshoot, 0.25–0.3 s |
+
+Still different: ours rests up to about 30 ms later than the slowest reference
+case; the opening overshoots more in position than the reference does in angle
+(the clip gives no positions there). The reference shows 1–3 crossings; ours 1.

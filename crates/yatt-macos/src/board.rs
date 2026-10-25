@@ -969,11 +969,19 @@ impl Board {
                         // A new place: the cards set off as a short wave.
                         let moved =
                             (card.body.tx - at.0).abs() > 2.0 || (card.body.ty - at.1).abs() > 2.0;
+                        let was_round = card.body.orbit.is_some();
                         self.send_home(card, Space::Canvas, at);
+                        if shown {
+                            card.body.round(dx, dy);
+                            // A card dropped into an open fan rakes the rest in.
+                            if was_round && moved {
+                                card.body.push_in(physics::fan_kick(i));
+                            }
+                        }
                         if moved && shown {
                             card.hold_until = CACurrentMediaTime() + physics::fan_wave(i, shown_n);
                         }
-                        card.body.spring = physics::FAN_OPEN;
+                        card.body.spring = physics::FAN_RADIAL;
                         card.set_muted(false);
                         // Newer cards on top, as on the stack.
                         card.z = if shown { (n - i) as f64 } else { 0.0 };
@@ -1298,6 +1306,25 @@ impl Board {
                 card.body.target(tx, ty + physics::trail(i).0, 0.0);
             }
         }
+
+        // Neighbours on a fan shove each other apart.
+        let mut fans: HashMap<(i64, i64), Vec<&mut Card>> = HashMap::new();
+        for card in cards.values_mut() {
+            if let Some((ox, oy)) = card.body.orbit {
+                let key = (
+                    (card.body.tx - ox).round() as i64,
+                    (card.body.ty - oy).round() as i64,
+                );
+                fans.entry(key).or_default().push(card);
+            }
+        }
+        for ring in fans.values_mut() {
+            ring.sort_by(|a, b| b.z.total_cmp(&a.z));
+            let mut bodies: Vec<&mut physics::Body> =
+                ring.iter_mut().map(|c| &mut c.body).collect();
+            physics::fan_contact(&mut bodies, dt);
+        }
+        drop(fans);
 
         let mut moving = dragging;
         let drag_ids = self.dragged();
