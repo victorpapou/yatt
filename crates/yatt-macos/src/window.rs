@@ -71,7 +71,7 @@ const RING_D_MINI: f64 = 34.0;
 const RING_LINE: f64 = 3.0;
 const PAD: f64 = 16.0;
 /// Column chips: height and distance from the top of the board.
-const CHIP_H: f64 = 20.0;
+const CHIP_H: f64 = 18.0;
 const CHIP_TOP: f64 = 12.0;
 /// The new-task capsule.
 const CAPSULE_H: f64 = 44.0;
@@ -495,6 +495,69 @@ impl MainWindow {
     /// Development aid: prints the notes editor's rendered HTML to stderr.
     pub fn debug_print_editor(&self) {
         self.ui.modal.debug_print_editor();
+    }
+
+    /// Development aid: renders the window's layers with Core Animation into a
+    /// PNG. Unlike [`Self::capture_png`] it shows layers with pictures of their
+    /// own (card glyphs, edges); backdrops still do not render.
+    pub fn capture_layers_png(&self, path: &str) -> bool {
+        use objc2::AnyThread;
+        use objc2_core_graphics::{
+            CGBitmapContextCreate, CGBitmapContextCreateImage, CGColorSpace, CGContext,
+            CGImageAlphaInfo, CGImageByteOrderInfo,
+        };
+        let Some(content) = self.ui.window.contentView() else {
+            return false;
+        };
+        let view = unsafe { content.superview() }.unwrap_or(content);
+        let Some(layer) = view.layer() else {
+            return false;
+        };
+        let scale = self.ui.window.backingScaleFactor();
+        let size = view.bounds().size;
+        let (w, h) = (
+            (size.width * scale) as usize,
+            (size.height * scale) as usize,
+        );
+        let Some(space) = CGColorSpace::new_device_rgb() else {
+            return false;
+        };
+        let info = CGImageAlphaInfo::PremultipliedFirst.0 | CGImageByteOrderInfo::Order32Little.0;
+        let Some(cx) = (unsafe {
+            CGBitmapContextCreate(std::ptr::null_mut(), w, h, 8, 0, Some(&space), info)
+        }) else {
+            return false;
+        };
+        CGContext::set_fill_color_with_color(
+            Some(&cx),
+            Some(&objc2_core_graphics::CGColor::new_srgb(1.0, 1.0, 1.0, 1.0)),
+        );
+        CGContext::fill_rect(
+            Some(&cx),
+            objc2_core_foundation::CGRect::new(
+                objc2_core_foundation::CGPoint::ZERO,
+                objc2_core_foundation::CGSize::new(w as f64, h as f64),
+            ),
+        );
+        CGContext::scale_ctm(Some(&cx), scale, scale);
+        layer.renderInContext(&cx);
+        let Some(image) = CGBitmapContextCreateImage(Some(&cx)) else {
+            return false;
+        };
+        let rep = objc2_app_kit::NSBitmapImageRep::initWithCGImage(
+            objc2_app_kit::NSBitmapImageRep::alloc(),
+            &image,
+        );
+        let props = objc2_foundation::NSDictionary::new();
+        let Some(data) = (unsafe {
+            rep.representationUsingType_properties(
+                objc2_app_kit::NSBitmapImageFileType::PNG,
+                &props,
+            )
+        }) else {
+            return false;
+        };
+        data.writeToFile_atomically(&NSString::from_str(path), true)
     }
 
     /// Draws the window's content into a PNG, without screen-recording permission.
@@ -1550,10 +1613,10 @@ impl Column {
             self.title.fittingSize().width.ceil(),
             self.count.fittingSize().width.ceil(),
         );
-        // The same room on every side of the text: the chip is CHIP_H tall and
-        // its text 14, so 3 above and below; at the ends a little more, for the
-        // round caps. The count sits a short gap after the title.
-        let (pad, gap, text_h) = (10.0, 6.0, 14.0);
+        // Snug: the chip is CHIP_H tall around 14 pt of text, 2 pt above and
+        // below; at the ends a little more, for the round caps. The count sits a
+        // short gap after the title.
+        let (pad, gap, text_h) = (8.0, 4.0, 14.0);
         let frame = NSRect::new(
             NSPoint::new(x, CHIP_TOP),
             NSSize::new(pad + tw + gap + cw + pad, CHIP_H),

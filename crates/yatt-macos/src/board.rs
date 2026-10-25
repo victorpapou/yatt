@@ -752,7 +752,9 @@ impl Board {
         for v in [&*face as &NSView, &content, &label, &count] {
             v.setLayerContentsRedrawPolicy(policy);
         }
-        for v in content.subviews().iter() {
+        // The text only: the glyph is a layer of its own, whose picture AppKit
+        // must not take over (it would drop it).
+        for v in [&*time as &NSView, &title, &dots] {
             v.setLayerContentsRedrawPolicy(policy);
         }
 
@@ -945,7 +947,13 @@ impl Board {
                             card.body.settle();
                         }
                         card.set_muted(false);
-                        card.body.spring = physics::SLOT;
+                        // Arriving cards land with a little jelly; the ones already
+                        // there just glide over to make room.
+                        card.body.spring = if card.space == Space::Doc(ci) {
+                            physics::SHIFT
+                        } else {
+                            physics::SLOT
+                        };
                         card.z = 1.0;
                         card.target_scale = 1.0;
                         card.set_look(Look::Solid, true);
@@ -2089,11 +2097,17 @@ fn follow_path(
     let keep = now - physics::trail_delay(ids.len(), ids.len()) - 0.1;
     let old = path.partition_point(|p| p.0 < keep).saturating_sub(1);
     path.drain(..old);
+    // The lead's speed over the last few frames: a quick swing shortens the tail.
+    let speed = match (path.last(), path.iter().rev().find(|p| p.0 < now - 0.05)) {
+        (Some(a), Some(b)) => (a.1 - b.1).hypot(a.2 - b.2) / (a.0 - b.0).max(1e-3),
+        _ => 0.0,
+    };
     for (i, id) in ids.iter().enumerate().skip(from.max(1)) {
         let Some(card) = cards.get_mut(id) else {
             continue;
         };
-        let Some((x, y)) = physics::path_at(path, now - physics::trail_delay(i, ids.len())) else {
+        let delay = physics::trail_delay_at(i, ids.len(), speed);
+        let Some((x, y)) = physics::path_at(path, now - delay) else {
             continue;
         };
         let y = y + physics::trail(i).0;

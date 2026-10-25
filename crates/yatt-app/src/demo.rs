@@ -76,8 +76,18 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
         }
         if std::env::var_os("YATT_DEMO_TOOLBAR").is_some() {
             // Just the window as it opens, for a look at the toolbar.
+            for i in 0..4 {
+                sink(UiEvent::NewTask {
+                    title: format!("Задача {}", i + 1),
+                    status: Status::Backlog,
+                });
+            }
             wait(900).await;
             shot("toolbar");
+            eprintln!(
+                "demo: layer capture {}",
+                window.capture_layers_png(&format!("{dir}/toolbar-layers.png"))
+            );
             eprintln!("demo: finished");
             return;
         }

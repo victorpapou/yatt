@@ -8,9 +8,12 @@ content and colour. Nothing is cross-faded or swapped for a separate view.
 - New task: the new-task capsule, typed text and all, grows into the card on its
   way to the column; the text becomes the card's title.
 - Card to modal: the panel starts as the card itself (same frame, angle, colour
-  and text), grows on one spring, and only once it has settled does the card's
-  text hand over to the panel's controls. Closing runs it backwards and hands back
-  to the card when the panel lies exactly on it.
+  and text) and grows on one quick spring (about 0.25 s). The morph itself drives
+  the hand-over: the card's text fades out over the first half of the way, the
+  panel's controls and its white body (only the header keeps the card's colour)
+  fade in over the second. Closing runs the same curve backwards, the open layout
+  kept as the panel shrinks, and hands back to the card when the panel lies
+  exactly on it.
 - Stack to fan: the stacked cards themselves spread out and fold back.
 - One card to a group drag: the pressed card leads and the selected cards follow
   right under it, as they are.
@@ -41,7 +44,7 @@ documented meanings, settable for a try with `YATT_GLASS_VARIANT` and friends.
 The edge is exactly two layers (`style::Edges`), and nothing else: no stroke, no
 glow, no layer shadow.
 
-1. Outside, the outline: a black shadow at 30%, 1 pt blur, no offset, only
+1. Outside, the outline: a black shadow at 50%, 1 pt blur, no offset, only
    outside the card.
 2. Inside, a soft white glow along the edge: 42% white at the edge, fading out
    on an ease-out curve over 3.75 pt, only inside the card, over the tint and
@@ -82,6 +85,8 @@ tabular digits, tracked +0.15, at 50%.
   Where a spring makes no sense (a colour, a ring, a label's text) the change eases
   over 150 ms through `motion::soften`, because AppKit turns off implicit
   animations on a view's layer and a plain setter would jump.
+- Cards already in a list that move over to make room, or close a gap, glide on
+  a critically damped spring (ease in and out, no overshoot).
 - Cards are firm jelly, the one exception to "no bounce": they move on springs
   of a small engine (`physics.rs`), land with a short underdamped settle (ζ 0.8,
   about 1.5% overshoot, still within half a second) and squash and stretch a

@@ -34,13 +34,16 @@ pub const FAN_FOLD: Spring = Spring::new(1500.0, 0.9);
 pub const LEAD: Spring = Spring::new(1200.0, 0.7);
 /// Followers of a dragged group tilt a little with their speed, at most this.
 pub const FOLLOWER_MAX_TILT: f64 = 2.0;
+/// A card already in a list moving over to make room or close a gap: smooth,
+/// critically damped, no overshoot (ease in and out).
+pub const SHIFT: Spring = Spring::new(300.0, 1.0);
 /// A card settling into its list slot after a drop: the same jelly landing.
 pub const SLOT: Spring = Spring::new(560.0, 0.8);
 /// A new card flying from the new-task field into its column.
 pub const FLY: Spring = Spring::new(220.0, 0.8);
 /// The task modal growing out of its card and shrinking back: no wobble, the
 /// panel's text has to stay readable all the way.
-pub const MORPH: Spring = Spring::new(260.0, 1.0);
+pub const MORPH: Spring = Spring::new(520.0, 1.0);
 /// Rotation follows faster than position, so tilt reads as a reaction to motion.
 pub const ROTATION: Spring = Spring::new(500.0, 0.8);
 
@@ -79,6 +82,15 @@ pub fn trail(i: usize) -> (f64, f64) {
 /// springs between the cards.
 pub fn trail_delay(i: usize, n: usize) -> f64 {
     i as f64 * trail_step(n)
+}
+
+/// The lead's speed (pt/s) at which the tail's delays are halved.
+const TRAIL_HALF_SPEED: f64 = 900.0;
+
+/// The same, shortened as the lead moves faster: the tail hurries after a quick
+/// swing instead of strewing out behind it, and trails fully when slow.
+pub fn trail_delay_at(i: usize, n: usize, speed: f64) -> f64 {
+    trail_delay(i, n) / (1.0 + speed.max(0.0) / TRAIL_HALF_SPEED)
 }
 
 /// Where the lead was at time `t`, from its recorded path `(time, x, y)` (oldest
@@ -356,6 +368,15 @@ mod tests {
         let z: Vec<f64> = (0..20).map(group_z).collect();
         assert!(z.windows(2).all(|w| w[0] > w[1]));
         assert!(z[19] > 900.0);
+    }
+
+    #[test]
+    fn the_tail_hurries_when_the_lead_is_fast() {
+        let slow = trail_delay_at(2, 4, 0.0);
+        let fast = trail_delay_at(2, 4, 2000.0);
+        assert!((slow - trail_delay(2, 4)).abs() < 1e-12);
+        assert!(fast < slow / 2.0 && fast > 0.0);
+        assert!((trail_delay_at(2, 4, TRAIL_HALF_SPEED) - slow / 2.0).abs() < 1e-12);
     }
 
     #[test]

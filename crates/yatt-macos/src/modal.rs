@@ -38,11 +38,30 @@ use crate::window::{Sink, animate};
 
 const ENTRY_LINES: usize = 4;
 
+/// How open the panel looks at `openness` (0 = the card, 1 = the panel): the
+/// card's text gives way over the first half, the controls and the white body
+/// come in over the second; smoothly, so nothing pops.
+fn blend(content: &NSView, card_box: &NSView, sheet: &NSView, openness: f64) {
+    let ease = |a: f64, b: f64| {
+        let t = ((openness - a) / (b - a)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    };
+    card_box.setAlphaValue(1.0 - ease(0.15, 0.55));
+    content.setAlphaValue(ease(0.45, 0.95));
+    sheet.setAlphaValue(ease(0.45, 0.9));
+}
+
+/// The panel's header: title and stats, in the card's colour.
+const HEADER_H: f64 = 80.0;
+
 pub struct Modal {
     pub dim: Retained<FillView>,
     pub panel: Retained<FillView>,
     /// The card's material, so the panel is the card grown big: blur and tint.
     face: Retained<FillView>,
+    /// White over the card's tint below the header, once the panel stands open:
+    /// only the header keeps the card's colour.
+    sheet: Retained<FillView>,
     /// The card's own text, shown while the panel is (becoming) the card.
     card_box: Retained<FlippedView>,
     card: RefCell<Option<Face>>,
@@ -78,6 +97,11 @@ struct Morph {
     timer: RefCell<Option<Retained<NSTimer>>>,
     last_tick: Cell<f64>,
     done: RefCell<Option<Box<dyn Fn()>>>,
+    /// Told each frame how far along the current morph is, 0 at its start and 1
+    /// at its end, measured on the width.
+    on_progress: RefCell<Option<Box<dyn Fn(f64)>>>,
+    from_w: Cell<f64>,
+    to_w: Cell<f64>,
 }
 
 impl Morph {
@@ -105,6 +129,8 @@ impl Morph {
     /// Springs to `r`, then runs `done` (dropping any earlier one unrun).
     fn to(self: &Rc<Self>, r: NSRect, deg: f64, done: Option<Box<dyn Fn()>>) {
         let (mut o, mut s) = (self.origin.get(), self.size.get());
+        self.from_w.set(s.x);
+        self.to_w.set(r.size.width);
         o.target(r.origin.x, r.origin.y, deg);
         s.target(r.size.width, r.size.height, 0.0);
         self.origin.set(o);
@@ -112,6 +138,9 @@ impl Morph {
         *self.done.borrow_mut() = done;
         if motion::reduce_motion() {
             self.jump(r, deg);
+            if let Some(f) = self.on_progress.borrow().as_ref() {
+                f(1.0);
+            }
             self.finish();
             return;
         }
@@ -145,6 +174,15 @@ impl Morph {
         self.origin.set(o);
         self.size.set(s);
         self.place(o, s);
+        if let Some(f) = self.on_progress.borrow().as_ref() {
+            let span = self.to_w.get() - self.from_w.get();
+            let p = if span.abs() < 1.0 {
+                1.0
+            } else {
+                ((s.x - self.from_w.get()) / span).clamp(0.0, 1.0)
+            };
+            f(if rest { 1.0 } else { p });
+        }
         if rest {
             if let Some(t) = self.timer.borrow_mut().take() {
                 t.invalidate();
@@ -210,6 +248,9 @@ impl Modal {
             v.setAutoresizingMask(fill_mask);
             panel.addSubview(v);
         }
+        let sheet = FillView::new(mtm, Fill::Sheet);
+        sheet.setAlphaValue(0.0);
+        panel.addSubview(&sheet);
         panel.addSubview(&edges.inner);
         content.setAutoresizingMask(fill_mask);
         panel.addSubview(&content);
@@ -338,12 +379,16 @@ impl Modal {
             timer: RefCell::new(None),
             last_tick: Cell::new(0.0),
             done: RefCell::new(None),
+            on_progress: RefCell::new(None),
+            from_w: Cell::new(0.0),
+            to_w: Cell::new(0.0),
         });
 
         Self {
             dim,
             panel,
             face,
+            sheet,
             card_box,
             card: RefCell::new(None),
             morph,
@@ -406,6 +451,10 @@ impl Modal {
         self.stats
             .setFrame(NSRect::new(NSPoint::new(pad, 52.0), NSSize::new(iw, 16.0)));
         self.rules[0].setFrame(NSRect::new(NSPoint::new(0.0, 80.0), NSSize::new(w, 1.0)));
+        self.sheet.setFrame(NSRect::new(
+            NSPoint::new(0.0, HEADER_H),
+            NSSize::new(w, (h - HEADER_H).max(0.0)),
+        ));
         let bottom_h = 16.0 * ENTRY_LINES as f64 + 64.0;
         self.editor.view.setFrame(NSRect::new(
             NSPoint::new(pad - 4.0, 92.0),
@@ -468,18 +517,19 @@ impl Modal {
             dim.animator().setAlphaValue(1.0)
         });
         // Grown and still: the card's text hands over to the panel's controls.
-        let (content, card_box) = (self.content.clone(), self.card_box.clone());
-        self.morph.to(
-            target,
-            0.0,
-            Some(Box::new(move || {
-                let (content, card_box) = (content.clone(), card_box.clone());
-                animate(true, motion::SOFTEN_SECS, move || {
-                    content.animator().setAlphaValue(1.0);
-                    card_box.animator().setAlphaValue(0.0);
-                });
-            })),
+        // One element all the way: as the panel grows, the card's text fades out
+        // over the first half and the panel's controls and white body fade in
+        // over the second, driven by the morph itself.
+        self.sheet.setAlphaValue(0.0);
+        let (content, card_box, sheet) = (
+            self.content.clone(),
+            self.card_box.clone(),
+            self.sheet.clone(),
         );
+        *self.morph.on_progress.borrow_mut() = Some(Box::new(move |p| {
+            blend(&content, &card_box, &sheet, p);
+        }));
+        self.morph.to(target, 0.0, None);
         if let Some(window) = self.panel.window() {
             window.makeFirstResponder(Some(&self.editor.view));
         }
@@ -508,17 +558,18 @@ impl Modal {
         self.open.set(None);
         // The controls hand back to the card's text first, then the panel shrinks
         // with that text on it all the way.
-        let (panel, content, dim, card_box) = (
+        let (panel, content, dim, card_box, sheet) = (
             self.panel.clone(),
             self.content.clone(),
             self.dim.clone(),
             self.card_box.clone(),
+            self.sheet.clone(),
         );
         let gone = to.is_none();
-        animate(true, motion::SOFTEN_SECS, move || {
-            content.animator().setAlphaValue(0.0);
-            card_box.animator().setAlphaValue(1.0);
-        });
+        // The same blend backwards, the open layout kept as the panel shrinks.
+        *self.morph.on_progress.borrow_mut() = Some(Box::new(move |p| {
+            blend(&content, &card_box, &sheet, 1.0 - p);
+        }));
         animate(true, motion::MODAL_CLOSE_SECS, move || {
             if gone {
                 panel.animator().setAlphaValue(0.0);

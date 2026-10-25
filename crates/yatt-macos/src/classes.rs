@@ -332,6 +332,9 @@ pub enum Fill {
     Dim,
     /// The modal panel itself.
     Panel,
+    /// The task panel's white body under its tinted header: rounded at the
+    /// bottom only.
+    Sheet,
 }
 
 pub struct FillIvars {
@@ -371,6 +374,7 @@ define_class!(
                 Fill::Dim => NSColor::blackColor().colorWithAlphaComponent(0.28),
                 // The panel's look comes from the card material inside it.
                 Fill::Panel => NSColor::clearColor(),
+                Fill::Sheet => NSColor::textBackgroundColor(),
             };
             layer.setBackgroundColor(Some(&color.CGColor()));
             match fill {
@@ -384,7 +388,15 @@ define_class!(
                     // running timer shows as ● in the text.
                     layer.setBorderWidth(0.0);
                 }
-                Fill::Chip(_) => crate::style::round(&layer, 10.0),
+                Fill::Chip(_) => crate::style::round(&layer, 9.0),
+                Fill::Sheet => {
+                    crate::style::round(&layer, crate::style::CARD_RADIUS);
+                    // The flipped view's layer counts y down: the bottom corners.
+                    layer.setMaskedCorners(
+                        objc2_quartz_core::CACornerMask::LayerMinXMaxYCorner
+                            | objc2_quartz_core::CACornerMask::LayerMaxXMaxYCorner,
+                    );
+                }
                 _ => {}
             }
         }

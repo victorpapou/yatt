@@ -555,8 +555,8 @@ fn edge_layer(image: Option<&CGImage>, inset: f64) -> Retained<CALayer> {
     layer
 }
 
-/// The outline: black at 30%, blurred 1 pt.
-const OUTLINE_ALPHA: f64 = 0.3;
+/// The outline: black at 50%, blurred 1 pt.
+const OUTLINE_ALPHA: f64 = 0.5;
 const OUTLINE_BLUR: f64 = 1.0;
 /// The inner edge: a soft white glow, 42% at the edge, fading out on an ease-out
 /// curve over 3.75 pt, drawn as stacked strokes.
@@ -602,12 +602,13 @@ pub fn set_blur_corners(view: &NSView, scale: f64) {
 
 /// A card's glyph (an SF Symbol) in the card's ink, drawn once per symbol and
 /// hue and shown as a layer's contents.
-pub fn glyph_view(mtm: MainThreadMarker, symbol: &str, hue: usize) -> Retained<NSView> {
+/// A card's glyph as a bitmap in the card's ink, cached per symbol and hue.
+pub fn glyph_image(symbol: &str, hue: usize) -> Option<Retained<CGImage>> {
     thread_local! {
         static CACHE: std::cell::RefCell<GlyphCache> =
             Default::default();
     }
-    let image = CACHE.with(|cache| {
+    CACHE.with(|cache| {
         cache
             .borrow_mut()
             .entry((symbol.to_string(), hue))
@@ -631,7 +632,11 @@ pub fn glyph_view(mtm: MainThreadMarker, symbol: &str, hue: usize) -> Retained<N
                 unsafe { tinted.CGImageForProposedRect_context_hints(&mut rect, None, None) }
             })
             .clone()
-    });
+    })
+}
+
+pub fn glyph_view(mtm: MainThreadMarker, symbol: &str, hue: usize) -> Retained<NSView> {
+    let image = glyph_image(symbol, hue);
     let layer = CALayer::new();
     if let Some(image) = image.as_deref() {
         let image: &AnyObject = unsafe { &*(image as *const CGImage).cast::<AnyObject>() };
@@ -812,6 +817,32 @@ mod tests {
             "4.5 pt {} vs centre {centre}",
             at(4.5)
         );
+    }
+
+    #[test]
+    fn every_card_glyph_draws() {
+        for symbol in GLYPHS {
+            let image = glyph_image(symbol, 0).unwrap_or_else(|| panic!("{symbol}: no image"));
+            let (w, h) = (CGImage::width(Some(&image)), CGImage::height(Some(&image)));
+            assert!(w >= 16 && h >= 16, "{symbol}: {w}×{h}");
+            // Some ink in it: draw it and look for opaque pixels.
+            let mut px = vec![0u8; w * h * 4];
+            let space = CGColorSpace::new_device_rgb().unwrap();
+            let info =
+                CGImageAlphaInfo::PremultipliedFirst.0 | CGImageByteOrderInfo::Order32Little.0;
+            let cx = unsafe {
+                CGBitmapContextCreate(px.as_mut_ptr().cast(), w, h, 8, w * 4, Some(&space), info)
+            }
+            .unwrap();
+            CGContext::draw_image(
+                Some(&cx),
+                CGRect::new(CGPoint::ZERO, CGSize::new(w as f64, h as f64)),
+                Some(&image),
+            );
+            drop(cx);
+            let opaque = px.chunks(4).filter(|p| p[3] > 128).count();
+            assert!(opaque > w * h / 20, "{symbol}: only {opaque} opaque pixels");
+        }
     }
 
     #[test]
