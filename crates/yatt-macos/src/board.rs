@@ -209,12 +209,19 @@ struct Drag {
     target: Option<usize>,
     /// Where the cards go in the target column, counted without them.
     index: usize,
-    /// The lead's recent path, `(time, x, y)`, oldest first, for the followers.
+    /// What the followers replay.
+    tail: Tail,
+}
+
+/// The state behind a dragged group's tail.
+#[derive(Default)]
+struct Tail {
+    /// The lead's recent path, `(time, x, y)`, oldest first.
     path: Vec<(f64, f64, f64)>,
     /// The lead's smoothed speed, which shortens the tail.
-    tail_speed: f64,
+    speed: f64,
     /// Each follower's current delay, eased towards what the speed asks for.
-    tail_delays: Vec<f64>,
+    delays: Vec<f64>,
 }
 
 /// A dropped group on its way into its column, all of it at once: it keeps the
@@ -1326,18 +1333,8 @@ impl Board {
             && d.group
             && let Some((x, y)) = lead_at(&d.ids, &cards)
         {
-            d.path.push((now, x, y));
-            follow_path(
-                &mut cards,
-                &d.ids,
-                1,
-                &mut d.path,
-                now,
-                dt,
-                &mut d.tail_speed,
-                &mut d.tail_delays,
-                overlay_dy,
-            );
+            d.tail.path.push((now, x, y));
+            follow_path(&mut cards, &d.ids, &mut d.tail, now, dt, overlay_dy);
         }
         // A dropped group lands together; it keeps its stacking order until the
         // last of its cards is down in its column.
@@ -1781,9 +1778,7 @@ impl Board {
             cursor: (p.x, p.y),
             target: Some(col),
             index: 0,
-            path: Vec::new(),
-            tail_speed: 0.0,
-            tail_delays: Vec::new(),
+            tail: Tail::default(),
         });
         // Rings off, followers stacked, the tail hidden: right away, not at the
         // first change of target.
@@ -2141,20 +2136,22 @@ impl Card {
     }
 }
 
-/// Puts the cards of `ids` from index `from` on (`ids[0]` is the lead) on the
-/// lead's recorded `path`, each [`physics::trail_delay`] behind, a sliver lower.
+/// Puts the followers of `ids` (`ids[0]` is the lead) on the lead's recorded
+/// path, each [`physics::trail_delay`] behind (shortened when the lead is fast).
 /// Trims the path to what the last of them still needs.
 fn follow_path(
     cards: &mut HashMap<TaskId, Card>,
     ids: &[TaskId],
-    from: usize,
-    path: &mut Vec<(f64, f64, f64)>,
+    tail: &mut Tail,
     now: f64,
     dt: f64,
-    speed: &mut f64,
-    delays: &mut Vec<f64>,
     overlay_dy: f64,
 ) {
+    let Tail {
+        path,
+        speed,
+        delays,
+    } = tail;
     let keep = now - physics::trail_delay(ids.len(), ids.len()) - 0.1;
     let old = path.partition_point(|p| p.0 < keep).saturating_sub(1);
     path.drain(..old);
@@ -2169,7 +2166,7 @@ fn follow_path(
     if delays.len() < ids.len() {
         delays.resize(ids.len(), f64::NAN);
     }
-    for (i, id) in ids.iter().enumerate().skip(from.max(1)) {
+    for (i, id) in ids.iter().enumerate().skip(1) {
         let Some(card) = cards.get_mut(id) else {
             continue;
         };
