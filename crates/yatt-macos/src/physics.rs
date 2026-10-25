@@ -266,6 +266,10 @@ pub struct Body {
     /// card spills out of the stack), and the angle it was last seen at.
     pub lap: f64,
     pub lap_at: f64,
+    /// Just out of the stack: the card goes straight to its place (with
+    /// `spring`), so the fan opens as one blob swelling out from the pile; only
+    /// once there does it lie loose on the spiral.
+    pub spill: bool,
     /// Whether the angle hangs and swings (cards), or just eases to its target
     /// (the task panel).
     pub swings: bool,
@@ -287,6 +291,7 @@ impl Body {
             orbit: None,
             lap: 0.0,
             lap_at: 0.0,
+            spill: false,
             swings: true,
         }
     }
@@ -300,29 +305,23 @@ impl Body {
     }
 
     /// Moves round a fan's centre: the target sits `(dx, dy)` from it. A card
-    /// that was not on the fan (coming out of the stack) goes round clockwise
-    /// from where it is to its place, the way the fan winds, so every card
-    /// spills out the same way, older ones further round; a card already on
-    /// the fan carries on from where it is to its new place.
+    /// coming out of the stack first goes straight to its place ([`Body::spill`]),
+    /// all of them at once, so the fan swells out of the pile as one blob; a
+    /// card already on the fan slides round to its new place.
     pub fn round(&mut self, dx: f64, dy: f64) {
         let at = dy.atan2(dx);
         match self.orbit {
             Some(o) if o == (dx, dy) => return,
-            Some(o) => self.lap += wrap(o.1.atan2(o.0) - at),
-            None => {
-                self.orbit = Some((dx, dy));
-                let (_, ang, _) = self.polar((dx, dy));
-                let short = wrap(ang - at);
-                self.lap = if short.abs() < 0.2 {
-                    short
-                } else {
-                    -(at - ang).rem_euclid(std::f64::consts::TAU)
-                };
-                self.lap_at = ang;
-                return;
-            }
+            Some(o) if !self.spill => self.lap += wrap(o.1.atan2(o.0) - at),
+            Some(_) => {}
+            None => self.spill = true,
         }
         self.orbit = Some((dx, dy));
+        if self.spill {
+            let (_, ang, _) = self.polar((dx, dy));
+            self.lap = wrap(ang - at);
+            self.lap_at = ang;
+        }
     }
 
     /// Where the body sits round its fan: (unit vector out from the centre, its
@@ -340,7 +339,11 @@ impl Body {
     /// How far round its fan the body is from its target, in radians (0 off a
     /// fan; negative: it has that far still to go clockwise).
     pub fn phase_off(&self) -> f64 {
-        if self.orbit.is_some() { self.lap } else { 0.0 }
+        if self.orbit.is_some() && !self.spill {
+            self.lap
+        } else {
+            0.0
+        }
     }
 
     /// Adds `dv` (pt/s) along the fan, clockwise (y down).
@@ -376,15 +379,23 @@ impl Body {
                     self.lap += wrap(ang - self.lap_at);
                     self.lap_at = ang;
                 }
-                let off = self.lap;
+                if self.spill && (self.x - self.tx).hypot(self.y - self.ty) < 0.5 {
+                    self.spill = false;
+                }
+                let off = if self.spill { 0.0 } else { self.lap };
                 let t = (-u.1, u.0);
                 let v_out = self.vx * u.0 + self.vy * u.1;
                 let v_along = self.vx * t.0 + self.vy * t.1;
                 let reach = o.0.hypot(o.1);
                 let a_out = -FAN_RADIAL.k * (rho - reach) - FAN_RADIAL.damping() * v_out;
                 let a_along = -FAN_ALONG.k * reach * off - FAN_ALONG.damping() * v_along;
-                self.vx += (a_out * u.0 + a_along * t.0) * h;
-                self.vy += (a_out * u.1 + a_along * t.1) * h;
+                if self.spill {
+                    self.vx += (-k * (self.x - self.tx) - c * self.vx) * h;
+                    self.vy += (-k * (self.y - self.ty) - c * self.vy) * h;
+                } else {
+                    self.vx += (a_out * u.0 + a_along * t.0) * h;
+                    self.vy += (a_out * u.1 + a_along * t.1) * h;
+                }
                 tr += FAN_PHASE_TURN * off.to_degrees();
             } else {
                 self.vx += (-k * (self.x - self.tx) - c * self.vx) * h;
@@ -686,6 +697,7 @@ mod tests {
         let mut b = Body::at(rad * a0.cos(), rad * a0.sin());
         b.target(rad * a1.cos(), rad * a1.sin(), 0.0);
         b.round(rad * a1.cos(), rad * a1.sin());
+        b.spill = false;
         let (mut low, mut past, mut t) = (f64::MAX, 0.0_f64, 0.0);
         while !b.at_rest() && t < 3.0 {
             b.step(1.0 / 120.0);
@@ -699,57 +711,46 @@ mod tests {
     }
 
     #[test]
-    fn a_fan_spills_out_one_way_round() {
-        // Eight cards on a pile just above the fan's centre open together: each
-        // goes round clockwise (the way the fan winds) from the pile to its
-        // place, smoothly; only the small spring back at the end goes the other
-        // way. None takes the short way round against the others.
+    fn a_fan_opens_as_one_blob() {
+        // Eight cards on a pile open together: each goes straight out from the
+        // pile to its place (no sweep round the fan's centre), all moving from
+        // the first frame, so the fan swells out of the pile as one mass.
         let (n, w) = (8, 240.0);
-        let pile = (0.0, -10.0);
+        let pile = fan(0, n, w);
         let mut cards: Vec<Body> = (0..n)
             .map(|i| {
                 let (dx, dy, deg) = fan(i, n, w);
                 let mut b = Body::at(pile.0, pile.1);
+                b.spring = FAN_RADIAL;
                 b.target(dx, dy, deg);
                 b.round(dx, dy);
                 b
             })
             .collect();
-        let mut fwd = vec![0.0_f64; n];
-        let mut back = vec![0.0_f64; n];
-        let mut last: Vec<f64> = cards.iter().map(|b| b.y.atan2(b.x)).collect();
-        let mut prev: Vec<(f64, f64)> = cards.iter().map(|b| (b.x, b.y)).collect();
-        for _ in 0..180 {
+        let mut off_line = vec![0.0_f64; n];
+        for f in 0..180 {
             {
                 let mut ring: Vec<&mut Body> = cards.iter_mut().collect();
                 fan_contact(&mut ring, 1.0 / 60.0);
             }
             for (i, b) in cards.iter_mut().enumerate() {
                 b.step(1.0 / 60.0);
-                let a = b.y.atan2(b.x);
-                let d = wrap(a - last[i]);
-                if d > 0.0 {
-                    fwd[i] += d
-                } else {
-                    back[i] -= d
+                let (lx, ly) = (b.tx - pile.0, b.ty - pile.1);
+                let len = lx.hypot(ly);
+                if len > 1.0 {
+                    let side = ((b.x - pile.0) * ly - (b.y - pile.1) * lx).abs() / len;
+                    off_line[i] = off_line[i].max(side / len);
+                    if f == 1 {
+                        assert!((b.x - pile.0).hypot(b.y - pile.1) > 0.5, "card {i} waits");
+                    }
                 }
-                last[i] = a;
-                let jump = (b.x - prev[i].0).hypot(b.y - prev[i].1);
-                assert!(jump < 40.0, "card {i} jumped {jump} pt in a frame");
-                prev[i] = (b.x, b.y);
             }
         }
-        for i in 1..n {
-            assert!(
-                back[i] < 0.2 * fwd[i],
-                "card {i}: {} back, {} on",
-                back[i],
-                fwd[i]
-            );
-            assert!(fwd[i] > fwd[i - 1] - 0.3, "older cards go further round");
+        for (i, d) in off_line.iter().enumerate() {
+            assert!(*d < 0.05, "card {i} strays {d} of its way off the line");
         }
         for b in &cards {
-            assert!(b.at_rest() || b.phase_off().abs() < 0.01);
+            assert!(b.at_rest(), "{b:?}");
         }
     }
 
@@ -786,10 +787,12 @@ mod tests {
         let mut a = Body::at(100.0, 0.0);
         a.target(100.0, 0.0, 0.0);
         a.round(100.0, 0.0);
+        a.spill = false;
         let at = 40.0_f64.to_radians();
         let mut b = Body::at(100.0, 0.0);
         b.target(100.0 * at.cos(), 100.0 * at.sin(), 0.0);
         b.round(100.0 * at.cos(), 100.0 * at.sin());
+        b.spill = false;
         fan_contact(&mut [&mut a, &mut b], 1.0 / 60.0);
         assert!(a.vy < 0.0 && b.vy > 0.0, "{} {}", a.vy, b.vy);
     }

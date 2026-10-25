@@ -99,3 +99,15 @@ older cards further round. Test: `a_fan_spills_out_one_way_round` (eight
 cards: under 20% of each card's travel goes back, all of it the end's spring
 back; no frame jumps more than 40 pt). The resting places now carry a small
 fixed stray per card (`fan_jitter`).
+
+## Opening, again: one blob
+
+The clockwise flow above was wrong. In the first clip (10.1–10.9 s, 20 fps
+sheets) the top card stays where the pile was and the rest slide out from
+under it, each straight toward its place, all at once, keeping their order:
+the pile swells into the rosette as one mass, with no card going round the
+centre. So a card leaving the pile now goes straight to its place (`spill`,
+spring k 110, ζ 0.55) and only then lies loose on the spiral. Ours: angle
+settled in 0.2 s (4% past), position 14–20% past, at rest in 0.52–0.67 s.
+Test: `a_fan_opens_as_one_blob` (eight cards, all moving from the first
+frame, none off its straight line by more than 5% of its way).

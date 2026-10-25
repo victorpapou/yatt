@@ -114,10 +114,10 @@ tabular digits, tracked +0.15, at 50%.
   gravity onto a floor; loose along it, so cards slide round and turn as they
   go; neighbours pressed together shove apart; a card dropped into an open fan
   rakes the others in toward the centre and they spring back out (about 10%
-  past, at rest in about 0.55 s). Opening, every card spills out from under the
-  pile the same way round, clockwise as the fan winds, older ones further, all
-  together (at most 5 ms apart); no card takes the short way against the
-  others. Each card strays a little from its exact place (±2.5° turn, ±2.5 pt,
+  past, at rest in about 0.55 s). Opening, the fan swells out of the pile as one
+  blob: every card leaves at once (at most 5 ms apart) and goes straight from
+  the pile to its place, no sweep round the centre; only there does it lie
+  loose on the spiral. Each card strays a little from its exact place (±2.5° turn, ±2.5 pt,
   ±2.5° round, fixed by its id, `FAN_JITTER`). Nothing fades: hidden cards are
   whole from the first frame under the pile; folding (critically damped, about
   0.3 s) they fly back under it and only then leave the render tree.
