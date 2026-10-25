@@ -494,6 +494,57 @@ pub fn fan_jitter(seed: u64) -> (f64, f64, f64) {
     (next() * a, next() * a, next() * a)
 }
 
+/// How unevenly the cards spill out of a stack, at 1.0: each card starts up to
+/// 30 ms late, its spring ±15% stiffer or softer and ±15% more or less damped,
+/// launched up to 6° off its straight way and ±10% faster; and the whole blob
+/// leans to one side of the stack (its top card's way) at up to 60 pt/s.
+pub const FAN_SPILL_VARY: f64 = 1.0;
+
+/// `n` numbers in −1..1 fixed by `seed` (a different stream from [`fan_jitter`]).
+fn spread(seed: u64, n: usize) -> Vec<f64> {
+    let (a, b, c) = fan_jitter(seed ^ 0x5EED_F00D_CAFE_D00D);
+    let (d, e, f) = fan_jitter(seed.rotate_left(17) ^ 0xA5A5_5A5A_1234_5678);
+    [a, b, c, d, e, f][..n]
+        .iter()
+        .map(|x| x / 2.5 / FAN_JITTER.max(1e-9))
+        .collect()
+}
+
+/// How late a card starts out of the stack (seconds).
+pub fn spill_delay(seed: u64) -> f64 {
+    0.015 * (1.0 + spread(seed, 1)[0]) * FAN_SPILL_VARY
+}
+
+/// A card's own spring out of the stack: [`FAN_RADIAL`], a little off.
+pub fn spill_spring(seed: u64) -> Spring {
+    let v = spread(seed, 3);
+    Spring::new(
+        FAN_RADIAL.k * (1.0 + 0.15 * FAN_SPILL_VARY * v[1]),
+        FAN_RADIAL.zeta * (1.0 + 0.15 * FAN_SPILL_VARY * v[2]),
+    )
+}
+
+/// The push a card gets as it leaves the stack, toward `way` (from where it
+/// is to its place): its own angle and strength, plus the blob's lean, set by
+/// `stack` (the top card's seed).
+pub fn spill_launch(seed: u64, stack: u64, way: (f64, f64)) -> (f64, f64) {
+    let v = spread(seed, 5);
+    let len = way.0.hypot(way.1);
+    if len < 1e-6 {
+        return (0.0, 0.0);
+    }
+    let turn = (6.0 * FAN_SPILL_VARY * v[3]).to_radians();
+    let speed = len * 2.0 * (1.0 + 0.1 * FAN_SPILL_VARY * v[4]);
+    let (c, s) = (turn.cos(), turn.sin());
+    let (ux, uy) = (way.0 / len, way.1 / len);
+    let lean = spread(stack, 1)[0] * std::f64::consts::PI;
+    let bias = 60.0 * FAN_SPILL_VARY;
+    (
+        speed * (ux * c - uy * s) + bias * lean.cos(),
+        speed * (ux * s + uy * c) + bias * lean.sin(),
+    )
+}
+
 /// Neighbours on one fan, in slot order (newest first), shove each other apart
 /// round the centre when they slide closer than [`FAN_CONTACT`] of their gap at
 /// rest.
@@ -517,6 +568,12 @@ pub fn fan_contact(ring: &mut [&mut Body], dt: f64) {
 /// gets ([`FAN_KICK`]).
 pub fn fan_kick(i: usize) -> f64 {
     FAN_KICK * (-(i.max(1) as f64 - 1.0) / FAN_KICK_FALL).exp()
+}
+
+/// The top of something `tall` high centred between `top` and `bottom`, but
+/// never closer than 10 pt under `top`.
+pub fn centred_top(top: f64, bottom: f64, tall: f64) -> f64 {
+    top + ((bottom - top - tall) / 2.0).max(10.0)
 }
 
 /// The `i`-th card of a collapsed stack (0 = top): how far down its centre sits
@@ -778,6 +835,15 @@ mod tests {
     }
 
     #[test]
+    fn a_stack_centres_between_the_header_and_the_capsule() {
+        // A 110 pt pile in a column from 40 to 600: its middle at 320.
+        let y = centred_top(40.0, 600.0, 110.0);
+        assert!((y + 55.0 - 320.0).abs() < 1e-9);
+        // No room: kept just under the header.
+        assert_eq!(centred_top(40.0, 100.0, 110.0), 50.0);
+    }
+
+    #[test]
     fn the_fan_follows_the_scroll() {
         let p = fan_scrub(0.0, 14.0);
         assert!((p - 0.1).abs() < 1e-9, "{p}");
@@ -792,6 +858,22 @@ mod tests {
         // A fling goes all the way.
         assert_eq!(fan_scrub(0.1, 60.0), 1.0);
         assert_eq!(fan_scrub(0.9, -60.0), 0.0);
+    }
+
+    #[test]
+    fn cards_spill_out_each_their_own_way() {
+        let (a, b) = (spill_spring(1), spill_spring(2));
+        assert_ne!(a, b);
+        for s in 0..100 {
+            let k = spill_spring(s);
+            assert!((k.k / FAN_RADIAL.k - 1.0).abs() <= 0.15 + 1e-9);
+            assert!((0.0..=0.03 + 1e-9).contains(&spill_delay(s)));
+            let v = spill_launch(s, 7, (100.0, 0.0));
+            // About 200 pt/s along the way, a few degrees off, plus the lean.
+            assert!(v.0 > 150.0 && v.0 < 290.0 && v.1.abs() < 90.0, "{v:?}");
+        }
+        assert_eq!(spill_launch(5, 7, (0.0, 0.0)), (0.0, 0.0));
+        assert_eq!(spill_spring(9), spill_spring(9));
     }
 
     #[test]

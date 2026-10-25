@@ -83,6 +83,9 @@ const LIST_GAP: f64 = 10.0;
 const PITCH: f64 = CARD_H + LIST_GAP;
 /// Room left under the last card for the new-task field floating over the board.
 const LIST_BOTTOM: f64 = 96.0;
+/// What the new-task capsule takes at the board's bottom (with its gap): a
+/// stack centres in the column above it.
+const CAPSULE_ROOM: f64 = 76.0;
 /// Dragging this close to the top or bottom edge scrolls the column.
 const AUTOSCROLL_EDGE: f64 = 56.0;
 const AUTOSCROLL_SPEED: f64 = 700.0;
@@ -775,11 +778,10 @@ impl Board {
     /// Top-left of a stack's top card: the pile centred in the column both ways.
     fn stack_anchor(&self, ci: usize) -> (f64, f64) {
         let g = self.geom.get()[ci];
-        let tall = self.height.get() - LIST_TOP;
         let pile = CARD_H + physics::pile(2).0;
         (
             physics::centred_left(g.x, g.w, CARD_W),
-            LIST_TOP + ((tall - pile) / 2.0).max(10.0),
+            physics::centred_top(LIST_TOP, self.height.get() - CAPSULE_ROOM, pile),
         )
     }
 
@@ -965,7 +967,7 @@ impl Board {
                     // height (sticking out past the column a little first), and
                     // centred in the column both ways below the chips.
                     let g = self.geom.get()[ci];
-                    let tall = self.height.get() - LIST_TOP;
+                    let tall = self.height.get() - LIST_TOP - CAPSULE_ROOM;
                     let room = (
                         g.w - 2.0 * FAN_MARGIN + 2.0 * FAN_PEEK,
                         tall - 2.0 * FAN_MARGIN,
@@ -985,9 +987,7 @@ impl Board {
                         let (dx, dy, deg) = if shown {
                             let (dx, dy, deg) = physics::fan(i, shown_n, w);
                             // Each card strays a little from its place, its own way.
-                            let seed = id.0.as_u128();
-                            let (turn, out, round) =
-                                physics::fan_jitter((seed ^ (seed >> 64)) as u64);
+                            let (turn, out, round) = physics::fan_jitter(seed_of(*id));
                             let (a, r) = (dy.atan2(dx) + round.to_radians(), dx.hypot(dy) + out);
                             (r * a.cos() * scale, r * a.sin() * scale, deg + turn)
                         } else {
@@ -1005,7 +1005,7 @@ impl Board {
                                 (a.0, a.1 + py, 0.0)
                             };
                             self.send_home(card, Space::Canvas, to);
-                            card.body.spring = physics::FAN_RADIAL;
+                            card.body.spring = physics::spill_spring(seed_of(*id));
                             card.set_muted(i > 0 && p < 0.15);
                             card.z = (n - i) as f64;
                             card.target_scale = if shown { mix(ps, scale) } else { ps };
@@ -1020,15 +1020,28 @@ impl Board {
                         if shown {
                             card.body.orbit = was;
                             card.body.round(dx, dy);
+                            // Out of the stack: each card its own way, so the
+                            // blob swells unevenly, a little more to one side.
+                            if was.is_none() {
+                                let v = physics::spill_launch(
+                                    seed_of(*id),
+                                    seed_of(ids[0]),
+                                    (card.body.tx - card.body.x, card.body.ty - card.body.y),
+                                );
+                                card.body.vx += v.0;
+                                card.body.vy += v.1;
+                            }
                             // A card dropped into an open fan rakes the rest in.
                             if was.is_some() && moved {
                                 card.body.push_in(physics::fan_kick(i));
                             }
                         }
                         if moved && shown {
-                            card.hold_until = CACurrentMediaTime() + physics::fan_wave(i, shown_n);
+                            card.hold_until = CACurrentMediaTime()
+                                + physics::fan_wave(i, shown_n)
+                                + physics::spill_delay(seed_of(*id));
                         }
-                        card.body.spring = physics::FAN_RADIAL;
+                        card.body.spring = physics::spill_spring(seed_of(*id));
                         card.set_muted(false);
                         // Newer cards on top, as on the stack.
                         card.z = if shown { (n - i) as f64 } else { 0.0 };
@@ -2299,6 +2312,12 @@ pub(crate) struct Face {
     pub icon: Retained<NSView>,
     pub time: Retained<NSTextField>,
     pub title: Retained<NSTextField>,
+}
+
+/// A task's fixed random seed (its id's random tail).
+fn seed_of(id: TaskId) -> u64 {
+    let s = id.0.as_u128();
+    (s ^ (s >> 64)) as u64
 }
 
 pub(crate) fn card_face(mtm: MainThreadMarker, id: TaskId, title: &str, hue: usize) -> Face {
