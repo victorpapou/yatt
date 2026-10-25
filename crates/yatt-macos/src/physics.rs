@@ -60,8 +60,9 @@ pub const HELD: Spring = Spring::new(40_000.0, 1.0);
 /// A card already in a list moving over to make room or close a gap: soft,
 /// ease in and out.
 pub const SHIFT: Spring = Spring::new(300.0, 1.0);
-/// A card settling into its list slot after a drop.
-pub const SLOT: Spring = SETTLE;
+/// A card settling into its list slot after a drop: it lands in about 0.12 s,
+/// as in the reference clip.
+pub const SLOT: Spring = Spring::new(1500.0, 1.0);
 /// A new card flying from the new-task field into its column.
 pub const FLY: Spring = Spring::new(220.0, 1.0);
 /// The task modal growing out of its card and shrinking back: no wobble, the
@@ -123,9 +124,10 @@ pub fn ring_shown(selected: bool, dragging: bool) -> bool {
 pub const GRIP_PERIOD: f64 = 0.5;
 pub const GRIP_ZETA: f64 = 0.7;
 pub const GRIP_MAX: f64 = 8.0;
-/// How much of the full rigid-body turn a held card takes: a third, so it
-/// reads as weight, not as hanging.
-pub const GRIP_GAIN: f64 = 0.35;
+/// How much of the full rigid-body turn a held card takes: matched frame by
+/// frame to the reference pull (a few degrees of lean, docs/reference/tima/
+/// motion/compare), so it reads as weight, not as hanging.
+pub const GRIP_GAIN: f64 = 0.9;
 
 /// A card held at the point it was grabbed: a rigid body hanging from the
 /// pointer there. The grab point follows the pointer (very stiff, critically

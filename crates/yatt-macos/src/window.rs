@@ -455,6 +455,27 @@ impl MainWindow {
         self.ui.cards.demo_column_opacity(column)
     }
 
+    /// Development aid: the board moves only when stepped by hand from now on.
+    pub fn demo_manual(&self) {
+        self.ui.cards.demo_manual();
+    }
+
+    /// Development aid: one fixed board step of `dt` seconds, then the window
+    /// lays out and draws, as a display cycle would.
+    pub fn demo_step(&self, dt: f64) {
+        self.ui.cards.demo_step(dt);
+        if let Some(content) = self.ui.window.contentView() {
+            content.layoutSubtreeIfNeeded();
+        }
+        self.ui.window.displayIfNeeded();
+        objc2_quartz_core::CATransaction::flush();
+    }
+
+    /// Development aid: a card's centre, angle and scale.
+    pub fn demo_card_state(&self, id: TaskId) -> Option<(f64, f64, f64, f64)> {
+        self.ui.cards.demo_card_state(id)
+    }
+
     /// Development aid: selects exactly these cards.
     pub fn demo_select(&self, ids: &[TaskId]) {
         self.ui.cards.demo_select(ids);

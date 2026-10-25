@@ -250,6 +250,10 @@ pub struct Board {
     restack_due: Cell<bool>,
     /// A dropped group flying in, one card after another.
     landing: RefCell<Option<Landing>>,
+    /// Development aid: stepped by hand at a fixed timestep, for frame-by-frame
+    /// comparison with the reference clip.
+    manual: Cell<bool>,
+    fixed_dt: Cell<Option<f64>>,
     /// `YATT_PERF`: when a stack was clicked open, until its first frame.
     fan_clicked: Cell<Option<f64>>,
     /// The card under the pointer, for the glass highlight in a fanned stack.
@@ -320,6 +324,8 @@ impl Board {
             restack_due: Cell::new(false),
             fan_clicked: Cell::new(None),
             landing: RefCell::new(None),
+            manual: Cell::new(false),
+            fixed_dt: Cell::new(None),
             hidden: Cell::new(None),
             spawn: Cell::new(None),
             timer: RefCell::new(None),
@@ -552,6 +558,35 @@ impl Board {
             }
         }
         (low, drawn)
+    }
+
+    /// Development aid: from now on the board moves only when stepped by hand
+    /// (`demo_step`), a fixed timestep per call, so frames are exactly
+    /// reproducible.
+    pub fn demo_manual(&self) {
+        self.manual.set(true);
+        if let Some(t) = self.timer.borrow_mut().take() {
+            t.invalidate();
+        }
+    }
+
+    /// Development aid: one fixed step of `dt` seconds.
+    pub fn demo_step(self: &Rc<Self>, dt: f64) {
+        self.fixed_dt.set(Some(dt));
+        self.tick();
+    }
+
+    /// Development aid: a card's centre (canvas coordinates), angle and scale.
+    pub fn demo_card_state(&self, id: TaskId) -> Option<(f64, f64, f64, f64)> {
+        let cards = self.cards.borrow();
+        let c = cards.get(&id)?;
+        let (ox, oy) = self.offset(c.space);
+        Some((
+            c.body.x + ox + CARD_W / 2.0,
+            c.body.y + oy + CARD_H / 2.0,
+            c.body.r,
+            c.scale,
+        ))
     }
 
     /// Development aid: selects exactly these cards.
@@ -1195,7 +1230,8 @@ impl Board {
 
     /// Starts the frame timer if it is not running.
     fn kick(self: &Rc<Self>) {
-        if self.timer.borrow().is_some() {
+        // Stepped by hand (the comparison harness): no timer of its own.
+        if self.manual.get() || self.timer.borrow().is_some() {
             return;
         }
         self.last_tick.set(CACurrentMediaTime());
@@ -1213,7 +1249,10 @@ impl Board {
 
     fn tick(self: &Rc<Self>) {
         let now = CACurrentMediaTime();
-        let dt = (now - self.last_tick.replace(now)).clamp(0.0, 1.0 / 30.0);
+        let dt = match self.fixed_dt.take() {
+            Some(dt) => dt,
+            None => (now - self.last_tick.replace(now)).clamp(0.0, 1.0 / 30.0),
+        };
         let reduce = motion::reduce_motion();
         self.autoscroll(dt);
         let dragging = self.drag.borrow().is_some();

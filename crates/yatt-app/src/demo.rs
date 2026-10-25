@@ -55,6 +55,96 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
         };
 
         wait(600).await;
+        if std::env::var_os("YATT_DEMO_COMPARE").is_some() {
+            // The reference clip's actions, frame by frame at a fixed 1/60 s:
+            // each action 50 frames, a layer capture and a CSV line per frame
+            // (the lead card's centre, angle and scale).
+            for i in 0..6 {
+                sink(UiEvent::NewTask {
+                    title: format!("Задача {}", i + 1),
+                    status: Status::Backlog,
+                });
+            }
+            wait(800).await;
+            window.demo_toggle_stack();
+            wait(900).await;
+            window.demo_manual();
+            let dt = 1.0 / 60.0;
+            let backlog = ids(cx, 0);
+            let lead = backlog[0];
+            let frames = |name: &'static str, lead: TaskId, script: &dyn Fn(usize)| {
+                for f in 0..50 {
+                    script(f);
+                    window.demo_step(dt);
+                    window.capture_layers_png(&format!("{dir}/{name}-{f:02}.png"));
+                    if f == 0 || f == 49 {
+                        let drawn: Vec<usize> = (0..3).map(|c| window.demo_column_opacity(c).1).collect();
+                        eprintln!("drawn,{name},{f},{drawn:?}");
+                    }
+                    if let Some((x, y, r, s)) = window.demo_card_state(lead) {
+                        eprintln!("csv,{name},{f},{:.4},{x:.1},{y:.1},{r:.2},{s:.3}", f as f64 * dt);
+                    }
+                }
+            };
+            let top = centre(lead);
+            frames("fan-open", lead, &|f| {
+                if f == 0 {
+                    window.demo_pointer(DemoPointer::Down { at: top, shift: false, cmd: false });
+                    window.demo_pointer(DemoPointer::Up(top));
+                }
+            });
+            let empty = (window.demo_column_x(2), 600.0);
+            frames("fan-fold", lead, &|f| {
+                if f == 0 {
+                    window.demo_pointer(DemoPointer::Down { at: empty, shift: false, cmd: false });
+                    window.demo_pointer(DemoPointer::Up(empty));
+                }
+            });
+            window.demo_toggle_stack();
+            for _ in 0..90 {
+                window.demo_step(dt);
+            }
+            // One card: grabbed off-centre (right of the middle, a little high,
+            // where the reference's cursor holds it), pulled right over 30
+            // frames, then held still.
+            let c = centre(lead);
+            let from = (c.0 + 70.0, c.1 - 15.0);
+            let to = (window.demo_column_x(1), from.1 + 60.0);
+            frames("single-drag", lead, &|f| {
+                if f == 0 {
+                    window.demo_pointer(DemoPointer::Down { at: from, shift: false, cmd: false });
+                }
+                let t = ((f + 1) as f64 / 30.0).min(1.0);
+                window.demo_pointer(DemoPointer::Drag(ease(from, to, t)));
+            });
+            frames("single-drop", lead, &|f| {
+                if f == 0 {
+                    window.demo_pointer(DemoPointer::Up(to));
+                }
+            });
+            // A group of four, the same way.
+            let group = ids(cx, 0);
+            if group.len() >= 4 {
+                window.demo_select(&group[..4]);
+                let c = centre(group[0]);
+                let from = (c.0 + 70.0, c.1 - 15.0);
+                let to = (window.demo_column_x(2), from.1 + 40.0);
+                frames("group-drag", group[0], &|f| {
+                    if f == 0 {
+                        window.demo_pointer(DemoPointer::Down { at: from, shift: false, cmd: false });
+                    }
+                    let t = ((f + 1) as f64 / 30.0).min(1.0);
+                    window.demo_pointer(DemoPointer::Drag(ease(from, to, t)));
+                });
+                frames("group-drop", group[0], &|f| {
+                    if f == 0 {
+                        window.demo_pointer(DemoPointer::Up(to));
+                    }
+                });
+            }
+            eprintln!("demo: finished");
+            return;
+        }
         if let Some(n) = std::env::var("YATT_DEMO_FAN").ok().and_then(|n| n.parse::<usize>().ok()) {
             // One stack of `n` cards, fanned open, for a look at the fan.
             for i in 0..n {
