@@ -32,9 +32,9 @@ pub const CARD_W: f64 = 230.0;
 pub const CARD_H: f64 = 101.0;
 pub const CARD_RADIUS: f64 = 20.0;
 /// Blur of what shows through a card, in points.
-pub const CARD_BLUR: f64 = 2.5;
+pub const CARD_BLUR: f64 = 4.0;
 /// Saturation boost of what shows through a card.
-pub const CARD_SATURATE: f64 = 1.2;
+pub const CARD_SATURATE: f64 = 1.5;
 
 type Rgb = (u8, u8, u8);
 
@@ -216,7 +216,7 @@ fn backdrop_layer(radius: f64) -> Option<Retained<CALayer>> {
     let filter = |kind: &NSString| -> Option<Retained<NSObject>> {
         unsafe { msg_send![filter_class, filterWithType: kind] }
     };
-    // Like CSS `backdrop-filter: blur(<radius>px) saturate(1.2)`.
+    // Like CSS `backdrop-filter: blur(<radius>px) saturate(1.5)`.
     let blur = filter(ns_string!("gaussianBlur"))?;
     let saturate = filter(ns_string!("colorSaturate"))?;
     let layer: Option<Retained<CALayer>> = unsafe { msg_send![backdrop, layer] };

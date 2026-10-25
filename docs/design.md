@@ -29,9 +29,9 @@ and shows the same row, larger, as the whole window.
 
 ## Card material
 
-A flat tint of the card's colour at 55% (the grey card 65%) over a 2.5 pt blur
-of what is behind it with a saturation boost (CSS `backdrop-filter: blur(2.5px)
-saturate(1.2)`). Continuous corners, no gradients. `YATT_GLASS=1` puts the
+A flat tint of the card's colour at 55% (the grey card 65%) over a 4 pt blur
+of what is behind it with a saturation boost (CSS `backdrop-filter: blur(4px)
+saturate(1.5)`). Continuous corners, no gradients. `YATT_GLASS=1` puts the
 system's Liquid Glass (`NSGlassEffectView`, clear style, a lighter tint and the
 same saturation boost under it) there instead. It has no blur radius to turn
 down: its private knobs (`_variant`, `_scrimState`, `_subduedState`,
