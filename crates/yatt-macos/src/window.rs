@@ -49,7 +49,7 @@ pub type Sink = Rc<dyn Fn(UiEvent)>;
 const HEADER_H: f64 = 112.0;
 const PAD: f64 = 16.0;
 /// Column chips: height and distance from the top of the board.
-const CHIP_H: f64 = 26.0;
+const CHIP_H: f64 = 20.0;
 const CHIP_TOP: f64 = 12.0;
 /// The new-task capsule.
 const CAPSULE_H: f64 = 44.0;
@@ -110,7 +110,7 @@ struct Header {
 struct Column {
     view: Retained<FlippedView>,
     tint: Retained<FillView>,
-    chip: Retained<NSView>,
+    chip: Retained<FillView>,
     title: Retained<NSTextField>,
     count: Retained<NSTextField>,
     highlighted: Cell<bool>,
@@ -943,13 +943,14 @@ impl Column {
         tint.setAlphaValue(0.0);
         view.addSubview(&tint);
         let color = style::column_color(index);
-        let (chip, inside) = style::glass(mtm, CHIP_H / 2.0);
-        let title = label(mtm, "", 13.0, unsafe { NSFontWeightSemibold });
+        // A flat pill tinted in the column's colour, with the text in that colour.
+        let chip = FillView::new(mtm, Fill::Chip(index));
+        let title = label(mtm, "", 11.5, unsafe { NSFontWeightSemibold });
         title.setTextColor(Some(&color));
-        let count = label(mtm, "0", 12.0, unsafe { NSFontWeightMedium });
+        let count = label(mtm, "0", 11.0, unsafe { NSFontWeightMedium });
         count.setTextColor(Some(&color.colorWithAlphaComponent(0.7)));
-        inside.addSubview(&title);
-        inside.addSubview(&count);
+        chip.addSubview(&title);
+        chip.addSubview(&count);
         Self {
             view,
             tint,
@@ -966,17 +967,17 @@ impl Column {
             self.title.fittingSize().width.ceil(),
             self.count.fittingSize().width.ceil(),
         );
-        let pad = 12.0;
+        let (pad, gap, text_h) = (9.0, 5.0, 14.0);
         self.chip.setFrame(NSRect::new(
             NSPoint::new(x, CHIP_TOP),
-            NSSize::new(pad + tw + 6.0 + cw + pad, CHIP_H),
+            NSSize::new(pad + tw + gap + cw + pad, CHIP_H),
         ));
-        let y = ((CHIP_H - 17.0) / 2.0).round();
+        let y = ((CHIP_H - text_h) / 2.0).round();
         self.title
-            .setFrame(NSRect::new(NSPoint::new(pad, y), NSSize::new(tw, 17.0)));
+            .setFrame(NSRect::new(NSPoint::new(pad, y), NSSize::new(tw, text_h)));
         self.count.setFrame(NSRect::new(
-            NSPoint::new(pad + tw + 6.0, y + 0.5),
-            NSSize::new(cw, 16.0),
+            NSPoint::new(pad + tw + gap, y),
+            NSSize::new(cw, text_h),
         ));
     }
 }

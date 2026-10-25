@@ -5,11 +5,11 @@ use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2::runtime::AnyClass;
 use objc2_app_kit::{
-    NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAutoresizingMaskOptions,
-    NSColor, NSGlassEffectView, NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
-    NSVisualEffectState, NSVisualEffectView,
+    NSAutoresizingMaskOptions, NSColor, NSGlassEffectView, NSView, NSVisualEffectBlendingMode,
+    NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
 };
-use objc2_foundation::NSRect;
+use objc2_core_image::CIFilter;
+use objc2_foundation::{NSArray, NSNumber, NSObjectNSKeyValueCoding, NSRect, ns_string};
 use objc2_quartz_core::{CALayer, kCACornerCurveContinuous};
 use yatt_core::TaskId;
 
@@ -19,6 +19,8 @@ use crate::classes::FlippedView;
 pub const CARD_W: f64 = 230.0;
 pub const CARD_H: f64 = 101.0;
 pub const CARD_RADIUS: f64 = 20.0;
+/// Blur of what shows through a card, in points.
+pub const CARD_BLUR: f64 = 11.0;
 
 type Rgb = (u8, u8, u8);
 
@@ -66,9 +68,10 @@ fn rgb((r, g, b): Rgb, alpha: f64) -> Retained<NSColor> {
     )
 }
 
-/// The card's tint: translucent, so the blur behind it shows through as glass.
+/// The card's tint: translucent, so the cards and board behind it show through
+/// the blur.
 pub fn fill(hue: usize) -> Retained<NSColor> {
-    rgb(HUES[hue % HUES.len()].0, 0.9)
+    rgb(HUES[hue % HUES.len()].0, 0.43)
 }
 
 pub fn text(hue: usize) -> Retained<NSColor> {
@@ -90,20 +93,37 @@ pub fn text_css(hue: usize) -> String {
     format!("#{r:02x}{g:02x}{b:02x}")
 }
 
-/// The blur under a card's tint: whatever is behind it in the window, frosted
-/// light in any system appearance.
-pub fn card_blur(mtm: MainThreadMarker) -> Retained<NSVisualEffectView> {
-    let glass = NSVisualEffectView::new(mtm);
-    glass.setMaterial(NSVisualEffectMaterial::Popover);
-    glass.setBlendingMode(NSVisualEffectBlendingMode::WithinWindow);
-    glass.setState(NSVisualEffectState::Active);
-    glass.setAppearance(NSAppearance::appearanceNamed(unsafe { NSAppearanceNameAqua }).as_deref());
-    glass.setWantsLayer(true);
-    if let Some(layer) = glass.layer() {
+/// The blur under a card's tint, with no material colour of its own, so the card
+/// stays see-through in its own colour: the system's clear glass where there is
+/// one, a Core Image blur of what is behind otherwise.
+pub fn card_blur(mtm: MainThreadMarker) -> Retained<NSView> {
+    if AnyClass::get(c"NSGlassEffectView").is_some() {
+        let glass = NSGlassEffectView::new(mtm);
+        glass.setStyle(objc2_app_kit::NSGlassEffectViewStyle::Clear);
+        glass.setCornerRadius(CARD_RADIUS);
+        return Retained::into_super(glass);
+    }
+    let view = FlippedView::new(mtm, NSRect::ZERO);
+    view.setWantsLayer(true);
+    view.setLayerUsesCoreImageFilters(true);
+    if let Some(blur) = gaussian(CARD_BLUR) {
+        view.setBackgroundFilters(&NSArray::from_retained_slice(&[blur]));
+    }
+    if let Some(layer) = view.layer() {
         round(&layer, CARD_RADIUS);
         layer.setMasksToBounds(true);
     }
-    glass
+    Retained::into_super(view)
+}
+
+/// A Gaussian blur filter of `radius` points.
+pub fn gaussian(radius: f64) -> Option<Retained<CIFilter>> {
+    let filter = unsafe { CIFilter::filterWithName(ns_string!("CIGaussianBlur")) }?;
+    unsafe {
+        filter.setDefaults();
+        filter.setValue_forKey(Some(&NSNumber::new_f64(radius)), ns_string!("inputRadius"));
+    }
+    Some(filter)
 }
 
 /// Rounds a layer's corners as a continuous squircle, the way system controls are.

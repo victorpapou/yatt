@@ -12,7 +12,7 @@ use objc2::{
 use objc2_app_kit::{
     NSBezierPath, NSColor, NSControl, NSControlTextEditingDelegate, NSEvent, NSEventModifierFlags,
     NSEventPhase, NSGradient, NSResponder, NSTextFieldDelegate, NSTextView, NSTrackingArea,
-    NSTrackingAreaOptions, NSView, NSWindow, NSWindowDelegate,
+    NSTrackingAreaOptions, NSView, NSWindingRule, NSWindow, NSWindowDelegate,
 };
 use objc2_foundation::{NSNotification, NSPoint, NSRect, NSSize, NSString};
 use objc2_web_kit::{WKScriptMessage, WKScriptMessageHandler, WKUserContentController};
@@ -191,6 +191,8 @@ pub enum Fill {
     },
     /// The "N скрыто" capsule.
     Badge,
+    /// A column's header pill, tinted in the column's colour.
+    Chip(usize),
     /// A 1 px divider line.
     Separator,
     /// The light tint over the column a card is dragged over.
@@ -231,6 +233,7 @@ define_class!(
             let color = match fill {
                 Fill::Card { hue, .. } => crate::style::fill(hue),
                 Fill::Badge => NSColor::whiteColor().colorWithAlphaComponent(0.38),
+                Fill::Chip(i) => crate::style::column_color(i).colorWithAlphaComponent(0.14),
                 Fill::Separator => NSColor::separatorColor(),
                 Fill::Tint => NSColor::labelColor().colorWithAlphaComponent(0.035),
                 Fill::Dim => NSColor::blackColor().colorWithAlphaComponent(0.28),
@@ -243,20 +246,17 @@ define_class!(
                     crate::style::round(&layer, crate::style::CARD_RADIUS);
                     // A light hairline; selection gets an accent ring. A running timer
                     // shows as ● on the card itself.
-                    layer.setBorderWidth(if selected { 2.5 } else { 1.0 });
+                    // A faint grey hairline outside; the white inner rim is the sheen's.
+                    layer.setBorderWidth(if selected { 2.5 } else { 0.5 });
                     let rim = if selected {
                         NSColor::controlAccentColor()
                     } else {
-                        NSColor::whiteColor().colorWithAlphaComponent(0.55)
+                        NSColor::blackColor().colorWithAlphaComponent(0.14)
                     };
                     layer.setBorderColor(Some(&rim.CGColor()));
-                    // A soft blurred white halo instead of a drop shadow.
-                    layer.setShadowColor(Some(&NSColor::whiteColor().CGColor()));
-                    layer.setShadowOpacity(1.0);
-                    layer.setShadowRadius(5.0);
-                    layer.setShadowOffset(objc2_foundation::NSSize::new(0.0, 0.0));
                 }
                 Fill::Badge => crate::style::round(&layer, 9.0),
+                Fill::Chip(_) => crate::style::round(&layer, 10.0),
                 _ => {}
             }
             if fill == Fill::Panel {
@@ -302,7 +302,7 @@ define_class!(
     #[unsafe(super(NSView, NSResponder, NSObject))]
     #[thread_kind = MainThreadOnly]
     #[ivars = NoIvars]
-    /// A white sheen fading downwards: the light top of a glass card.
+    /// The light inner rim of a glass card.
     pub struct SheenView;
 
     impl SheenView {
@@ -315,32 +315,30 @@ define_class!(
         fn draw_rect(&self, _dirty: NSRect) {
             let white = NSColor::whiteColor();
             let b = self.bounds();
-            // A lighter glow along the top, gone by the middle.
+            // A crisp light rim inside the hairline, brighter on the top and left edges:
+            // the ring between two rounded rects, filled with a diagonal gradient.
+            let radius = crate::style::CARD_RADIUS;
+            let rect = |inset: f64| {
+                NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
+                    NSRect::new(
+                        NSPoint::new(b.origin.x + inset, b.origin.y + inset),
+                        NSSize::new(b.size.width - 2.0 * inset, b.size.height - 2.0 * inset),
+                    ),
+                    radius - inset,
+                    radius - inset,
+                )
+            };
+            let ring = rect(0.5);
+            ring.appendBezierPath(&rect(1.75));
+            ring.setWindingRule(NSWindingRule::EvenOdd);
             let gradient = NSGradient::initWithStartingColor_endingColor(
                 NSGradient::alloc(),
-                &white.colorWithAlphaComponent(0.42),
-                &white.colorWithAlphaComponent(0.0),
+                &white.colorWithAlphaComponent(0.85),
+                &white.colorWithAlphaComponent(0.4),
             );
-            let top = NSRect::new(b.origin, NSSize::new(b.size.width, b.size.height * 0.6));
-            // Flipped: 90° runs from the top edge down.
+            // Flipped: 45° runs from the top-left corner to the bottom-right.
             if let Some(g) = gradient {
-                g.drawInRect_angle(top, 90.0);
-            }
-            // A soft inner rim: two strokes fading inwards.
-            let radius = crate::style::CARD_RADIUS;
-            for (inset, alpha, width) in [(1.0, 0.45, 2.0), (2.5, 0.15, 3.0)] {
-                let r = NSRect::new(
-                    NSPoint::new(b.origin.x + inset, b.origin.y + inset),
-                    NSSize::new(b.size.width - 2.0 * inset, b.size.height - 2.0 * inset),
-                );
-                let path = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
-                    r,
-                    radius - inset,
-                    radius - inset,
-                );
-                path.setLineWidth(width);
-                white.colorWithAlphaComponent(alpha).setStroke();
-                path.stroke();
+                g.drawInBezierPath_angle(&ring, 45.0);
             }
         }
 

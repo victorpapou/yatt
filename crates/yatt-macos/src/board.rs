@@ -35,10 +35,7 @@ use objc2_app_kit::{
     NSTextAlignment, NSTextField, NSView,
 };
 use objc2_core_image::CIFilter;
-use objc2_foundation::{
-    NSArray, NSNumber, NSObjectNSKeyValueCoding, NSPoint, NSRect, NSSize, NSString, NSTimer,
-    ns_string,
-};
+use objc2_foundation::{NSArray, NSPoint, NSRect, NSSize, NSString, NSTimer};
 use objc2_quartz_core::CACurrentMediaTime;
 use yatt_core::{Status, TaskId};
 
@@ -142,6 +139,8 @@ struct Card {
     /// Drawn scale about the centre, easing towards `target_scale`.
     scale: f64,
     target_scale: f64,
+    /// Text hidden: behind the top card of a stack.
+    muted: bool,
 }
 
 struct Press {
@@ -497,9 +496,9 @@ impl Board {
         view.setWantsLayer(true);
         if let Some(layer) = view.layer() {
             layer.setShadowColor(Some(&NSColor::blackColor().CGColor()));
-            // No drop shadow at rest: the white halo on the tint does the edge.
-            layer.setShadowOpacity(0.0);
-            layer.setShadowRadius(6.0);
+            // A soft, wide, faint grey shadow.
+            layer.setShadowOpacity(0.1);
+            layer.setShadowRadius(12.0);
             layer.setShadowOffset(NSSize::new(0.0, -2.0));
         }
         let fill_mask = NSAutoresizingMaskOptions::ViewWidthSizable
@@ -606,6 +605,7 @@ impl Board {
             flying: false,
             scale: 1.0,
             target_scale: 1.0,
+            muted: false,
         };
         card.set_look(Look::Solid, false);
         card
@@ -672,6 +672,7 @@ impl Board {
                         card.body
                             .target(centre.0 + dx - w / 2.0, centre.1 + dy - h / 2.0, deg);
                         card.body.spring = physics::PILE;
+                        card.set_muted(false);
                         card.z = (n - i) as f64;
                         card.target_scale = if hover == Some(*id) { HOVER_SCALE } else { 1.0 };
                         card.set_look(Look::Solid, true);
@@ -686,6 +687,8 @@ impl Board {
                         };
                         let (dy, scale) = physics::pile(i);
                         card.body.target(a.0, a.1 + dy, 0.0);
+                        // Only the top card's text; the rest show as coloured slivers.
+                        card.set_muted(i > 0);
                         card.body.spring = physics::PILE;
                         card.z = (n - i) as f64;
                         card.target_scale = scale;
@@ -711,6 +714,7 @@ impl Board {
                         };
                         card.body
                             .target(x, LIST_TOP + slot as f64 * PITCH - scroll[ci], 0.0);
+                        card.set_muted(false);
                         card.body.spring = physics::SLOT;
                         card.z = 1.0;
                         card.target_scale = 1.0;
@@ -731,6 +735,7 @@ impl Board {
                     continue;
                 };
                 card.z = 1000.0 - i as f64;
+                card.set_muted(false);
                 card.target_scale = if drag.group {
                     physics::trail_scale(i)
                 } else {
@@ -1305,8 +1310,8 @@ impl Card {
     /// A deeper shadow while held.
     fn set_raised(&self, on: bool) {
         if let Some(layer) = self.view.layer() {
-            layer.setShadowOpacity(if on { 0.18 } else { 0.0 });
-            layer.setShadowRadius(if on { 16.0 } else { 6.0 });
+            layer.setShadowOpacity(if on { 0.18 } else { 0.1 });
+            layer.setShadowRadius(if on { 16.0 } else { 12.0 });
             layer.setShadowOffset(NSSize::new(0.0, if on { -8.0 } else { -2.0 }));
         }
     }
@@ -1348,18 +1353,35 @@ impl Card {
         self.icon
             .setContentTintColor(Some(&ink.colorWithAlphaComponent(0.85)));
         let filters: Retained<NSArray<CIFilter>> = if lifted {
-            blur_filter().map_or_else(NSArray::new, |f| NSArray::from_retained_slice(&[f]))
+            style::gaussian(LIFT_BLUR)
+                .map_or_else(NSArray::new, |f| NSArray::from_retained_slice(&[f]))
         } else {
             NSArray::new()
         };
         self.content.setContentFilters(&filters);
-        let (label, content) = if lifted { (1.0, 0.45) } else { (0.0, 1.0) };
+        let (label, content) = match (lifted, self.muted) {
+            (true, _) => (1.0, 0.45),
+            (false, true) => (0.0, 0.0),
+            (false, false) => (0.0, 1.0),
+        };
         let views = (self.label.clone(), self.content.clone());
         animate(animated, motion::GLASS_SECS, move || {
             views.0.animator().setAlphaValue(label);
             views.1.animator().setAlphaValue(content);
         });
         self.look = look;
+    }
+
+    /// Hides the card's text (a card behind the top of a stack).
+    fn set_muted(&mut self, on: bool) {
+        if self.muted == on {
+            return;
+        }
+        self.muted = on;
+        let (content, alpha) = (self.content.clone(), if on { 0.0 } else { 1.0 });
+        animate(true, motion::GLASS_SECS, move || {
+            content.animator().setAlphaValue(alpha)
+        });
     }
 
     /// Places the view; on the overlay the canvas's offset is added.
@@ -1394,16 +1416,4 @@ fn text_label(mtm: MainThreadMarker, text: &str, size: f64, weight: f64) -> Reta
     let l = NSTextField::labelWithString(&NSString::from_str(text), mtm);
     l.setFont(Some(&NSFont::systemFontOfSize_weight(size, weight)));
     l
-}
-
-fn blur_filter() -> Option<Retained<CIFilter>> {
-    let filter = unsafe { CIFilter::filterWithName(ns_string!("CIGaussianBlur")) }?;
-    unsafe {
-        filter.setDefaults();
-        filter.setValue_forKey(
-            Some(&NSNumber::new_f64(LIFT_BLUR)),
-            ns_string!("inputRadius"),
-        );
-    }
-    Some(filter)
 }
