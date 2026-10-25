@@ -1334,6 +1334,7 @@ impl Card {
 
     /// A deeper shadow while held.
     fn set_raised(&self, on: bool) {
+        motion::soften(&self.view);
         if let Some(layer) = self.view.layer() {
             layer.setShadowOpacity(if on { 0.18 } else { 0.07 });
             layer.setShadowRadius(if on { 16.0 } else { 14.0 });
@@ -1343,6 +1344,11 @@ impl Card {
 
     fn set_badge(&self, text: &str) {
         let show = !text.is_empty();
+        if self.badge.stringValue().to_string() == text && self.badge.isHidden() != show {
+            return;
+        }
+        // The pill and its count ease over instead of jumping.
+        motion::soften(&self.content);
         self.badge.setStringValue(&NSString::from_str(text));
         let w = self.badge.fittingSize().width + 18.0;
         let frame = NSRect::new(NSPoint::new((CARD_W - w) / 2.0, 9.0), NSSize::new(w, 18.0));

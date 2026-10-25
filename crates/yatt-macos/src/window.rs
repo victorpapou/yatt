@@ -614,8 +614,11 @@ impl Ui {
         self.header.update(&snap.timer);
         for (c, col) in self.columns.iter().zip(&snap.columns) {
             c.title.setStringValue(&NSString::from_str(&col.title));
-            c.count
-                .setStringValue(&NSString::from_str(&col.cards.len().to_string()));
+            let count = col.cards.len().to_string();
+            if c.count.stringValue().to_string() != count {
+                motion::soften(&c.chip);
+                c.count.setStringValue(&NSString::from_str(&count));
+            }
             c.layout_chip(c.view.frame().origin.x + PAD);
         }
         self.cards.render(&snap.columns);
@@ -716,6 +719,7 @@ impl Header {
         let stack =
             unsafe { NSButton::buttonWithTitle_target_action(ns_string!(""), None, None, mtm) };
         stack.setBordered(false);
+        stack.setWantsLayer(true);
         view.addSubview(&stack);
 
         let progress = NSProgressIndicator::new(mtm);
@@ -748,6 +752,7 @@ impl Header {
     }
 
     fn update_stack_icon(&self, stacked: bool) {
+        motion::soften(&self.stack);
         let (symbol, tip) = if stacked {
             ("list.bullet", "Списками")
         } else {

@@ -287,6 +287,8 @@ define_class!(
 impl FillView {
     pub fn set_fill(&self, fill: Fill) {
         if self.ivars().fill.replace(fill) != fill {
+            // Selection rings, tints and fills ease over instead of jumping.
+            crate::motion::soften(self);
             self.setNeedsDisplay(true);
         }
     }
