@@ -254,10 +254,10 @@ define_class!(
                         NSColor::whiteColor().colorWithAlphaComponent(0.6)
                     };
                     layer.setBorderColor(Some(&rim.CGColor()));
-                    // A white glow over the card's faint dark shadow.
+                    // A thin soft white glow over the card's faint dark shadow.
                     layer.setShadowColor(Some(&NSColor::whiteColor().CGColor()));
-                    layer.setShadowOpacity(0.65);
-                    layer.setShadowRadius(8.0);
+                    layer.setShadowOpacity(0.4);
+                    layer.setShadowRadius(4.0);
                     layer.setShadowOffset(objc2_foundation::NSSize::new(0.0, 0.0));
                 }
                 Fill::Badge => crate::style::round(&layer, 9.0),
@@ -346,6 +346,8 @@ pub enum CanvasMsg {
         at: NSPoint,
         shift: bool,
         cmd: bool,
+        /// 2 for the second click of a double-click.
+        clicks: isize,
     },
     Dragged(NSPoint),
     Up(NSPoint),
@@ -443,6 +445,7 @@ define_class!(
                 at: self.local(event),
                 shift: flags.contains(NSEventModifierFlags::Shift),
                 cmd: flags.contains(NSEventModifierFlags::Command),
+                clicks: event.clickCount(),
             });
         }
 

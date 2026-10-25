@@ -30,7 +30,7 @@ use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::{DefinedClass, MainThreadMarker};
 use objc2_app_kit::{
-    NSAnimatablePropertyContainer, NSAutoresizingMaskOptions, NSColor, NSFont, NSFontWeightBold,
+    NSAnimatablePropertyContainer, NSAutoresizingMaskOptions, NSEvent, NSFont, NSFontWeightBold,
     NSFontWeightMedium, NSFontWeightSemibold, NSImage, NSImageView, NSLineBreakMode,
     NSTextAlignment, NSTextField, NSView,
 };
@@ -65,6 +65,8 @@ const LIST_GAP: f64 = 10.0;
 const PITCH: f64 = CARD_H + LIST_GAP;
 /// Room left under the last card for the new-task field floating over the board.
 const LIST_BOTTOM: f64 = 96.0;
+/// How far a list can be pulled past either end.
+const OVERSCROLL: f64 = 120.0;
 /// Dragging this close to the top or bottom edge scrolls the column.
 const AUTOSCROLL_EDGE: f64 = 56.0;
 const AUTOSCROLL_SPEED: f64 = 700.0;
@@ -154,6 +156,7 @@ struct Press {
     start: NSPoint,
     /// No modifiers: a click opens the card (or fans its stack).
     plain: bool,
+    clicks: isize,
 }
 
 struct Drag {
@@ -206,6 +209,8 @@ pub struct Board {
     press: RefCell<Option<Press>>,
     drag: RefCell<Option<Drag>>,
     gesture: Cell<Gesture>,
+    /// Fingers on the trackpad: an overscrolled list waits for them to lift.
+    fingers: Cell<bool>,
     /// The card order last applied to the views, and which of them were lifted.
     stacking: RefCell<(Vec<TaskId>, Vec<bool>)>,
     /// The card under the pointer, for the glass highlight in a fanned stack.
@@ -217,6 +222,8 @@ pub struct Board {
     spawn: Cell<Option<(NSRect, Status)>>,
     timer: RefCell<Option<Retained<NSTimer>>>,
     last_tick: Cell<f64>,
+    /// Folds a fan after a single click, unless a double-click follows.
+    unfan_timer: RefCell<Option<Retained<NSTimer>>>,
     /// Tells the window which column to tint while dragging.
     on_target: Box<dyn Fn(Option<usize>)>,
 }
@@ -250,12 +257,14 @@ impl Board {
             press: RefCell::new(None),
             drag: RefCell::new(None),
             gesture: Cell::new(Gesture::Idle),
+            fingers: Cell::new(false),
             hover: Cell::new(None),
             stacking: RefCell::new(Default::default()),
             hidden: Cell::new(None),
             spawn: Cell::new(None),
             timer: RefCell::new(None),
             last_tick: Cell::new(0.0),
+            unfan_timer: RefCell::new(None),
             on_target: Box::new(on_target),
         });
         let weak = Rc::downgrade(&board);
@@ -385,6 +394,24 @@ impl Board {
         }
     }
 
+    /// The card's rotation where it rests, in degrees.
+    pub fn card_angle(&self, id: TaskId) -> f64 {
+        self.cards.borrow().get(&id).map_or(0.0, |c| c.body.tr)
+    }
+
+    /// Brings a card hidden for the modal back in step with the panel closing on it.
+    pub fn reveal(&self, id: TaskId) {
+        if self.hidden.get() == Some(id) {
+            self.hidden.set(None);
+        }
+        if let Some(c) = self.cards.borrow().get(&id) {
+            let view = c.view.clone();
+            animate(true, motion::MODAL_CLOSE_SECS, move || {
+                view.animator().setAlphaValue(1.0)
+            });
+        }
+    }
+
     pub fn is_stacked(&self) -> bool {
         self.layouts.get()[0] != Layout::List
     }
@@ -432,6 +459,7 @@ impl Board {
                 at: pt(at),
                 shift,
                 cmd,
+                clicks: 1,
             },
             DemoPointer::Drag(at) => CanvasMsg::Dragged(pt(at)),
             DemoPointer::Up(at) => CanvasMsg::Up(pt(at)),
@@ -485,13 +513,13 @@ impl Board {
 
     fn list_x(&self, ci: usize) -> f64 {
         let g = self.geom.get()[ci];
-        (g.x + (g.w - CARD_W) / 2.0).round()
+        physics::centred_left(g.x, g.w, CARD_W)
     }
 
     /// Top-left of a stack's top card, centred in the column.
     fn stack_anchor(&self, ci: usize) -> (f64, f64) {
         let g = self.geom.get()[ci];
-        ((g.x + (g.w - CARD_W) / 2.0).round(), LIST_TOP + 10.0)
+        (physics::centred_left(g.x, g.w, CARD_W), LIST_TOP + 10.0)
     }
 
     // ---- cards ----
@@ -504,14 +532,9 @@ impl Board {
         // Scaling shrinks the frame and keeps card-sized bounds; the parts must not
         // follow the frame, or they would shrink twice.
         view.setAutoresizesSubviews(false);
+        // No dark shadow: overlapping cards would stack it up into a smudge. The
+        // face's soft white glow is the only edge.
         view.setWantsLayer(true);
-        if let Some(layer) = view.layer() {
-            layer.setShadowColor(Some(&NSColor::blackColor().CGColor()));
-            // A light dark shadow under the face's white glow.
-            layer.setShadowOpacity(0.07);
-            layer.setShadowRadius(14.0);
-            layer.setShadowOffset(NSSize::new(0.0, -2.0));
-        }
         let fill_mask = NSAutoresizingMaskOptions::ViewWidthSizable
             | NSAutoresizingMaskOptions::ViewHeightSizable;
 
@@ -795,7 +818,7 @@ impl Board {
                 .filter(|(_, c)| c.lifted == on_overlay)
                 .map(|(_, c)| Retained::into_super(c.view.clone()))
                 .collect();
-            parent.setSubviews(&NSArray::from_retained_slice(&views));
+            motion::quietly(|| parent.setSubviews(&NSArray::from_retained_slice(&views)));
         }
         *self.stacking.borrow_mut() = key;
     }
@@ -825,6 +848,7 @@ impl Board {
         let dt = (now - self.last_tick.replace(now)).clamp(0.0, 1.0 / 30.0);
         let reduce = motion::reduce_motion();
         self.autoscroll(dt);
+        let springing = self.spring_back(dt);
         let dragging = self.drag.borrow().is_some();
         let overlay_dy = self.overlay_dy.get();
         let mut cards = self.cards.borrow_mut();
@@ -856,7 +880,7 @@ impl Board {
             }
         }
 
-        let mut moving = dragging;
+        let mut moving = dragging || springing;
         let drag_ids = self.dragged();
         for card in cards.values_mut() {
             if reduce && !dragging {
@@ -943,15 +967,65 @@ impl Board {
     /// Scrolls a list column by `delta` (clamped), moving its cards with it right away.
     /// Returns true when it moved.
     fn scroll_column(&self, ci: usize, delta: f64) -> bool {
-        let mut scroll = self.scroll.get();
         if self.layouts.get()[ci] != Layout::List {
-            scroll[ci] = 0.0;
-            self.scroll.set(scroll);
+            return self.set_scroll(ci, 0.0);
+        }
+        let new = (self.scroll.get()[ci] + delta).clamp(0.0, self.scroll_max(ci));
+        self.set_scroll(ci, new)
+    }
+
+    /// How far a list column can scroll.
+    fn scroll_max(&self, ci: usize) -> f64 {
+        let n = self.order.borrow()[ci].len();
+        (LIST_TOP + n as f64 * PITCH + LIST_BOTTOM - self.height.get()).max(0.0)
+    }
+
+    /// Trackpad scrolling: past either end the list follows the fingers with growing
+    /// resistance, and springs back once they lift ([`Self::spring_back`]).
+    fn scroll_elastic(self: &Rc<Self>, ci: usize, delta: f64) {
+        if self.layouts.get()[ci] != Layout::List {
+            return;
+        }
+        let (s, max) = (self.scroll.get()[ci], self.scroll_max(ci));
+        let outside = |v: f64| (v < 0.0 && delta < 0.0) || (v > max && delta > 0.0);
+        let delta = if outside(s + delta) {
+            // The further out, the stiffer.
+            let over = if s < 0.0 { -s } else { (s - max).max(0.0) };
+            delta * 0.4 * (1.0 - over / OVERSCROLL).max(0.0)
+        } else {
+            delta
+        };
+        self.set_scroll(ci, (s + delta).clamp(-OVERSCROLL, max + OVERSCROLL));
+        self.kick();
+    }
+
+    /// Eases overscrolled columns back into range once no fingers are on the
+    /// trackpad. Returns true while any is still moving.
+    fn spring_back(&self, dt: f64) -> bool {
+        if self.fingers.get() {
             return false;
         }
-        let n = self.order.borrow()[ci].len();
-        let max = (LIST_TOP + n as f64 * PITCH + LIST_BOTTOM - self.height.get()).max(0.0);
-        let new = (scroll[ci] + delta).clamp(0.0, max);
+        let mut moving = false;
+        for ci in 0..3 {
+            let (s, max) = (self.scroll.get()[ci], self.scroll_max(ci));
+            let target = s.clamp(0.0, max);
+            if s == target {
+                continue;
+            }
+            let mut new = s + (target - s) * (1.0 - (-dt * 14.0).exp());
+            if (new - target).abs() < 0.3 {
+                new = target;
+            }
+            self.set_scroll(ci, new);
+            moving = true;
+        }
+        moving
+    }
+
+    /// Sets a column's scroll offset, moving its cards with it right away. Returns
+    /// true when it moved.
+    fn set_scroll(&self, ci: usize, new: f64) -> bool {
+        let mut scroll = self.scroll.get();
         let d = new - scroll[ci];
         scroll[ci] = new;
         self.scroll.set(scroll);
@@ -978,7 +1052,12 @@ impl Board {
 
     fn on_msg(self: &Rc<Self>, msg: CanvasMsg) {
         match msg {
-            CanvasMsg::Down { at, shift, cmd } => self.on_down(at, shift, cmd),
+            CanvasMsg::Down {
+                at,
+                shift,
+                cmd,
+                clicks,
+            } => self.on_down(at, shift, cmd, clicks),
             CanvasMsg::Dragged(p) => {
                 if self.drag.borrow().is_none() {
                     let Some(press) = self.press.borrow_mut().take() else {
@@ -1001,7 +1080,7 @@ impl Board {
                 } else if let Some(press) = self.press.borrow_mut().take()
                     && press.plain
                 {
-                    self.click(press.id);
+                    self.click(press.id, press.clicks);
                 }
             }
             CanvasMsg::Scroll(s) => self.on_scroll(s),
@@ -1015,7 +1094,7 @@ impl Board {
         }
     }
 
-    fn on_down(self: &Rc<Self>, at: NSPoint, shift: bool, cmd: bool) {
+    fn on_down(self: &Rc<Self>, at: NSPoint, shift: bool, cmd: bool, clicks: isize) {
         let id = self.hit(at);
         if let Some(id) = id {
             if cmd {
@@ -1035,6 +1114,7 @@ impl Board {
             id,
             start: at,
             plain: !cmd && !shift,
+            clicks,
         });
     }
 
@@ -1061,13 +1141,28 @@ impl Board {
     }
 
     /// A plain click: fan a folded stack, open a card, or clear on empty board.
-    fn click(self: &Rc<Self>, id: Option<TaskId>) {
+    fn click(self: &Rc<Self>, id: Option<TaskId>, clicks: isize) {
         let Some(id) = id else {
+            self.cancel_unfan();
             self.clear_selection();
             return;
         };
         let col = self.column_of(id);
         let mut layouts = self.layouts.get();
+        // In a fanned stack a click folds it back and a double-click opens the card.
+        // The first click of a double waits out the double-click interval, so the
+        // fan stays put for the second one.
+        if layouts.contains(&Layout::Stack { fanned: true }) {
+            if clicks >= 2 {
+                self.cancel_unfan();
+                self.selected.borrow_mut().clear();
+                self.retarget();
+                (self.sink)(UiEvent::ToggleExpand(id));
+            } else {
+                self.unfan_soon();
+            }
+            return;
+        }
         if let Some(ci) = col
             && layouts[ci] == (Layout::Stack { fanned: false })
             && self.order.borrow()[ci].len() > 1
@@ -1082,6 +1177,32 @@ impl Board {
         self.anchor.set(Some(id));
         self.retarget();
         (self.sink)(UiEvent::ToggleExpand(id));
+    }
+
+    /// Folds the fan once the double-click interval has passed without a second click.
+    fn unfan_soon(self: &Rc<Self>) {
+        self.cancel_unfan();
+        let weak = Rc::downgrade(self);
+        let block = RcBlock::new(move |_timer: NonNull<NSTimer>| {
+            if let Some(b) = weak.upgrade() {
+                b.unfan_timer.borrow_mut().take();
+                if b.unfan() {
+                    b.retarget();
+                    b.kick();
+                }
+            }
+        });
+        let interval = NSEvent::doubleClickInterval();
+        let timer = unsafe {
+            NSTimer::scheduledTimerWithTimeInterval_repeats_block(interval, false, &block)
+        };
+        *self.unfan_timer.borrow_mut() = Some(timer);
+    }
+
+    fn cancel_unfan(&self) {
+        if let Some(t) = self.unfan_timer.borrow_mut().take() {
+            t.invalidate();
+        }
     }
 
     /// Folds fanned stacks back. Returns true when one was fanned.
@@ -1110,6 +1231,10 @@ impl Board {
 
     fn on_scroll(self: &Rc<Self>, s: Scroll) {
         let col = self.column_at(s.at.x);
+        if s.swipe == Swipe::Ended {
+            self.fingers.set(false);
+            self.kick();
+        }
         match (s.swipe, self.gesture.get()) {
             (Swipe::None, _) => {
                 if let Some(ci) = col {
@@ -1117,6 +1242,7 @@ impl Board {
                 }
             }
             (Swipe::Began, _) => {
+                self.fingers.set(true);
                 self.gesture.set(Gesture::Deciding {
                     at: s.at,
                     finger: s.finger,
@@ -1141,7 +1267,7 @@ impl Board {
                     _ => {
                         let ci = self.column_at(at.x);
                         if let Some(ci) = ci {
-                            self.scroll_column(ci, scroll);
+                            self.scroll_elastic(ci, scroll);
                         }
                         self.gesture.set(Gesture::Scrolling(ci));
                     }
@@ -1149,7 +1275,7 @@ impl Board {
             }
             (Swipe::Changed | Swipe::Coasting, Gesture::Scrolling(ci)) => {
                 if let Some(ci) = ci {
-                    self.scroll_column(ci, s.scroll);
+                    self.scroll_elastic(ci, s.scroll);
                 }
             }
             (Swipe::Changed, Gesture::Dragging(c)) => {
@@ -1164,7 +1290,7 @@ impl Board {
             (Swipe::Ended, Gesture::Deciding { .. }) => self.gesture.set(Gesture::Idle),
             (Swipe::Coasting, Gesture::Idle) => {
                 if let Some(ci) = col {
-                    self.scroll_column(ci, s.scroll);
+                    self.scroll_elastic(ci, s.scroll);
                 }
             }
             _ => {}
@@ -1190,10 +1316,9 @@ impl Board {
         };
         {
             let mut cards = self.cards.borrow_mut();
-            for (i, x) in ids.iter().enumerate() {
+            for x in &ids {
                 if let Some(card) = cards.get_mut(x) {
                     card.lift(&self.overlay);
-                    card.set_raised(i == 0);
                 }
             }
         }
@@ -1244,14 +1369,6 @@ impl Board {
             return;
         };
         (self.on_target)(None);
-        {
-            let mut cards = self.cards.borrow_mut();
-            for id in &drag.ids {
-                if let Some(card) = cards.get_mut(id) {
-                    card.set_raised(false);
-                }
-            }
-        }
         if let Some(col) = drag.target {
             let before = self.order.borrow()[col].clone();
             // The cards land in the order they had on the board, whichever one led.
@@ -1318,8 +1435,10 @@ impl Card {
     fn lift(&mut self, overlay: &OverlayView) {
         if !self.lifted {
             self.lifted = true;
-            self.view.removeFromSuperview();
-            overlay.addSubview(&self.view);
+            motion::quietly(|| {
+                self.view.removeFromSuperview();
+                overlay.addSubview(&self.view);
+            });
         }
     }
 
@@ -1327,18 +1446,10 @@ impl Card {
     fn land(&mut self, canvas: &CanvasView) {
         if self.lifted {
             self.lifted = false;
-            self.view.removeFromSuperview();
-            canvas.addSubview(&self.view);
-        }
-    }
-
-    /// A deeper shadow while held.
-    fn set_raised(&self, on: bool) {
-        motion::soften(&self.view);
-        if let Some(layer) = self.view.layer() {
-            layer.setShadowOpacity(if on { 0.18 } else { 0.07 });
-            layer.setShadowRadius(if on { 16.0 } else { 14.0 });
-            layer.setShadowOffset(NSSize::new(0.0, if on { -8.0 } else { -2.0 }));
+            motion::quietly(|| {
+                self.view.removeFromSuperview();
+                canvas.addSubview(&self.view);
+            });
         }
     }
 
@@ -1453,6 +1564,7 @@ impl Card {
                 NSPoint::new(lerp(start.0, 0.0), lerp(start.1, 0.0)),
                 NSSize::new(CARD_W, CARD_H),
             ));
+            self.content.setBoundsSize(NSSize::new(CARD_W, CARD_H));
             for v in [&*self.icon as &NSView, &self.time, &self.dots, &self.face] {
                 v.setAlphaValue(t);
             }
@@ -1465,8 +1577,21 @@ impl Card {
             NSPoint::new(b.x + (CARD_W - w) / 2.0, b.y + dy + (CARD_H - h) / 2.0),
             NSSize::new(w, h),
         ));
-        // Bounds stay card-sized, so the content scales with the frame.
-        self.view.setBoundsSize(NSSize::new(CARD_W, CARD_H));
+        // Scale by sizing the parts, not the card's bounds: the blur layer ignores
+        // bounds scaling and would draw full-size from the card's top-left corner.
+        // Only the text scales, through the content view's own bounds.
+        let size = NSSize::new(w, h);
+        self.view.setBoundsSize(size);
+        let local = NSRect::new(NSPoint::ZERO, size);
+        for part in &self.parts {
+            part.setFrame(local);
+        }
+        self.content.setFrame(local);
+        self.content.setBoundsSize(NSSize::new(CARD_W, CARD_H));
+        self.label.setFrame(NSRect::new(
+            NSPoint::new(8.0 * s, (h - 30.0 * s) / 2.0),
+            NSSize::new(w - 16.0 * s, 30.0 * s),
+        ));
         // The canvas is flipped, so AppKit's positive rotation already reads clockwise.
         self.view.setFrameCenterRotation(b.r);
     }

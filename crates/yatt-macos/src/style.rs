@@ -10,7 +10,7 @@ use objc2_app_kit::{
     NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
 };
 use objc2_core_image::CIFilter;
-use objc2_foundation::{NSArray, NSNumber, NSObjectNSKeyValueCoding, NSRect, ns_string};
+use objc2_foundation::{NSArray, NSNumber, NSObjectNSKeyValueCoding, NSRect, NSString, ns_string};
 use objc2_quartz_core::{CALayer, kCACornerCurveContinuous};
 use yatt_core::TaskId;
 
@@ -22,16 +22,19 @@ pub const CARD_H: f64 = 101.0;
 pub const CARD_RADIUS: f64 = 20.0;
 /// Blur of what shows through a card, in points (Tailwind's backdrop-blur-sm).
 pub const CARD_BLUR: f64 = 4.0;
+/// Saturation boost of what shows through a card.
+pub const CARD_SATURATE: f64 = 1.08;
 
 type Rgb = (u8, u8, u8);
 
-/// (fill, text) as sRGB, from the clip: blue, pink, purple, yellow, green, white.
+/// (fill, text) as sRGB: the clip's blue, pink, purple, yellow and green with a
+/// quarter more saturation, and white.
 const HUES: [(Rgb, Rgb); 6] = [
-    ((0x7F, 0x9C, 0xF5), (0x22, 0x31, 0x6B)),
-    ((0xF2, 0x8B, 0x9B), (0x6B, 0x1E, 0x2A)),
-    ((0xB4, 0x5E, 0xF0), (0x3E, 0x11, 0x60)),
-    ((0xEE, 0xF5, 0x8C), (0x4F, 0x54, 0x1A)),
-    ((0x8F, 0xD0, 0xA2), (0x22, 0x54, 0x3A)),
+    ((0x62, 0x86, 0xF5), (0x22, 0x31, 0x6B)),
+    ((0xF2, 0x71, 0x85), (0x6B, 0x1E, 0x2A)),
+    ((0xA5, 0x3A, 0xF0), (0x3E, 0x11, 0x60)),
+    ((0xEC, 0xF5, 0x72), (0x4F, 0x54, 0x1A)),
+    ((0x7F, 0xD0, 0x96), (0x22, 0x54, 0x3A)),
     ((0xF6, 0xF6, 0xF8), (0x2E, 0x2E, 0x34)),
 ];
 
@@ -128,19 +131,26 @@ pub fn card_blur(mtm: MainThreadMarker) -> Retained<NSView> {
 fn backdrop_layer(radius: f64) -> Option<Retained<CALayer>> {
     let backdrop = AnyClass::get(c"CABackdropLayer")?;
     let filter_class = AnyClass::get(c"CAFilter")?;
-    let filter: Option<Retained<NSObject>> =
-        unsafe { msg_send![filter_class, filterWithType: ns_string!("gaussianBlur")] };
-    let filter = filter?;
+    let filter = |kind: &NSString| -> Option<Retained<NSObject>> {
+        unsafe { msg_send![filter_class, filterWithType: kind] }
+    };
+    // Like CSS `backdrop-filter: blur(4px) saturate(1.08)`.
+    let blur = filter(ns_string!("gaussianBlur"))?;
+    let saturate = filter(ns_string!("colorSaturate"))?;
     let layer: Option<Retained<CALayer>> = unsafe { msg_send![backdrop, layer] };
     let layer = layer?;
     unsafe {
-        filter.setValue_forKey(Some(&NSNumber::new_f64(radius)), ns_string!("inputRadius"));
-        filter.setValue_forKey(
+        blur.setValue_forKey(Some(&NSNumber::new_f64(radius)), ns_string!("inputRadius"));
+        blur.setValue_forKey(
             Some(&NSNumber::new_bool(true)),
             ns_string!("inputNormalizeEdges"),
         );
+        saturate.setValue_forKey(
+            Some(&NSNumber::new_f64(CARD_SATURATE)),
+            ns_string!("inputAmount"),
+        );
         let filters: Retained<NSArray> =
-            Retained::cast_unchecked(NSArray::from_retained_slice(&[filter]));
+            Retained::cast_unchecked(NSArray::from_retained_slice(&[blur, saturate]));
         layer.setFilters(Some(&filters));
     }
     Some(layer)

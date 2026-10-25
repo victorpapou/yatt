@@ -140,6 +140,21 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
         window.demo_toggle_stack();
         wait(600).await;
         shot("8-stack");
+        // A wide window: every stack must stay on its column's centre line.
+        window.demo_resize(1800.0, 900.0);
+        wait(500).await;
+        for col in 0..3 {
+            if let Some(&top) = ids(cx, col).first() {
+                let (x, _) = centre(top);
+                eprintln!(
+                    "demo: column {col} centre {:.1}, stack centre {x:.1}",
+                    window.demo_column_x(col)
+                );
+            }
+        }
+        shot("8b-stack-wide");
+        window.demo_resize(1100.0, 720.0);
+        wait(500).await;
         if let Some(&top) = ids(cx, 1).first() {
             let at = centre(top);
             click(at, false, false);

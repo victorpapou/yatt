@@ -295,6 +295,17 @@ impl MainWindow {
         self.ui.cards.demo_column_x(column)
     }
 
+    /// Development aid: resizes the window's content, keeping its top-left corner.
+    pub fn demo_resize(&self, w: f64, h: f64) {
+        let f = self.ui.window.frame();
+        let content = self.ui.window.contentRectForFrameRect(f);
+        let frame = self.ui.window.frameRectForContentRect(NSRect::new(
+            NSPoint::new(content.origin.x, content.origin.y + content.size.height - h),
+            NSSize::new(w, h),
+        ));
+        self.ui.window.setFrame_display(frame, true);
+    }
+
     /// Development aid: the board's list/stack toggle.
     pub fn demo_toggle_stack(&self) {
         self.ui.toggle_stack();
@@ -646,8 +657,11 @@ impl Ui {
         }
         if let Some(id) = open {
             let to = self.card_rect_in_root(id);
+            // The card shows again under the shrinking panel, so its text is there
+            // the whole way down.
+            self.cards.reveal(id);
             let weak = Rc::downgrade(self);
-            self.modal.close(to, move || {
+            self.modal.close(to, self.cards.card_angle(id), move || {
                 if let Some(ui) = weak.upgrade() {
                     ui.cards.set_hidden(None);
                 }
@@ -659,7 +673,9 @@ impl Ui {
                 .card_rect_in_root(card.id)
                 .unwrap_or_else(|| Modal::target_frame(self.root.bounds()));
             self.cards.set_hidden(Some(card.id));
-            self.modal.open(&card, status, from, self.root.bounds());
+            let deg = self.cards.card_angle(card.id);
+            self.modal
+                .open(&card, status, from, deg, self.root.bounds());
         }
     }
 

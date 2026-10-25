@@ -34,7 +34,7 @@ pub const ROTATION: Spring = Spring::new(500.0, 0.95);
 
 /// The `i`-th card behind the lead (1-based): softer, so the train stretches out.
 pub fn follower(i: usize) -> Spring {
-    Spring::new(420.0 / (1.0 + 0.15 * i as f64), 0.9)
+    Spring::new(840.0 / (1.0 + 0.15 * i as f64), 0.9)
 }
 
 /// Degrees of tilt per point/second of horizontal speed.
@@ -152,6 +152,11 @@ pub fn fan(i: usize, n: usize, w: f64) -> (f64, f64, f64) {
     (r * at.cos(), r * at.sin(), -0.68 * turn + turn * t)
 }
 
+/// Left edge of a `card_w` wide card centred on a column at `x` that is `w` wide.
+pub fn centred_left(x: f64, w: f64, card_w: f64) -> f64 {
+    (x + (w - card_w) / 2.0).round()
+}
+
 /// Where a card dropped with its centre at `y` lands in a list whose first slot
 /// starts at `top`, slots `pitch` apart, holding `n` cards.
 pub fn insert_index(y: f64, top: f64, pitch: f64, n: usize) -> usize {
@@ -197,6 +202,14 @@ mod tests {
             }
         }
         assert!(lead.x > f1.x && f1.x > f3.x);
+    }
+
+    #[test]
+    fn cards_centre_on_their_column() {
+        // A wide window: the third of 1800 pt starts at 1200.
+        let left = centred_left(1200.0, 600.0, 230.0);
+        assert_eq!(left + 115.0, 1500.0);
+        assert_eq!(centred_left(0.0, 366.0, 230.0), 68.0);
     }
 
     #[test]

@@ -41,6 +41,15 @@ pub fn soften(view: &objc2_app_kit::NSView) {
     layer.addAnimation_forKey(&t, Some(objc2_foundation::ns_string!("soften")));
 }
 
+/// Runs `f` with Core Animation's implicit actions off, so moving a card's view
+/// between parents or reordering siblings shows no fade or flash.
+pub fn quietly(f: impl FnOnce()) {
+    objc2_quartz_core::CATransaction::begin();
+    objc2_quartz_core::CATransaction::setDisableActions(true);
+    f();
+    objc2_quartz_core::CATransaction::commit();
+}
+
 /// System setting "Reduce motion": cross-fade instead of moving things around.
 pub fn reduce_motion() -> bool {
     NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()

@@ -52,7 +52,9 @@ pub struct Modal {
     _retained: Vec<Retained<AnyObject>>,
 }
 
-/// Springs the panel's frame towards a target rect: origin and size each ride a body.
+/// Springs the panel's frame towards a target rect: origin (with the rotation, so a
+/// card in a fan unturns as it grows and turns back as it lands) and size each
+/// ride a body.
 struct Morph {
     panel: Retained<FillView>,
     origin: Cell<Body>,
@@ -63,26 +65,37 @@ struct Morph {
 }
 
 impl Morph {
-    fn jump(&self, r: NSRect) {
+    fn jump(&self, r: NSRect, deg: f64) {
         let mut o = Body::at(r.origin.x, r.origin.y);
+        o.r = deg;
+        o.tr = deg;
         let mut s = Body::at(r.size.width, r.size.height);
         o.spring = physics::MORPH;
         s.spring = physics::MORPH;
         self.origin.set(o);
         self.size.set(s);
-        self.panel.setFrame(r);
+        self.place(o, s);
+    }
+
+    fn place(&self, o: Body, s: Body) {
+        self.panel.setFrameCenterRotation(0.0);
+        self.panel.setFrame(NSRect::new(
+            NSPoint::new(o.x, o.y),
+            NSSize::new(s.x.max(1.0), s.y.max(1.0)),
+        ));
+        self.panel.setFrameCenterRotation(o.r);
     }
 
     /// Springs to `r`, then runs `done` (dropping any earlier one unrun).
-    fn to(self: &Rc<Self>, r: NSRect, done: Option<Box<dyn Fn()>>) {
+    fn to(self: &Rc<Self>, r: NSRect, deg: f64, done: Option<Box<dyn Fn()>>) {
         let (mut o, mut s) = (self.origin.get(), self.size.get());
-        o.target(r.origin.x, r.origin.y, 0.0);
+        o.target(r.origin.x, r.origin.y, deg);
         s.target(r.size.width, r.size.height, 0.0);
         self.origin.set(o);
         self.size.set(s);
         *self.done.borrow_mut() = done;
         if motion::reduce_motion() {
-            self.jump(r);
+            self.jump(r, deg);
             self.finish();
             return;
         }
@@ -115,10 +128,7 @@ impl Morph {
         }
         self.origin.set(o);
         self.size.set(s);
-        self.panel.setFrame(NSRect::new(
-            NSPoint::new(o.x, o.y),
-            NSSize::new(s.x.max(1.0), s.y.max(1.0)),
-        ));
+        self.place(o, s);
         if rest {
             if let Some(t) = self.timer.borrow_mut().take() {
                 t.invalidate();
@@ -338,7 +348,7 @@ impl Modal {
         self.dim.setFrame(bounds);
         let frame = Self::target_frame(bounds);
         if self.open.get().is_some() {
-            self.morph.jump(frame);
+            self.morph.jump(frame, 0.0);
         }
         let (w, h) = (frame.size.width, frame.size.height);
         let pad = 24.0;
@@ -377,7 +387,8 @@ impl Modal {
     }
 
     /// Morphs from `from` (the card, in the dim view's coordinates) to the centred panel.
-    pub fn open(&self, snap: &CardSnap, status: Status, from: NSRect, bounds: NSRect) {
+    /// `deg` is the card's rotation (in a fan); the panel turns upright as it grows.
+    pub fn open(&self, snap: &CardSnap, status: Status, from: NSRect, deg: f64, bounds: NSRect) {
         self.open.set(Some(snap.id));
         *self.title_known.borrow_mut() = snap.title.clone();
         *self.notes_known.borrow_mut() = snap.notes.clone();
@@ -392,13 +403,13 @@ impl Modal {
         self.content
             .setFrame(NSRect::new(NSPoint::ZERO, target.size));
         self.layout(bounds);
-        self.morph.jump(from);
+        self.morph.jump(from, deg);
         self.panel.setAlphaValue(1.0);
         self.content.setAlphaValue(0.0);
         self.dim.setAlphaValue(0.0);
         self.dim.setHidden(false);
         self.panel.setHidden(false);
-        self.morph.to(target, None);
+        self.morph.to(target, 0.0, None);
         let (content, dim) = (self.content.clone(), self.dim.clone());
         animate(true, motion::MODAL_OPEN_SECS, move || {
             content.animator().setAlphaValue(1.0);
@@ -411,7 +422,8 @@ impl Modal {
     }
 
     /// Morphs back into `to` (the card's frame), or fades out when the card is gone.
-    pub fn close(&self, to: Option<NSRect>, done: impl Fn() + 'static) {
+    /// Lands on `to` turned by `deg`, the card's place and angle.
+    pub fn close(&self, to: Option<NSRect>, deg: f64, done: impl Fn() + 'static) {
         self.editor.flush();
         if let Some(window) = self.panel.window() {
             window.makeFirstResponder(None);
@@ -430,6 +442,7 @@ impl Modal {
         let to = to.unwrap_or_else(|| self.panel.frame());
         self.morph.to(
             to,
+            deg,
             Some(Box::new(move || {
                 panel.setHidden(true);
                 panel.setAlphaValue(1.0);

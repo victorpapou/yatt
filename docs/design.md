@@ -16,9 +16,10 @@ content and colour. Nothing is cross-faded or swapped for a separate view.
 ## Card material
 
 A flat tint of the card's colour at 55% (white cards 65%) over a 4 pt blur of
-what is behind it (Tailwind's backdrop-blur-sm), so text behind is only a soft patch;
-then a plain 1 px light rim (white, 60%) with continuous corners, and a soft white glow
-over a faint dark shadow. No gradients.
+what is behind it with a slight saturation boost (CSS `backdrop-filter: blur(4px)
+saturate(1.08)`), so text behind is only a soft patch; then a plain 1 px light rim
+(white, 60%) with continuous corners and a thin soft white glow. No gradients, and
+no dark shadow: on overlapping cards it would add up into a smudge.
 
 ## Nothing jumps
 
@@ -29,3 +30,11 @@ with no bounce (`physics.rs`). Where a spring makes no sense (a colour, a ring, 
 shadow, a label's text) the change eases over 150 ms through `motion::soften`,
 because AppKit turns off implicit animations on a view's layer and a plain
 setter would jump.
+
+## No artefacts
+
+Seamless also means nothing flickers: no flash or fade when a card moves to
+another column or onto the drag layer (views move between parents with Core
+Animation's implicit actions off, `motion::quietly`), no shadows piling up where
+cards overlap, and no part of a card drawing outside its shape when it scales
+(the blur and the tint are sized by hand; only the text scales).
