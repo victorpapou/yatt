@@ -1,0 +1,202 @@
+//! Card colours, glyphs and sizes, matched to the reference clip
+//! (docs/reference/card-motion.md).
+
+use objc2::MainThreadMarker;
+use objc2::msg_send;
+use objc2::rc::Retained;
+use objc2::runtime::{AnyClass, NSObject};
+use objc2_app_kit::{
+    NSAutoresizingMaskOptions, NSColor, NSGlassEffectView, NSView, NSVisualEffectBlendingMode,
+    NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
+};
+use objc2_core_image::CIFilter;
+use objc2_foundation::{NSArray, NSNumber, NSObjectNSKeyValueCoding, NSRect, NSString, ns_string};
+use objc2_quartz_core::{CALayer, kCACornerCurveContinuous};
+use yatt_core::TaskId;
+
+use crate::classes::FlippedView;
+
+/// Card size; the height keeps the clip's 2.27 : 1 proportion.
+pub const CARD_W: f64 = 230.0;
+pub const CARD_H: f64 = 101.0;
+pub const CARD_RADIUS: f64 = 20.0;
+/// Blur of what shows through a card, in points (Tailwind's backdrop-blur-sm).
+pub const CARD_BLUR: f64 = 4.0;
+/// Saturation boost of what shows through a card.
+pub const CARD_SATURATE: f64 = 1.08;
+
+type Rgb = (u8, u8, u8);
+
+/// (fill, text) as sRGB: the clip's blue, pink, purple, yellow and green with a
+/// quarter more saturation, and white.
+const HUES: [(Rgb, Rgb); 6] = [
+    ((0x62, 0x86, 0xF5), (0x22, 0x31, 0x6B)),
+    ((0xF2, 0x71, 0x85), (0x6B, 0x1E, 0x2A)),
+    ((0xA5, 0x3A, 0xF0), (0x3E, 0x11, 0x60)),
+    ((0xEC, 0xF5, 0x72), (0x4F, 0x54, 0x1A)),
+    ((0x7F, 0xD0, 0x96), (0x22, 0x54, 0x3A)),
+    ((0xF6, 0xF6, 0xF8), (0x2E, 0x2E, 0x34)),
+];
+
+/// Filled SF Symbols in the spirit of the clip's event glyphs.
+const GLYPHS: [&str; 6] = [
+    "paperplane.fill",
+    "flag.fill",
+    "bubble.left.fill",
+    "sun.max.fill",
+    "calendar",
+    "doc.fill",
+];
+
+/// A stable colour index for a task, until projects and tags carry colours.
+pub fn hue_of(id: TaskId) -> usize {
+    (fold(id) % HUES.len() as u64) as usize
+}
+
+pub fn glyph_of(id: TaskId) -> &'static str {
+    GLYPHS[((fold(id) / 7) % GLYPHS.len() as u64) as usize]
+}
+
+fn fold(id: TaskId) -> u64 {
+    // UUIDv7 starts with a timestamp; the tail is random, so use that.
+    let b = id.0.as_bytes();
+    u64::from_le_bytes([b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]])
+}
+
+fn rgb((r, g, b): Rgb, alpha: f64) -> Retained<NSColor> {
+    NSColor::colorWithSRGBRed_green_blue_alpha(
+        r as f64 / 255.0,
+        g as f64 / 255.0,
+        b as f64 / 255.0,
+        alpha,
+    )
+}
+
+/// The card's tint: translucent, so the cards and board behind it show through
+/// the blur.
+pub fn fill(hue: usize) -> Retained<NSColor> {
+    // Dense enough that text behind is only a soft patch under the light blur.
+    let white = hue % HUES.len() == HUES.len() - 1;
+    rgb(HUES[hue % HUES.len()].0, if white { 0.65 } else { 0.55 })
+}
+
+pub fn text(hue: usize) -> Retained<NSColor> {
+    rgb(HUES[hue % HUES.len()].1, 1.0)
+}
+
+/// Each column's colour, for its header chip: backlog, in progress, done.
+pub fn column_color(i: usize) -> Retained<NSColor> {
+    match i {
+        0 => NSColor::systemGrayColor(),
+        1 => NSColor::systemBlueColor(),
+        _ => NSColor::systemGreenColor(),
+    }
+}
+
+/// The card's text colour as CSS, for the notes editor.
+pub fn text_css(hue: usize) -> String {
+    let (r, g, b) = HUES[hue % HUES.len()].1;
+    format!("#{r:02x}{g:02x}{b:02x}")
+}
+
+/// The blur under a card's tint: what is behind it in the window (other cards,
+/// text, grid lines), blurred by [`CARD_BLUR`] points with no material colour of
+/// its own. A backdrop layer with a Gaussian blur filter, the way the system's own
+/// blur views work inside (private Core Animation classes, looked up at run time);
+/// a system within-window blur where those are missing.
+pub fn card_blur(mtm: MainThreadMarker) -> Retained<NSView> {
+    if let Some(layer) = backdrop_layer(CARD_BLUR) {
+        round(&layer, CARD_RADIUS);
+        layer.setMasksToBounds(true);
+        // A layer-hosting view: AppKit keeps the layer sized to the view.
+        let view = FlippedView::new(mtm, NSRect::ZERO);
+        view.setLayer(Some(&layer));
+        view.setWantsLayer(true);
+        return Retained::into_super(view);
+    }
+    let view = NSVisualEffectView::new(mtm);
+    view.setMaterial(NSVisualEffectMaterial::Popover);
+    view.setBlendingMode(NSVisualEffectBlendingMode::WithinWindow);
+    view.setState(NSVisualEffectState::Active);
+    view.setWantsLayer(true);
+    if let Some(layer) = view.layer() {
+        round(&layer, CARD_RADIUS);
+        layer.setMasksToBounds(true);
+    }
+    Retained::into_super(view)
+}
+
+/// A `CABackdropLayer` blurring what is behind it by `radius` points, if the
+/// running system has the classes.
+fn backdrop_layer(radius: f64) -> Option<Retained<CALayer>> {
+    let backdrop = AnyClass::get(c"CABackdropLayer")?;
+    let filter_class = AnyClass::get(c"CAFilter")?;
+    let filter = |kind: &NSString| -> Option<Retained<NSObject>> {
+        unsafe { msg_send![filter_class, filterWithType: kind] }
+    };
+    // Like CSS `backdrop-filter: blur(4px) saturate(1.08)`.
+    let blur = filter(ns_string!("gaussianBlur"))?;
+    let saturate = filter(ns_string!("colorSaturate"))?;
+    let layer: Option<Retained<CALayer>> = unsafe { msg_send![backdrop, layer] };
+    let layer = layer?;
+    unsafe {
+        blur.setValue_forKey(Some(&NSNumber::new_f64(radius)), ns_string!("inputRadius"));
+        blur.setValue_forKey(
+            Some(&NSNumber::new_bool(true)),
+            ns_string!("inputNormalizeEdges"),
+        );
+        saturate.setValue_forKey(
+            Some(&NSNumber::new_f64(CARD_SATURATE)),
+            ns_string!("inputAmount"),
+        );
+        let filters: Retained<NSArray> =
+            Retained::cast_unchecked(NSArray::from_retained_slice(&[blur, saturate]));
+        layer.setFilters(Some(&filters));
+    }
+    Some(layer)
+}
+
+/// A Gaussian blur filter of `radius` points.
+pub fn gaussian(radius: f64) -> Option<Retained<CIFilter>> {
+    let filter = unsafe { CIFilter::filterWithName(ns_string!("CIGaussianBlur")) }?;
+    unsafe {
+        filter.setDefaults();
+        filter.setValue_forKey(Some(&NSNumber::new_f64(radius)), ns_string!("inputRadius"));
+    }
+    Some(filter)
+}
+
+/// Rounds a layer's corners as a continuous squircle, the way system controls are.
+pub fn round(layer: &CALayer, radius: f64) {
+    layer.setCornerRadius(radius);
+    layer.setCornerCurve(unsafe { kCACornerCurveContinuous });
+}
+
+/// A native glass surface: `NSGlassEffectView` where the system has it, a
+/// within-window blur with a hairline rim otherwise. Put content into the
+/// returned flipped view; it tracks the glass's size.
+pub fn glass(mtm: MainThreadMarker, radius: f64) -> (Retained<NSView>, Retained<FlippedView>) {
+    let content = FlippedView::new(mtm, NSRect::ZERO);
+    content.setAutoresizingMask(
+        NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
+    );
+    if AnyClass::get(c"NSGlassEffectView").is_some() {
+        let glass = NSGlassEffectView::new(mtm);
+        glass.setCornerRadius(radius);
+        glass.setContentView(Some(&content));
+        return (Retained::into_super(glass), content);
+    }
+    let glass = NSVisualEffectView::new(mtm);
+    glass.setMaterial(NSVisualEffectMaterial::Popover);
+    glass.setBlendingMode(NSVisualEffectBlendingMode::WithinWindow);
+    glass.setState(NSVisualEffectState::Active);
+    glass.setWantsLayer(true);
+    if let Some(layer) = glass.layer() {
+        round(&layer, radius);
+        layer.setMasksToBounds(true);
+        layer.setBorderWidth(0.5);
+        layer.setBorderColor(Some(&NSColor::separatorColor().CGColor()));
+    }
+    glass.addSubview(&content);
+    (Retained::into_super(glass), content)
+}

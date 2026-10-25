@@ -37,6 +37,13 @@ pub struct TaskTime {
     pub pomodoros: u32,
 }
 
+/// One tracked interval on a task. `ended_at` is `None` while it is still running.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimeEntry {
+    pub started_at: Timestamp,
+    pub ended_at: Option<Timestamp>,
+}
+
 pub struct Store {
     conn: Connection,
 }
@@ -190,6 +197,21 @@ impl Store {
             today_ms,
             pomodoros,
         })
+    }
+
+    /// The task's latest time entries, newest first.
+    pub fn recent_entries(&self, task: TaskId, limit: usize) -> Result<Vec<TimeEntry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT started_at, ended_at FROM time_entries WHERE task_id = ?1
+             ORDER BY started_at DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![task.0.to_string(), limit as i64], |r| {
+            Ok(TimeEntry {
+                started_at: ts(r.get(0)?)?,
+                ended_at: r.get::<_, Option<i64>>(1)?.map(ts).transpose()?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     /// Wall-clock time worked in `[from, to)`. Parallel entries on several tasks
@@ -409,6 +431,13 @@ mod tests {
         fx.extend(timer.start(Mode::Stopwatch, t(0)));
         store.apply_timer(&fx, &timer).unwrap();
         assert_eq!(store.task_time(a, t(0), t(90)).unwrap().total_ms, 90_000);
+        assert_eq!(
+            store.recent_entries(a, 5).unwrap(),
+            [TimeEntry {
+                started_at: t(0),
+                ended_at: None
+            }]
+        );
     }
 
     #[test]

@@ -3,7 +3,7 @@
 yet another task tracker: a native macOS task manager in Rust + [GPUI](https://www.gpui.rs).
 
 - Kanban board (backlog, in progress, done) with drag and drop and undo.
-- Pomodoro and stopwatch tied to tasks: every second of work is a time entry on each active task.
+- Pomodoro and stopwatch tied to tasks: every second of work is a time entry on each task in "In progress".
 - Focus profiles: app and site blocking, macOS Focus via Shortcuts (in progress).
 
 ## Layout
@@ -12,8 +12,10 @@ yet another task tracker: a native macOS task manager in Rust + [GPUI](https://w
 | --- | --- |
 | `yatt-core` | Domain model: tasks, board ordering, commands + undo, timer state machine. No IO. |
 | `yatt-store` | SQLite persistence (WAL file in `~/Library/Application Support/yatt`). |
+| `yatt-engine` | Live app state: board + timer + store, and the rules between them. No UI, testable anywhere. |
 | `yatt-platform` | OS integration traits (app/site blocking, Focus). macOS and Windows implement them. |
-| `yatt-app` | The GPUI app. The current UI is a placeholder until the real design lands. |
+| `yatt-macos` | Native AppKit window (objc2): renders `Snapshot`s, reports `UiEvent`s. Knows nothing about storage. Notes use Tiptap in a WKWebView, bundled from `crates/yatt-macos/editor` (`npm install && npm run build` there; the built `dist/editor.js` is committed). |
+| `yatt-app` | The app: GPUI holds the state (`Workspace` entity over the engine) and menus; AppKit draws. |
 
 ## Run
 
@@ -21,6 +23,7 @@ yet another task tracker: a native macOS task manager in Rust + [GPUI](https://w
 cargo run -p yatt-app            # macOS 14+
 YATT_DB=/tmp/yatt.sqlite cargo run -p yatt-app   # throwaway database
 cargo test --workspace
+YATT_DEMO=/tmp/yatt-demo cargo run -p yatt-app   # scripted session, saves window PNGs there
 ```
 
-Shortcuts: `space` start/pause, `cmd-.` stop, `cmd-]` skip phase, `cmd-n` new task, `cmd-z` / `cmd-shift-z` undo/redo. Click a card to add it to (or remove it from) the timer; several cards can be active at once.
+Shortcuts: `space` start/pause (outside text fields), `cmd-.` stop, `cmd-]` skip phase, `cmd-n` new task, `cmd-z` / `cmd-shift-z` undo/redo, `cmd-shift-m` timer-only mode, `esc` closes the task. Each column is a stack of glass cards that fans out on hover; click a card to open it (title, markdown notes, time entries), drag it to another column, or shift-drag to carry the whole stack. Motion follows the reference in `docs/reference/card-motion.md`. Time goes to every task in "In progress" while a work phase runs (two tasks there get the full time each). Drag a card out of the column, or delete it, and its time stops.

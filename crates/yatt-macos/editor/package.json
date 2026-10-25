@@ -1,0 +1,19 @@
+{
+  "name": "yatt-notes-editor",
+  "private": true,
+  "description": "Markdown notes editor for yatt's task modal: Tiptap bundled into one file loaded by a WKWebView.",
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "esbuild src/editor.js --bundle --minify --format=iife --target=safari16 --outfile=dist/editor.js --legal-comments=eof"
+  },
+  "dependencies": {
+    "@tiptap/core": "3.32.0",
+    "@tiptap/extensions": "3.32.0",
+    "@tiptap/markdown": "3.32.0",
+    "@tiptap/pm": "3.32.0",
+    "@tiptap/starter-kit": "3.32.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}
