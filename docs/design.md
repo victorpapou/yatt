@@ -117,8 +117,10 @@ tabular digits, tracked +0.15, at 50%.
   past, at rest in about 0.55 s). Opening, the fan swells out of the pile as one
   blob: every card leaves at once (at most 5 ms apart) and goes straight from
   the pile to its place, no sweep round the centre; only there does it lie
-  loose on the spiral. Each card strays a little from its exact place (±2.5° turn, ±2.5 pt,
-  ±2.5° round, fixed by its id, `FAN_JITTER`). Nothing fades: hidden cards are
+  loose on the spiral. Each card strays a little from its exact place (±4° turn, ±4 pt, ±4° round,
+  fixed by its id, `FAN_JITTER`); out of the stack each card starts up to 60 ms
+  late, on its own spring (±28%), launched up to 9° off and ±20% faster, and the
+  blob leans to one side (`FAN_SPILL_VARY`). Nothing fades: hidden cards are
   whole from the first frame under the pile; folding (critically damped, about
   0.3 s) they fly back under it and only then leave the render tree.
 - Scrolling down over a stack fans it out, scrolling up folds it, and the blob

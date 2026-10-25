@@ -472,9 +472,10 @@ fn wrap(a: f64) -> f64 {
 }
 
 /// How far a fanned card strays from its exact place, so the fan looks laid
-/// down by hand: at 1.0, up to ±2.5° in its turn, ±2.5 pt out from the centre
-/// and ±2.5° round it.
+/// down by hand: at 1.0, up to ±4° in its turn, ±4 pt out from the centre and
+/// ±4° round it.
 pub const FAN_JITTER: f64 = 1.0;
+const JITTER_MAX: f64 = 4.0;
 
 /// A card's own stray from its fan place, fixed by `seed` (its id), so it is
 /// the same every time the fan opens: (turn in degrees, out in points, round
@@ -490,15 +491,22 @@ pub fn fan_jitter(seed: u64) -> (f64, f64, f64) {
         x ^= x >> 31;
         (x >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
     };
-    let a = 2.5 * FAN_JITTER;
+    let a = JITTER_MAX * FAN_JITTER;
     (next() * a, next() * a, next() * a)
 }
 
-/// How unevenly the cards spill out of a stack, at 1.0: each card starts up to
-/// 30 ms late, its spring ±15% stiffer or softer and ±15% more or less damped,
-/// launched up to 6° off its straight way and ±10% faster; and the whole blob
-/// leans to one side of the stack (its top card's way) at up to 60 pt/s.
+/// How unevenly the cards spill out of a stack, at [`FAN_SPILL_VARY`] 1.0:
+/// each card starts up to `SPILL_DELAY` late, its spring stiffer or softer and
+/// more or less damped by up to `SPILL_SPRING`, launched up to `SPILL_TURN`
+/// degrees off its straight way and faster or slower by up to `SPILL_SPEED`;
+/// and the whole blob leans to one side of the stack (its top card's way) at
+/// up to `SPILL_LEAN` pt/s.
 pub const FAN_SPILL_VARY: f64 = 1.0;
+const SPILL_DELAY: f64 = 0.06;
+const SPILL_SPRING: f64 = 0.28;
+const SPILL_TURN: f64 = 9.0;
+const SPILL_SPEED: f64 = 0.2;
+const SPILL_LEAN: f64 = 90.0;
 
 /// `n` numbers in −1..1 fixed by `seed` (a different stream from [`fan_jitter`]).
 fn spread(seed: u64, n: usize) -> Vec<f64> {
@@ -506,21 +514,21 @@ fn spread(seed: u64, n: usize) -> Vec<f64> {
     let (d, e, f) = fan_jitter(seed.rotate_left(17) ^ 0xA5A5_5A5A_1234_5678);
     [a, b, c, d, e, f][..n]
         .iter()
-        .map(|x| x / 2.5 / FAN_JITTER.max(1e-9))
+        .map(|x| x / JITTER_MAX / FAN_JITTER.max(1e-9))
         .collect()
 }
 
 /// How late a card starts out of the stack (seconds).
 pub fn spill_delay(seed: u64) -> f64 {
-    0.015 * (1.0 + spread(seed, 1)[0]) * FAN_SPILL_VARY
+    SPILL_DELAY / 2.0 * (1.0 + spread(seed, 1)[0]) * FAN_SPILL_VARY
 }
 
 /// A card's own spring out of the stack: [`FAN_RADIAL`], a little off.
 pub fn spill_spring(seed: u64) -> Spring {
     let v = spread(seed, 3);
     Spring::new(
-        FAN_RADIAL.k * (1.0 + 0.15 * FAN_SPILL_VARY * v[1]),
-        FAN_RADIAL.zeta * (1.0 + 0.15 * FAN_SPILL_VARY * v[2]),
+        FAN_RADIAL.k * (1.0 + SPILL_SPRING * FAN_SPILL_VARY * v[1]),
+        FAN_RADIAL.zeta * (1.0 + SPILL_SPRING * FAN_SPILL_VARY * v[2]),
     )
 }
 
@@ -533,12 +541,12 @@ pub fn spill_launch(seed: u64, stack: u64, way: (f64, f64)) -> (f64, f64) {
     if len < 1e-6 {
         return (0.0, 0.0);
     }
-    let turn = (6.0 * FAN_SPILL_VARY * v[3]).to_radians();
-    let speed = len * 2.0 * (1.0 + 0.1 * FAN_SPILL_VARY * v[4]);
+    let turn = (SPILL_TURN * FAN_SPILL_VARY * v[3]).to_radians();
+    let speed = len * 2.0 * (1.0 + SPILL_SPEED * FAN_SPILL_VARY * v[4]);
     let (c, s) = (turn.cos(), turn.sin());
     let (ux, uy) = (way.0 / len, way.1 / len);
     let lean = spread(stack, 1)[0] * std::f64::consts::PI;
-    let bias = 60.0 * FAN_SPILL_VARY;
+    let bias = SPILL_LEAN * FAN_SPILL_VARY;
     (
         speed * (ux * c - uy * s) + bias * lean.cos(),
         speed * (ux * s + uy * c) + bias * lean.sin(),
@@ -866,11 +874,11 @@ mod tests {
         assert_ne!(a, b);
         for s in 0..100 {
             let k = spill_spring(s);
-            assert!((k.k / FAN_RADIAL.k - 1.0).abs() <= 0.15 + 1e-9);
-            assert!((0.0..=0.03 + 1e-9).contains(&spill_delay(s)));
+            assert!((k.k / FAN_RADIAL.k - 1.0).abs() <= SPILL_SPRING + 1e-9);
+            assert!((0.0..=SPILL_DELAY + 1e-9).contains(&spill_delay(s)));
             let v = spill_launch(s, 7, (100.0, 0.0));
             // About 200 pt/s along the way, a few degrees off, plus the lean.
-            assert!(v.0 > 150.0 && v.0 < 290.0 && v.1.abs() < 90.0, "{v:?}");
+            assert!(v.0 > 60.0 && v.0 < 340.0 && v.1.abs() < 140.0, "{v:?}");
         }
         assert_eq!(spill_launch(5, 7, (0.0, 0.0)), (0.0, 0.0));
         assert_eq!(spill_spring(9), spill_spring(9));
@@ -882,7 +890,7 @@ mod tests {
         assert_ne!(fan_jitter(42), fan_jitter(43));
         for s in 0..200 {
             let (a, b, c) = fan_jitter(s);
-            assert!(a.abs() <= 2.5 && b.abs() <= 2.5 && c.abs() <= 2.5);
+            assert!(a.abs() <= JITTER_MAX && b.abs() <= JITTER_MAX && c.abs() <= JITTER_MAX);
         }
     }
 
