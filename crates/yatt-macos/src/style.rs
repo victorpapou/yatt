@@ -744,9 +744,9 @@ fn edge_layer(image: Option<&CGImage>, inset: f64) -> Retained<CALayer> {
 /// The outline: black at 50%, blurred 1 pt.
 const OUTLINE_ALPHA: f64 = 0.5;
 const OUTLINE_BLUR: f64 = 1.0;
-/// The inner edge: a soft white glow, 51% at the edge, fading out on an ease-out
+/// The inner edge: a soft white glow, 61% at the edge, fading out on an ease-out
 /// curve over 3.75 pt, drawn as stacked strokes.
-const INSET_ALPHA: f64 = 0.51;
+const INSET_ALPHA: f64 = 0.61;
 /// On a dark card the white edge is fainter, or it reads as a frame.
 const INSET_ALPHA_DARK: f64 = 0.2;
 const INSET_DEPTH: f64 = 3.75;
@@ -1069,11 +1069,11 @@ mod tests {
             at(2.0),
             at(3.0)
         );
-        // Right inside the edge about a third of the way to white (the glow is
-        // 42% white there), fading softly, gone by about 4 pt.
+        // Right inside the edge over half the way to white in light (the glow
+        // is about half white there), fading softly, gone by about 4 pt.
         let white = 3 * 255;
         assert!(
-            (at(0.25) - centre) * 100 > 30 * (white - centre),
+            (at(0.25) - centre) * 100 > 50 * (white - centre),
             "edge {} vs centre {centre}",
             at(0.25)
         );
@@ -1088,6 +1088,8 @@ mod tests {
             "4.5 pt {} vs centre {centre}",
             at(4.5)
         );
+        // Dark keeps its fainter edge.
+        const { assert!(INSET_ALPHA_DARK < INSET_ALPHA - 0.3) };
     }
 
     #[test]

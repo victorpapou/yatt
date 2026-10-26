@@ -193,9 +193,13 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             wait(500).await;
             let backlog = ids(cx, 0);
             sink(UiEvent::SetNotes(backlog[0], notes(0)));
-            window.demo_toggle_stack();
-            wait(700).await;
-            window.demo_scroll_at(centre(backlog[0]), 60.0);
+            // `YATT_DEMO_MODAL=flat`: from a card in the list, upright, so the
+            // corners can be compared pixel by pixel.
+            if std::env::var("YATT_DEMO_MODAL").as_deref() != Ok("flat") {
+                window.demo_toggle_stack();
+                wait(700).await;
+                window.demo_scroll_at(centre(backlog[0]), 60.0);
+            }
             wait(900).await;
             let record = |phase: &str, f: usize| {
                 let (r, deg, p, [dim, panel, controls, card]) = window.demo_modal_state();
@@ -207,6 +211,9 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
                     window.capture_layers_png(&format!("{dir}/modal-{phase}-{f:02}.png"));
                 }
             };
+            if let Some((x, y, r, s)) = window.demo_card_state(backlog[0]) {
+                eprintln!("card,before,{x:.1},{y:.1},{r:.1},{s:.3}");
+            }
             sink(UiEvent::ToggleExpand(backlog[0]));
             for f in 0..40 {
                 record("open", f);
@@ -217,7 +224,12 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             shot("modal-open");
             sink(UiEvent::ToggleExpand(backlog[0]));
             for f in 0..36 {
+                // Every frame of the close, for the hand-over at the end.
+                window.capture_layers_png(&format!("{dir}/modal-close-{f:02}.png"));
                 record("close", f);
+                if let Some((x, y, r, s)) = window.demo_card_state(backlog[0]) {
+                    eprintln!("card,close,{f},{x:.1},{y:.1},{r:.1},{s:.3}");
+                }
                 wait(16).await;
             }
             eprintln!("demo: finished");

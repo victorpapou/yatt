@@ -16,10 +16,12 @@ body {
 }
 /* The page fills the panel's body edge to edge, so the scroller sits at the
    panel's edge and text scrolls away under the rules; the panel's margins are
-   the text's own padding, inside what scrolls. */
-#editor { width: 100%; height: 100%; overflow: auto; }
+   the text's own padding, inside what scrolls. The page keeps the open
+   panel's width (--page) while the panel grows round it, so the notes never
+   reflow during the morph. */
+#editor { width: 100%; height: 100%; overflow-x: hidden; overflow-y: auto; }
 .ProseMirror {
-  box-sizing: border-box; width: 100%; min-height: 100%; outline: none;
+  box-sizing: border-box; width: var(--page, 100%); min-height: 100%; outline: none;
   padding: 20px 24px 24px;
 }
 .ProseMirror > :first-child { margin-top: 0; }
@@ -93,7 +95,8 @@ window.yatt = {
     applying = false
   },
   flush() { if (timer) flush() },
-  focus() { editor.commands.focus('end') },
+  // The caret at the end, without scrolling the notes as the panel opens.
+  focus() { editor.commands.focus('end', { scrollIntoView: false }) },
   // ⌘Z and ⌘⇧Z reach the app's menu first; it hands them back here.
   undo() { editor.commands.undo() },
   redo() { editor.commands.redo() },

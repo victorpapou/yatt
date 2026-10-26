@@ -57,8 +57,9 @@ pub const FAN_CONTACT_K: f64 = 400.0;
 /// to it, falling off by e every this many slots further away.
 pub const FAN_KICK: f64 = 120.0;
 pub const FAN_KICK_FALL: f64 = 3.0;
-/// A fan folding back into its stack: no overshoot, about 0.3 s (measured).
-pub const FAN_FOLD: Spring = Spring::new(250.0, 1.0);
+/// A fan folding back into its stack: about 0.3 s (measured), with only a hint
+/// of settle; each card a little off it ([`gather_spring`]).
+pub const FAN_FOLD: Spring = Spring::new(250.0, 0.9);
 
 /// The weighted tilt of a moving card: it leans into its sideways motion, about
 /// 3° per 1000 pt/s and at most 7°, following through a damped response
@@ -89,15 +90,12 @@ pub const SHIFT: Spring = Spring::new(300.0, 1.0);
 pub const SLOT: Spring = Spring::new(1500.0, 1.0);
 /// A new card flying from the new-task field into its column.
 pub const FLY: Spring = Spring::new(220.0, 1.0);
-/// The task modal growing out of its card: a little jelly, one soft give past
-/// its size (at most [`MORPH_GIVE`], about 1.5%) and back, settled in about
-/// 0.4 s; the panel's contents are clipped by its frame, so nothing inside moves.
-pub const MORPH: Spring = Spring::new(300.0, 0.8);
-/// Shrinking back into the card: critically damped, so it never dips under the
-/// card's size before the card takes over.
-pub const MORPH_BACK: Spring = Spring::new(360.0, 1.0);
-/// Upper bound on how far past its size the opening panel grows.
-pub const MORPH_GIVE: f64 = 0.02;
+/// The task modal growing out of its card and back: like the cards themselves,
+/// critically damped (no give, no jelly), most of the way in about 0.25 s and
+/// still in about 0.5 s; the angle rides the same spring. The panel's contents
+/// are clipped by its frame, so nothing inside moves.
+pub const MORPH: Spring = Spring::new(300.0, 1.0);
+pub const MORPH_BACK: Spring = MORPH;
 
 /// How far behind the card ahead each follower of a dragged group hangs, in
 /// seconds of lag at a steady speed: for a group of two, of three, and of four
@@ -556,6 +554,24 @@ pub fn spill_spring(seed: u64) -> Spring {
         FAN_RADIAL.k * (1.0 + SPILL_SPRING * FAN_SPILL_VARY * v[1]),
         FAN_RADIAL.zeta * (1.0 + SPILL_SPRING * FAN_SPILL_VARY * v[2]),
     )
+}
+
+/// A card's own spring back into the stack: [`FAN_FOLD`], a little off, the
+/// way [`spill_spring`] varies the spill, but never under-damped enough to
+/// bounce on the pile.
+pub fn gather_spring(seed: u64) -> Spring {
+    let v = spread(seed, 3);
+    Spring::new(
+        FAN_FOLD.k * (1.0 + SPILL_SPRING * FAN_SPILL_VARY * v[1]),
+        (FAN_FOLD.zeta * (1.0 + 0.1 * FAN_SPILL_VARY * v[2])).min(1.0),
+    )
+}
+
+/// The push a card gets as it leaves a fan for the pile: [`spill_launch`]'s,
+/// at a quarter of the strength, so the cards come in a little unevenly.
+pub fn gather_launch(seed: u64, stack: u64, way: (f64, f64)) -> (f64, f64) {
+    let v = spill_launch(seed, stack, way);
+    (v.0 * 0.25, v.1 * 0.25)
 }
 
 /// The push a card gets as it leaves the stack, toward `way` (from where it
@@ -1139,6 +1155,31 @@ mod tests {
     }
 
     #[test]
+    fn a_folding_card_lands_on_the_pile_without_bouncing() {
+        // Every card's own gather, from a fan place 250 pt off, with its push:
+        // at most a hint past the pile, settled within the measured fold time
+        // and a little more.
+        for seed in 0..64_u64 {
+            let seed = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            let mut b = Body::at(250.0, 0.0);
+            b.swings = false;
+            b.spring = gather_spring(seed);
+            b.target(0.0, 0.0, 0.0);
+            let v = gather_launch(seed, 7, (-250.0, 0.0));
+            b.vx += v.0;
+            b.vy += v.1;
+            let (dt, mut t, mut past) = (1.0 / 120.0, 0.0, 0.0_f64);
+            while !b.at_rest() && t < 2.0 {
+                b.step(dt);
+                past = past.max(-b.x);
+                t += dt;
+            }
+            assert!(past < 0.04 * 250.0, "seed {seed}: {past} pt past the pile");
+            assert!(t < 0.75, "seed {seed}: settled after {t}s");
+        }
+    }
+
+    #[test]
     fn the_panel_turns_from_a_fanned_card_without_a_jump() {
         // A card turned −70° in a fan grows into the upright panel: the angle
         // eases all the way, never more than a few degrees a frame.
@@ -1170,7 +1211,7 @@ mod tests {
             t += 1.0 / 120.0;
         }
         assert!(t < 0.8, "settled after {t}s");
-        // One soft give past, about MORPH_GIVE of the way.
+        // No give past its size: it comes to rest like a card does.
         let mut b = Body::at(0.0, 0.0);
         b.spring = MORPH;
         b.swings = false;
@@ -1180,7 +1221,7 @@ mod tests {
             b.step(1.0 / 120.0);
             far = far.max(b.x);
         }
-        assert!(far > 100.5 && far < 100.0 * (1.0 + MORPH_GIVE), "{far}");
+        assert!(far <= 100.0 + 1e-6, "{far}");
         // Back into the card: never under its size.
         let mut b = Body::at(100.0, 0.0);
         b.spring = MORPH_BACK;

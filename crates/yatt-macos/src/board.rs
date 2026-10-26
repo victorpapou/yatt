@@ -1064,13 +1064,27 @@ impl Board {
                             continue;
                         };
                         let (dy, scale) = physics::pile(i);
+                        // Off a fan: gathered back under the pile the way it
+                        // spilled out, each card its own way and a touch late.
+                        let off_fan = card.body.orbit.is_some();
                         self.send_home(card, Space::Canvas, (a.0, a.1 + dy, 0.0));
+                        if off_fan {
+                            let v = physics::gather_launch(
+                                seed_of(*id),
+                                seed_of(ids[0]),
+                                (card.body.tx - card.body.x, card.body.ty - card.body.y),
+                            );
+                            card.body.vx += v.0;
+                            card.body.vy += v.1;
+                            card.hold_until =
+                                CACurrentMediaTime() + physics::spill_delay(seed_of(*id));
+                        }
                         // Only the top card's text; the rest show as coloured slivers.
                         card.set_muted(i > 0);
                         if i >= STACK_SHOWN {
                             parked.insert(*id);
                         }
-                        card.body.spring = physics::FAN_FOLD;
+                        card.body.spring = physics::gather_spring(seed_of(*id));
                         card.z = (n - i) as f64;
                         card.target_scale = scale;
                         card.set_look(Look::Solid, true);

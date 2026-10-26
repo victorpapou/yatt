@@ -20,12 +20,12 @@ use objc2::rc::{Retained, Weak as ObjcWeak};
 use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSButton, NSColor, NSFont, NSFontWeightMedium, NSFontWeightRegular, NSImage,
-    NSImageSymbolConfiguration, NSLineBreakMode, NSMenu, NSMenuItem, NSPasteboard,
-    NSPasteboardTypeString, NSTextField, NSView,
+    NSButton, NSColor, NSFont, NSFontWeightMedium, NSFontWeightRegular, NSLineBreakMode, NSMenu,
+    NSMenuItem, NSPasteboard, NSPasteboardTypeString, NSTextField, NSView,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString, NSTimer, ns_string};
 use objc2_quartz_core::{CACornerMask, CACurrentMediaTime};
+use objc2_web_kit::WKWebView;
 use yatt_core::{Status, TaskId};
 
 use crate::board::{Face, card_face, refresh_meta, refresh_title, set_meta, set_title, time_text};
@@ -43,6 +43,7 @@ struct Parts {
     content: Retained<FlippedView>,
     card_box: Retained<FlippedView>,
     editor_clip: Retained<FlippedView>,
+    editor: Retained<WKWebView>,
     face: Retained<FillView>,
     sheet: Retained<FillView>,
 }
@@ -63,18 +64,26 @@ fn blend(parts: &Parts, openness: f64, size: NSSize) {
     parts.card_box.setAlphaValue(1.0 - ease(0.1, 0.45));
     parts.content.setAlphaValue(ease(0.35, 0.85));
     let (w, h) = (size.width.max(1.0), size.height.max(1.0));
-    // The editor keeps its open size (no reflow of the notes on every frame);
-    // only its viewport follows the growing card, so it shows as the card
-    // grows round it.
-    let editor_height = (h - EDITOR_TOP - EDITOR_BOTTOM).max(0.0);
+    // The editor's viewport follows the growing card, the web view with it
+    // (WebKit paints in a layer of its own that can show past an ancestor's
+    // clip, so it never stands bigger than what shows). Its page keeps the
+    // open panel's width (`NotesEditor::set_page_width`): the notes do not
+    // reflow as it grows, they show as the card grows round them.
+    let editor_size = NSSize::new(w, (h - EDITOR_TOP - EDITOR_BOTTOM).max(0.0));
     motion::quietly(|| {
-        parts.editor_clip.setFrame(NSRect::new(
-            NSPoint::new(0.0, EDITOR_TOP),
-            NSSize::new(w, editor_height),
-        ));
+        parts
+            .editor_clip
+            .setFrame(NSRect::new(NSPoint::new(0.0, EDITOR_TOP), editor_size));
+        parts
+            .editor
+            .setFrame(NSRect::new(NSPoint::ZERO, editor_size));
     });
-    parts.editor_clip.setHidden(editor_height < 1.0);
-    let head = (style::CARD_H + (HEADER_H - style::CARD_H) * ease(0.1, 0.7)).min(h);
+    parts.editor_clip.setHidden(editor_size.height < 1.0);
+    // The face covers the whole card until the body starts to show, whatever
+    // the card's size on the way (a card-height face on a panel still a few
+    // points taller left a white strip under it as it closed).
+    let e = ease(0.1, 0.7);
+    let head = (h + (HEADER_H - h) * e).min(h);
     motion::quietly(|| {
         parts
             .face
@@ -83,18 +92,29 @@ fn blend(parts: &Parts, openness: f64, size: NSSize) {
             NSPoint::new(0.0, head),
             NSSize::new(w, h - head),
         ));
-        // The face rounds only its top corners once the body shows under it.
+        // Its top corners: the clip round face and body rounds the bottom.
         if let Some(layer) = parts.face.layer() {
-            layer.setMaskedCorners(if h - head > 0.5 {
-                CACornerMask::LayerMinXMinYCorner | CACornerMask::LayerMaxXMinYCorner
-            } else {
-                CACornerMask::LayerMinXMinYCorner
-                    | CACornerMask::LayerMaxXMinYCorner
-                    | CACornerMask::LayerMinXMaxYCorner
-                    | CACornerMask::LayerMaxXMaxYCorner
-            });
+            layer.setMaskedCorners(
+                CACornerMask::LayerMinXMinYCorner | CACornerMask::LayerMaxXMinYCorner,
+            );
         }
     });
+}
+
+/// The look button's symbol.
+const LOOK_SYMBOL: &str = "paintpalette";
+
+/// The look button's icon: 16 pt square (the size its bitmap is drawn at),
+/// centred in the button.
+fn look_icon_frame(button: NSRect) -> NSRect {
+    let side = 16.0;
+    NSRect::new(
+        NSPoint::new(
+            button.origin.x + (button.size.width - side) / 2.0,
+            button.origin.y + (button.size.height - side) / 2.0,
+        ),
+        NSSize::new(side, side),
+    )
 }
 
 /// The panel's header: title and stats, in the card's colour.
@@ -130,6 +150,10 @@ pub struct Modal {
     times: Retained<NSButton>,
     all_entries: Rc<RefCell<Vec<String>>>,
     look: Retained<NSButton>,
+    /// The look button's icon, in the open task's ink, and the colour and
+    /// appearance it was drawn for.
+    look_icon: RefCell<Retained<NSView>>,
+    look_drawn: Cell<Option<(usize, bool)>>,
     picker: Rc<Picker>,
     /// The card's own edge round the panel (outline and inner glow).
     edges: style::Edges,
@@ -197,7 +221,6 @@ impl Morph {
     /// Springs to `r`, then runs `done` (dropping any earlier one unrun).
     fn to(self: &Rc<Self>, r: NSRect, deg: f64, target_progress: f64, done: Option<Box<dyn Fn()>>) {
         let (mut o, mut s) = (self.origin.get(), self.size.get());
-        // Growing: a little jelly; shrinking back: lighter.
         let spring = if r.size.width >= s.x {
             physics::MORPH
         } else {
@@ -339,8 +362,18 @@ impl Modal {
         // The card's coloured face on top and its white body below; `blend`
         // sizes both as the card opens.
         let sheet = FillView::new(mtm, Fill::Sheet);
-        panel.addSubview(&sheet);
-        panel.addSubview(&face);
+        // Both in one card-shaped clip, so the corners are the card's at every
+        // size: the face only rounds its top corners, whatever the body's height.
+        let body = FlippedView::new(mtm, NSRect::ZERO);
+        body.setWantsLayer(true);
+        if let Some(layer) = body.layer() {
+            layer.setMasksToBounds(true);
+            style::round(&layer, style::CARD_RADIUS);
+        }
+        body.setAutoresizingMask(fill_mask);
+        body.addSubview(&sheet);
+        body.addSubview(&face);
+        panel.addSubview(&body);
         panel.addSubview(&edges.inner);
         content.setAutoresizingMask(fill_mask);
         panel.addSubview(&content);
@@ -432,28 +465,19 @@ impl Modal {
                     picker.open(b);
                 }
             });
-            // The toolbar's icon size and weight, crisp at any scale.
-            let config =
-                NSImageSymbolConfiguration::configurationWithPointSize_weight(15.0, unsafe {
-                    NSFontWeightMedium
-                });
-            let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
-                ns_string!("paintpalette"),
-                Some(ns_string!("Цвет, иконка, статус")),
-            )
-            .and_then(|i| i.imageWithSymbolConfiguration(&config))
-            .expect("symbol");
+            // No image of its own: AppKit stretched the button's image layer
+            // out of shape. The icon is a bitmap under it (`look_icon`), drawn
+            // like the cards' glyphs, aspect kept at any size.
             let b = unsafe {
-                NSButton::buttonWithImage_target_action(
-                    &image,
+                NSButton::buttonWithTitle_target_action(
+                    ns_string!(""),
                     Some(&target),
                     Some(ActionTarget::sel()),
                     mtm,
                 )
             };
             b.setBordered(false);
-            b.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageOnly);
-            b.setImageScaling(objc2_app_kit::NSImageScaling::ScaleNone);
+            b.setTransparent(true);
             b.setToolTip(Some(ns_string!("Цвет, иконка, статус")));
             *slot.borrow_mut() = Some(b.clone());
             retained.push(Retained::into_super(Retained::into_super(target)));
@@ -496,9 +520,11 @@ impl Modal {
             FillView::new(mtm, Fill::Separator),
             FillView::new(mtm, Fill::Separator),
         ];
-        let views: [&NSView; 7] = [
+        let look_icon = style::glyph_view(mtm, LOOK_SYMBOL, 0);
+        let views: [&NSView; 8] = [
             &title,
             &stats,
+            &look_icon,
             &look,
             &rules[0],
             &editor_clip,
@@ -542,6 +568,8 @@ impl Modal {
             times,
             all_entries,
             look,
+            look_icon: RefCell::new(look_icon),
+            look_drawn: Cell::new(None),
             picker,
             edges,
             open,
@@ -556,6 +584,7 @@ impl Modal {
             content: self.content.clone(),
             card_box: self.card_box.clone(),
             editor_clip: self.editor_clip.clone(),
+            editor: self.editor.view.clone(),
             face: self.face.clone(),
             sheet: self.sheet.clone(),
         }
@@ -604,6 +633,11 @@ impl Modal {
             self.panel.frame().size.width,
             self.panel.frame().size.height
         );
+        let icon = self.look_icon.borrow().frame();
+        eprintln!(
+            "look icon {:.1}x{:.1} at {:.1},{:.1}",
+            icon.size.width, icon.size.height, icon.origin.x, icon.origin.y
+        );
         self.editor.debug_eval(
             "(() => { const r = document.querySelector('.ProseMirror p').getBoundingClientRect(); \
              const s = document.getElementById('editor'); \
@@ -642,10 +676,9 @@ impl Modal {
             NSPoint::new(pad, 20.0),
             NSSize::new(iw - 40.0, 28.0),
         ));
-        self.look.setFrame(NSRect::new(
-            NSPoint::new(w - pad - 28.0, 20.0),
-            NSSize::new(28.0, 28.0),
-        ));
+        let look = NSRect::new(NSPoint::new(w - pad - 28.0, 20.0), NSSize::new(28.0, 28.0));
+        self.look.setFrame(look);
+        self.look_icon.borrow().setFrame(look_icon_frame(look));
         self.stats
             .setFrame(NSRect::new(NSPoint::new(pad, 52.0), NSSize::new(iw, 16.0)));
         self.rules[0].setFrame(NSRect::new(
@@ -662,6 +695,7 @@ impl Modal {
         self.editor
             .view
             .setFrame(NSRect::new(NSPoint::ZERO, editor_size));
+        self.editor.set_page_width(w);
         self.rules[1].setFrame(NSRect::new(
             NSPoint::new(0.0, h - bottom_h),
             NSSize::new(w, 1.0),
@@ -840,8 +874,14 @@ impl Modal {
         self.title.setTextColor(Some(&ink));
         self.stats
             .setTextColor(Some(&ink.colorWithAlphaComponent(0.75)));
-        self.look
-            .setContentTintColor(Some(&ink.colorWithAlphaComponent(0.75)));
+        let drawn = Some((hue, style::dark()));
+        if self.look_drawn.replace(drawn) != drawn {
+            let mtm = MainThreadMarker::new().expect("main thread");
+            let icon = style::glyph_view(mtm, LOOK_SYMBOL, hue);
+            let old = self.look_icon.replace(icon.clone());
+            icon.setFrame(old.frame());
+            self.content.replaceSubview_with(&old, &icon);
+        }
         self.picker.show_task(Current {
             id: Some(snap.id),
             color: snap.color,

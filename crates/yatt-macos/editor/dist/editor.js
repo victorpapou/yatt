@@ -211,10 +211,12 @@ body {
 }
 /* The page fills the panel's body edge to edge, so the scroller sits at the
    panel's edge and text scrolls away under the rules; the panel's margins are
-   the text's own padding, inside what scrolls. */
-#editor { width: 100%; height: 100%; overflow: auto; }
+   the text's own padding, inside what scrolls. The page keeps the open
+   panel's width (--page) while the panel grows round it, so the notes never
+   reflow during the morph. */
+#editor { width: 100%; height: 100%; overflow-x: hidden; overflow-y: auto; }
 .ProseMirror {
-  box-sizing: border-box; width: 100%; min-height: 100%; outline: none;
+  box-sizing: border-box; width: var(--page, 100%); min-height: 100%; outline: none;
   padding: 20px 24px 24px;
 }
 .ProseMirror > :first-child { margin-top: 0; }
@@ -249,4 +251,4 @@ body {
   content: attr(data-placeholder); float: left; height: 0; pointer-events: none;
   color: color-mix(in srgb, CanvasText 35%, transparent);
 }
-`,fh=document.createElement("style");fh.textContent=Cx;document.head.appendChild(fh);var Bl=n=>window.webkit?.messageHandlers?.yatt?.postMessage(n),Sn=null,$l=!1,ii=()=>{clearTimeout(Sn),Sn=null,Bl("notes:"+pr.getMarkdown())},pr=new Nd({element:document.getElementById("editor"),extensions:[Kf,uh,dh.configure({allowBase64:!0}),_f.configure({placeholder:"\u0417\u0430\u043C\u0435\u0442\u043A\u0438\u2026 Markdown: # \u0437\u0430\u0433\u043E\u043B\u043E\u0432\u043E\u043A, - \u0441\u043F\u0438\u0441\u043E\u043A, **\u0436\u0438\u0440\u043D\u044B\u0439**, `\u043A\u043E\u0434`"})],content:"",onUpdate:()=>{$l||(clearTimeout(Sn),Sn=setTimeout(ii,400))},onBlur:()=>{Sn&&ii()}});window.yatt={setMarkdown(n){$l=!0,pr.commands.setContent(n||"",{contentType:"markdown",emitUpdate:!1}),$l=!1},flush(){Sn&&ii()},focus(){pr.commands.focus("end")},undo(){pr.commands.undo()},redo(){pr.commands.redo()}};document.addEventListener("keydown",n=>{n.key==="Escape"&&(n.preventDefault(),ii(),Bl("close"))});Bl("ready");})();
+`,fh=document.createElement("style");fh.textContent=Cx;document.head.appendChild(fh);var Bl=n=>window.webkit?.messageHandlers?.yatt?.postMessage(n),Sn=null,$l=!1,ii=()=>{clearTimeout(Sn),Sn=null,Bl("notes:"+pr.getMarkdown())},pr=new Nd({element:document.getElementById("editor"),extensions:[Kf,uh,dh.configure({allowBase64:!0}),_f.configure({placeholder:"\u0417\u0430\u043C\u0435\u0442\u043A\u0438\u2026 Markdown: # \u0437\u0430\u0433\u043E\u043B\u043E\u0432\u043E\u043A, - \u0441\u043F\u0438\u0441\u043E\u043A, **\u0436\u0438\u0440\u043D\u044B\u0439**, `\u043A\u043E\u0434`"})],content:"",onUpdate:()=>{$l||(clearTimeout(Sn),Sn=setTimeout(ii,400))},onBlur:()=>{Sn&&ii()}});window.yatt={setMarkdown(n){$l=!0,pr.commands.setContent(n||"",{contentType:"markdown",emitUpdate:!1}),$l=!1},flush(){Sn&&ii()},focus(){pr.commands.focus("end",{scrollIntoView:!1})},undo(){pr.commands.undo()},redo(){pr.commands.redo()}};document.addEventListener("keydown",n=>{n.key==="Escape"&&(n.preventDefault(),ii(),Bl("close"))});Bl("ready");})();

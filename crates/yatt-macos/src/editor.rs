@@ -35,6 +35,8 @@ pub struct NotesEditor {
     pending: Rc<RefCell<Option<(String, String)>>>,
     /// Text colour (CSS) to apply once the page is ready.
     ink: Rc<RefCell<Option<String>>>,
+    /// The page's width (points), to set once the page is ready.
+    page_width: Rc<Cell<f64>>,
     _handler: Retained<ScriptHandler>,
 }
 
@@ -43,6 +45,7 @@ impl NotesEditor {
         let ready = Rc::new(Cell::new(false));
         let pending: Rc<RefCell<Option<(String, String)>>> = Rc::new(RefCell::new(None));
         let ink: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        let page_width = Rc::new(Cell::new(0.0));
         // The key the next notes messages belong to, as posted from the page.
         let key = Rc::new(RefCell::new(String::new()));
         let config = unsafe { WKWebViewConfiguration::new(mtm) };
@@ -51,10 +54,13 @@ impl NotesEditor {
         };
         let handler = {
             let (ready, pending, view) = (ready.clone(), pending.clone(), view.clone());
-            let ink = ink.clone();
+            let (ink, page_width) = (ink.clone(), page_width.clone());
             ScriptHandler::new(mtm, move |msg| {
                 if msg == "ready" {
                     ready.set(true);
+                    if page_width.get() > 0.0 {
+                        eval(&view, &page_width_js(page_width.get()));
+                    }
                     if let Some(css) = ink.borrow().as_ref() {
                         eval(&view, &set_ink_js(css));
                     }
@@ -94,6 +100,7 @@ impl NotesEditor {
             ready,
             pending,
             ink,
+            page_width,
             _handler: handler,
         }
     }
@@ -112,6 +119,14 @@ impl NotesEditor {
         *self.ink.borrow_mut() = Some(css.to_string());
         if self.ready.get() {
             eval(&self.view, &set_ink_js(css));
+        }
+    }
+
+    /// Lays the page out `w` points wide whatever the view's width, so the notes
+    /// keep their lines while the panel grows round them.
+    pub fn set_page_width(&self, w: f64) {
+        if self.page_width.replace(w) != w && self.ready.get() {
+            eval(&self.view, &page_width_js(w));
         }
     }
 
@@ -183,6 +198,10 @@ fn set_ink_js(css: &str) -> String {
          (document.getElementById('ink') || document.head.appendChild(\
          Object.assign(document.createElement('style'), {{ id: 'ink' }}))).textContent = {rule};"
     )
+}
+
+fn page_width_js(w: f64) -> String {
+    format!("document.documentElement.style.setProperty('--page', '{w}px')")
 }
 
 fn eval(view: &WKWebView, js: &str) {

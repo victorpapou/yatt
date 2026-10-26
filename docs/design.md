@@ -8,13 +8,19 @@ content and colour. Nothing is cross-faded or swapped for a separate view.
 - New task: the new-task capsule, typed text and all, grows into the card on its
   way to the column; the text becomes the card's title.
 - Card to modal: the panel is the card itself, one element (same frame, angle,
-  material, colour and text), growing on one softly damped spring (about 1.5%
-  past its size, settled in about 0.4 s) and shrinking back on a critically
-  damped one, so it never dips under the card before the card takes over. The
+  material, colour and text), growing and shrinking back on one critically
+  damped spring (most of the way in about 0.25 s, still in about 0.5 s), so it
+  never overshoots or dips under the card before the card takes over. The
   angle rides the same spring from the card's own (a fanned card at −70° turns
   upright all the way, no snap). The dim follows that same progress, so the
-  board and panel settle together. The notes editor keeps its open size during
-  the morph (no reflow); the panel clips it. `YATT_DEMO_MODAL=1` logs the frame,
+  board and panel settle together. The notes editor's view follows the panel,
+  never bigger than what shows, but its page keeps the open width (`--page`),
+  so the notes do not reflow. The face and the white body sit in one clip of
+  the card's shape, so the corners are the card's at every size; the face
+  covers the whole card until the body starts to show, so no white strip is
+  left under it as it closes. `YATT_DEMO_MODAL=flat` opens an upright card and
+  captures every frame of the close: from the hand-over on, the pixels are the
+  card's own. `YATT_DEMO_MODAL=1` logs the frame,
   angle and alphas every frame and captures the layers. Its coloured face stays on top and eases from the card's height to the
   header's; below it the same card shows its white body, growing downward as the
   card grows (none of it at card size), so the editor is the card's own content
@@ -55,7 +61,7 @@ glow, no layer shadow.
 
 1. Outside, the outline: a black shadow at 50%, 1 pt blur, no offset, only
    outside the card.
-2. Inside, a soft white glow along the edge: 51% white at the edge, fading out
+2. Inside, a soft white glow along the edge: 61% white at the edge, fading out
    on an ease-out curve over 3.75 pt, only inside the card, over the tint and
    under the text.
 
@@ -127,8 +133,11 @@ tabular digits, tracked +0.15, at 50%.
   fixed by its id, `FAN_JITTER`); out of the stack each card starts up to 60 ms
   late, on its own spring (±28%), launched up to 9° off and ±20% faster, and the
   blob leans to one side (`FAN_SPILL_VARY`). Nothing fades: hidden cards are
-  whole from the first frame under the pile; folding (critically damped, about
-  0.3 s) they fly back under it and only then leave the render tree.
+  whole from the first frame under the pile; folding, they are gathered back
+  under it the way they spilled out (about 0.3 s, a hint of settle, no
+  bounce): each card on its own spring off `FAN_FOLD`, up to 60 ms late, with
+  a quarter of the spill's uneven push (`gather_spring`, `gather_launch`),
+  and only then leave the render tree.
 - Scrolling down over a stack fans it out, scrolling up folds it, and the blob
   follows the fingers: 140 pt of scroll for all the way, each card on the
   straight way from its pile place to its fan place (springs on top, so it
@@ -194,7 +203,7 @@ The app follows the system appearance live (`viewDidChangeEffectiveAppearance`
 on the root view): the board, chips, dividers and the panel's body use system
 colours; the cards switch palette. In dark, each hue is a deep tint of itself
 (denser, +0.2 alpha) with a pale text of the same hue, and the white inner edge
-is fainter (20% instead of 51%) so it does not read as a frame. Card glyphs are
+is fainter (20% instead of 61%) so it does not read as a frame. Card glyphs are
 cached per appearance; the tracked title and time are rebuilt in the new ink
 (their colour lives in an attributed string). Changed fills ease over
 (`motion::soften`). The light palette's first six are the original ones,
@@ -209,10 +218,13 @@ in dark, turned light and back.
 The notes editor fills the body between the header's rule and the footer's,
 edge to edge; the 24 pt margins round the notes are the page's own padding,
 inside what scrolls, so the scroller sits at the panel's edge, the text lines up
-with the title and scrolls away under the rules.
+with the title and scrolls away under the rules. Opening puts the caret at the end
+without scrolling the notes.
 
 No Done or Delete buttons: the panel closes by Esc or a click outside, as
-before. A palette button at the header's right opens a native popover
+before. A palette button at the header's right (its icon a bitmap like the
+cards' glyphs, in the task's ink, aspect kept: the button's own image layer
+stretched) opens a native popover
 (transient, closes on a click outside): the card colours as swatches, the
 status (the three columns, a segmented control), a searchable grid of icons
 (48 SF Symbols, eight a row) and «Удалить задачу». Colour and
@@ -266,5 +278,5 @@ random targets, fans, kicks and 2 s frames.
 
 ## Card ↔ panel
 
-The panel grows out of the card with a little jelly: one soft give past its
-size (about 4%, `MORPH_GIVE`) and back; it shrinks back lighter (under 1%).
+The panel grows out of the card and back on a critically damped spring, the
+way a card comes to rest: no give, no jelly (`physics::MORPH`).
