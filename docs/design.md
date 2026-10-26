@@ -247,7 +247,7 @@ tested): a pomodoro (work or break) shows its time left as a small pie, a
 template image so it follows the menu bar's light or dark look, over a faint
 disc for the time gone, no outline and no text. The stopwatch has no end, so
 no pie: only its minutes as text («<1 мин», «12 мин», «1 ч 05 мин»), never
-seconds, so it does not tick. Idle: a still three-quarter pie, dimmed; paused
+seconds, so it does not tick. Idle: a still whole disc, dimmed (a three-quarter pie read as a quarter already gone); paused
 dims too. It is drawn again only when a degree of the pie, the minutes or the
 state change. Its menu: the timer to the second at the top, then the tasks it
 counts for (or, with nothing counted, those «В работе»), each with its colour

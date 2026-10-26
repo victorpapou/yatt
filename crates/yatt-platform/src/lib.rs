@@ -75,8 +75,9 @@ pub struct MenuBarLook {
     pub paused: bool,
 }
 
-/// What an idle timer shows: a still three-quarter pie, dimmed.
-pub const IDLE_DISC: f64 = 0.75;
+/// What an idle timer shows: a whole disc, dimmed, so it never reads as time
+/// already gone.
+pub const IDLE_DISC: f64 = 1.0;
 
 /// Pomodoro: the time left as a pie, no text. Stopwatch: no pie (it has no
 /// end), only the minutes so far as text (no seconds, so it does not tick).
@@ -187,6 +188,8 @@ mod tests {
     fn menu_bar_shows_what_the_timer_does() {
         let idle = menu_bar_look(MenuBarTimer::Idle);
         assert!(idle.dimmed && idle.disc == Some(IDLE_DISC) && idle.label.is_none());
+        // A whole disc: nothing already gone.
+        assert_eq!(idle.disc, Some(1.0));
         let p = menu_bar_look(MenuBarTimer::Pomodoro {
             remaining_ms: 15 * 60_000,
             total_ms: 25 * 60_000,
