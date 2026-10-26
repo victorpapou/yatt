@@ -269,6 +269,19 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
                     if corner == 0 { "never at the corner".to_string() } else { format!("{corner} AT THE CORNER (wrong)") }
                 );
             }
+            // Thirty tasks as fast as they can be typed: the fade stays on top.
+            let mut ok = true;
+            for k in 0..30 {
+                window.demo_new_task(&format!("Быстрая {k}"), k % 2 == 1);
+                wait(15).await;
+                ok &= window.demo_fade_on_top();
+            }
+            wait(600).await;
+            ok &= window.demo_fade_on_top();
+            eprintln!(
+                "demo: thirty quick tasks: the bottom fade {}",
+                if ok { "stayed on top" } else { "WENT UNDER (wrong)" }
+            );
             eprintln!("demo: finished");
             return;
         }

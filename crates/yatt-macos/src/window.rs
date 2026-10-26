@@ -86,6 +86,9 @@ const CAPSULE_MAX_W: f64 = 460.0;
 const CAPSULE_BOTTOM: f64 = 22.0;
 /// The fade under the capsule: from clear to the background over this height.
 const BOTTOM_FADE_H: f64 = 72.0;
+/// How far a list scrolls under the toolbar before the bar's material and
+/// hairline are fully in.
+const BAR_FADE_IN: f64 = 12.0;
 /// The clock's digits in minimal mode: font size, the step from one digit to the
 /// next and from a colon on (tabular figures, tracked tight), and height.
 const DIGITS_MINI: (f64, f64, f64, f64) = (46.0, 26.0, 12.0, 56.0);
@@ -123,6 +126,7 @@ struct Ui {
     capsule: Retained<NSView>,
     bottom_fade: Retained<BottomFade>,
     bar_material: Retained<NSVisualEffectView>,
+    bar_rule: Retained<FillView>,
     new_task: Retained<NSTextField>,
     cards: Rc<Board>,
     modal: Modal,
@@ -350,11 +354,24 @@ impl MainWindow {
         new_task.setFocusRingType(NSFocusRingType::None);
         new_task.setFont(Some(&NSFont::systemFontOfSize(14.0)));
         capsule_content.addSubview(&new_task);
-        // The cards fade out under the capsule.
+        board.addSubview(&cards.overlay);
+        // The cards fade out under the capsule: the fade and the capsule above
+        // every card, flying and dragged ones too, explicitly (own layers, own
+        // z), so nothing added in a hurry ends up over them.
         let bottom_fade = BottomFade::new(mtm);
+        bottom_fade.setWantsLayer(true);
         board.addSubview(&bottom_fade);
         board.addSubview(&capsule);
-        board.addSubview(&cards.overlay);
+        for (v, z) in [
+            (&*cards.overlay as &NSView, crate::board::OVERLAY_Z),
+            (&bottom_fade, 20.0),
+            (&capsule, 30.0),
+        ] {
+            v.setWantsLayer(true);
+            if let Some(layer) = v.layer() {
+                layer.setZPosition(z);
+            }
+        }
         // The toolbar's material over the top of the board: the system's
         // titlebar blur, live (a within-window backdrop) on every frame, cards
         // scrolled up go under it.
@@ -363,6 +380,25 @@ impl MainWindow {
         bar_material.setBlendingMode(NSVisualEffectBlendingMode::WithinWindow);
         bar_material.setState(NSVisualEffectState::FollowsWindowActiveState);
         root.addSubview(&bar_material);
+        // Its hairline, with it.
+        let bar_rule = FillView::new(mtm, Fill::Separator);
+        root.addSubview(&bar_rule);
+        // Like Finder's: at rest (every list at its top) the bar is the board's
+        // own background, no material, no line; as a list scrolls under it,
+        // both come in with how far it has gone.
+        for v in [&*bar_material as &NSView, &bar_rule] {
+            v.setAlphaValue(0.0);
+        }
+        {
+            let (m, r) = (bar_material.clone(), bar_rule.clone());
+            *cards.on_scrolled.borrow_mut() = Some(Box::new(move |up| {
+                let a = bar_alpha(up);
+                if (m.alphaValue() - a).abs() > 0.001 {
+                    m.setAlphaValue(a);
+                    r.setAlphaValue(a);
+                }
+            }));
+        }
 
         let modal = Modal::new(mtm, &sink);
         root.addSubview(&modal.dim);
@@ -385,6 +421,7 @@ impl MainWindow {
             capsule,
             bottom_fade,
             bar_material,
+            bar_rule,
             new_task,
             cards,
             modal,
@@ -632,6 +669,23 @@ impl MainWindow {
             digit("0"),
             digit(":"),
         )
+    }
+
+    /// Development aid: whether the bottom fade is shown and stands above every
+    /// other view on the board (subview order and layer z).
+    pub fn demo_fade_on_top(&self) -> bool {
+        let views = self.ui.board.subviews();
+        let fade: &NSView = &self.ui.bottom_fade;
+        let Some(i) = views.iter().position(|v| std::ptr::eq(&*v, fade)) else {
+            return false;
+        };
+        let z = |v: &NSView| v.layer().map_or(0.0, |l| l.zPosition());
+        let capsule: &NSView = &self.ui.capsule;
+        !fade.isHidden()
+            && fade.alphaValue() > 0.99
+            && views.iter().enumerate().all(|(j, v)| {
+                std::ptr::eq(&*v, capsule) || std::ptr::eq(&*v, fade) || (j < i && z(&v) < z(fade))
+            })
     }
 
     /// Development aid: each column's chip frame and the column's middle, in the
@@ -1031,6 +1085,10 @@ impl Ui {
         self.heads.setFrame(full);
         self.bar_material
             .setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(size.width, top)));
+        self.bar_rule.setFrame(NSRect::new(
+            NSPoint::new(0.0, top - 1.0),
+            NSSize::new(size.width, 1.0),
+        ));
         self.bottom_fade.setFrame(NSRect::new(
             NSPoint::new(0.0, board_h - BOTTOM_FADE_H),
             NSSize::new(size.width, BOTTOM_FADE_H),
@@ -1902,6 +1960,13 @@ impl Column {
 
 // ---- helpers ----
 
+/// The toolbar's material and hairline for a list scrolled `up` points under
+/// it: none at the top (or rubber-banding past it), all of it by
+/// [`BAR_FADE_IN`], in proportion between, so it never switches.
+fn bar_alpha(up: f64) -> f64 {
+    (up / BAR_FADE_IN).clamp(0.0, 1.0)
+}
+
 /// A column chip's frame for a title `tw` and a count `cw` wide: [`CHIP_H`]
 /// tall, [`CHIP_PAD`] at the ends, [`CHIP_GAP`] between, centred on `centre_x`.
 fn chip_frame(centre_x: f64, y: f64, tw: f64, cw: f64) -> NSRect {
@@ -2059,6 +2124,23 @@ pub(crate) fn animate_with_completion(secs: f64, changes: impl Fn(), done: impl 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_bar_shows_its_material_only_as_lists_go_under_it() {
+        assert_eq!(bar_alpha(0.0), 0.0);
+        // Rubber-banding past the top.
+        assert_eq!(bar_alpha(-30.0), 0.0);
+        assert!((bar_alpha(BAR_FADE_IN / 2.0) - 0.5).abs() < 1e-9);
+        assert_eq!(bar_alpha(BAR_FADE_IN), 1.0);
+        assert_eq!(bar_alpha(400.0), 1.0);
+        // Continuous: no step anywhere.
+        let mut last = 0.0;
+        for k in 0..=200 {
+            let a = bar_alpha(k as f64 * 0.1);
+            assert!(a - last <= 0.1 / BAR_FADE_IN + 1e-9);
+            last = a;
+        }
+    }
 
     #[test]
     fn a_chip_is_snug_and_centred_on_its_column() {

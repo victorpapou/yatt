@@ -79,6 +79,10 @@ const LIFT_BLUR: f64 = 5.0;
 /// List layout: first slot's top below the toolbar (and the column chips, which
 /// float over the cards), and the gap between cards.
 const LIST_TOP: f64 = 42.0;
+/// The overlay's layer z on the board: under the bottom fade (20) and the
+/// new-task capsule (30), over them while a card grows out of the capsule.
+pub const OVERLAY_Z: f64 = 10.0;
+const OVERLAY_Z_LIFTED: f64 = 40.0;
 const LIST_GAP: f64 = 10.0;
 const PITCH: f64 = CARD_H + LIST_GAP;
 /// Room left under the last card for the new-task field floating over the board.
@@ -278,6 +282,9 @@ pub struct Board {
     perf: RefCell<Option<Vec<(f64, f64)>>>,
     /// Tells the window which column to tint while dragging.
     on_target: Box<dyn Fn(Option<usize>)>,
+    /// Told how far the furthest-scrolled list has gone up under the toolbar
+    /// (points; 0 at the top or rubber-banding past it), on every scroll.
+    pub on_scrolled: RefCell<Option<Box<dyn Fn(f64)>>>,
 }
 
 impl Board {
@@ -343,6 +350,7 @@ impl Board {
             last_tick: Cell::new(0.0),
             perf: RefCell::new(std::env::var_os("YATT_PERF").map(|_| Vec::new())),
             on_target: Box::new(on_target),
+            on_scrolled: RefCell::new(None),
         });
         // Scrolling (momentum and rubber band included) shows the rows coming near.
         for col in &board.cols {
@@ -352,6 +360,7 @@ impl Board {
             let block = RcBlock::new(move |_note: NonNull<NSNotification>| {
                 if let Some(b) = weak.upgrade() {
                     b.cull_lists();
+                    b.report_scroll();
                 }
             });
             let token = unsafe {
@@ -374,6 +383,36 @@ impl Board {
     }
 
     /// Column extents, the canvas height, and where the canvas's top is on the overlay.
+    /// Puts the overlay (flying and dragged cards) over the capsule while a new
+    /// card grows out of it, under the capsule and its fade otherwise.
+    fn lift_overlay(&self, over_capsule: bool) {
+        if let Some(layer) = self.overlay.layer() {
+            let z = if over_capsule {
+                OVERLAY_Z_LIFTED
+            } else {
+                OVERLAY_Z
+            };
+            if layer.zPosition() != z {
+                layer.setZPosition(z);
+            }
+        }
+    }
+
+    /// How far the furthest-scrolled list has gone up (stacks do not scroll),
+    /// to whoever listens.
+    pub fn report_scroll(&self) {
+        let up = self
+            .cols
+            .iter()
+            .zip(self.layouts.get())
+            .filter(|(_, l)| *l == Layout::List)
+            .map(|(c, _)| c.scroll.contentView().bounds().origin.y)
+            .fold(0.0_f64, f64::max);
+        if let Some(f) = self.on_scrolled.borrow().as_ref() {
+            f(up);
+        }
+    }
+
     /// Where the list starts: below the toolbar and the chips.
     fn list_top(&self) -> f64 {
         LIST_TOP + self.top.get()
@@ -453,6 +492,7 @@ impl Board {
                         card.flying = true;
                         card.grow = Some((0.0, r.size));
                         card.space = Space::Overlay;
+                        self.lift_overlay(true);
                         // On the capsule before it is ever drawn: a new view
                         // stands at the origin until its first frame is applied.
                         motion::quietly(|| card.apply_frame(self.overlay_dy.get()));
@@ -1556,6 +1596,10 @@ impl Board {
         if self.restack_due.replace(false) {
             self.restack(&cards);
         }
+        // While a card is still the capsule growing into a card, it rides
+        // above the capsule; otherwise the capsule and the fade under it stand
+        // over every card (see `OVERLAY_Z`).
+        self.lift_overlay(cards.values().any(|c| c.grow.is_some()));
         drop(cards);
         if land_now {
             *self.landing.borrow_mut() = None;
