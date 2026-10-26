@@ -76,9 +76,9 @@ const HOVER_SCALE: f64 = 1.03;
 const FIELD_TEXT_X: f64 = 20.0;
 /// Content blur on a lifted card, in points.
 const LIFT_BLUR: f64 = 5.0;
-/// List layout: first slot's top (below the column chips, which float over the
-/// cards), and the gap between cards.
-const LIST_TOP: f64 = 52.0;
+/// List layout: first slot's top below the toolbar (and the column chips, which
+/// float over the cards), and the gap between cards.
+const LIST_TOP: f64 = 42.0;
 const LIST_GAP: f64 = 10.0;
 const PITCH: f64 = CARD_H + LIST_GAP;
 /// Room left under the last card for the new-task field floating over the board.
@@ -231,6 +231,8 @@ pub struct Board {
     pub overlay: Retained<OverlayView>,
     /// The canvas's top edge in overlay coordinates.
     overlay_dy: Cell<f64>,
+    /// How far the toolbar reaches over the board (it runs under it, blurred).
+    top: Cell<f64>,
     sink: Sink,
     cols: [Column; 3],
     /// Scroll observers of the columns, kept for as long as the board.
@@ -298,6 +300,9 @@ impl Board {
             scroll.setVerticalScrollElasticity(NSScrollElasticity::Allowed);
             scroll.setHorizontalScrollElasticity(NSScrollElasticity::None);
             scroll.contentView().setDrawsBackground(false);
+            // It runs under the toolbar, which blurs it; the list keeps clear
+            // of the toolbar by itself (`list_top`).
+            scroll.setAutomaticallyAdjustsContentInsets(false);
             let doc = FlippedView::new(mtm, NSRect::ZERO);
             scroll.setDocumentView(Some(&doc));
             canvas.addSubview(&scroll);
@@ -308,6 +313,7 @@ impl Board {
             canvas,
             overlay,
             overlay_dy: Cell::new(0.0),
+            top: Cell::new(0.0),
             sink,
             cols,
             observers: RefCell::new(Vec::new()),
@@ -368,7 +374,20 @@ impl Board {
     }
 
     /// Column extents, the canvas height, and where the canvas's top is on the overlay.
-    pub fn set_geometry(self: &Rc<Self>, geom: [ColumnGeom; 3], height: f64, overlay_dy: f64) {
+    /// Where the list starts: below the toolbar and the chips.
+    fn list_top(&self) -> f64 {
+        LIST_TOP + self.top.get()
+    }
+
+    /// `top`: how far the toolbar reaches over the board, which runs under it.
+    pub fn set_geometry(
+        self: &Rc<Self>,
+        geom: [ColumnGeom; 3],
+        height: f64,
+        overlay_dy: f64,
+        top: f64,
+    ) {
+        self.top.set(top);
         self.geom.set(geom);
         self.height.set(height);
         self.overlay_dy.set(overlay_dy);
@@ -734,7 +753,7 @@ impl Board {
     /// Where the `i`-th card of a column sits, ignoring drags.
     fn slot(&self, ci: usize, i: usize) -> (f64, f64) {
         match self.layouts.get()[ci] {
-            Layout::List => (self.list_x(ci), LIST_TOP + i as f64 * PITCH),
+            Layout::List => (self.list_x(ci), self.list_top() + i as f64 * PITCH),
             Layout::Stack { .. } => {
                 let a = self.stack_anchor(ci);
                 (a.0, a.1 + physics::pile(i).0)
@@ -788,7 +807,7 @@ impl Board {
         let pile = CARD_H + physics::pile(2).0;
         (
             physics::centred_left(g.x, g.w, CARD_W),
-            physics::centred_top(LIST_TOP, self.height.get() - CAPSULE_ROOM, pile),
+            physics::centred_top(self.list_top(), self.height.get() - CAPSULE_ROOM, pile),
         )
     }
 
@@ -974,7 +993,7 @@ impl Board {
                     // height (sticking out past the column a little first), and
                     // centred in the column both ways below the chips.
                     let g = self.geom.get()[ci];
-                    let tall = self.height.get() - LIST_TOP - CAPSULE_ROOM;
+                    let tall = self.height.get() - self.list_top() - CAPSULE_ROOM;
                     let room = (
                         g.w - 2.0 * FAN_MARGIN + 2.0 * FAN_PEEK,
                         tall - 2.0 * FAN_MARGIN,
@@ -983,7 +1002,7 @@ impl Board {
                     let (x0, y0, x1, y1) = physics::fan_bounds(shown_n, (w, h));
                     let centre = (
                         g.x + g.w / 2.0 - (x0 + x1) / 2.0 * scale,
-                        LIST_TOP + tall / 2.0 - (y0 + y1) / 2.0 * scale,
+                        self.list_top() + tall / 2.0 - (y0 + y1) / 2.0 * scale,
                     );
                     for (i, id) in ids.iter().enumerate() {
                         let Some(card) = cards.get_mut(id) else {
@@ -1100,8 +1119,8 @@ impl Board {
                     let x = self.list_x(ci);
                     // The document is as tall as the list (room for the gap included).
                     let slots = n + gap.map_or(0, |(_, k)| k);
-                    let doc_h =
-                        (LIST_TOP + slots as f64 * PITCH + LIST_BOTTOM).max(self.height.get());
+                    let doc_h = (self.list_top() + slots as f64 * PITCH + LIST_BOTTOM)
+                        .max(self.height.get());
                     let doc = &self.cols[ci].doc;
                     if doc.frame().size.height != doc_h
                         || doc.frame().size.width != self.geom.get()[ci].w
@@ -1118,7 +1137,7 @@ impl Board {
                             Some((at, k)) if i >= at => i + k,
                             _ => i,
                         };
-                        let y = LIST_TOP + slot as f64 * PITCH;
+                        let y = self.list_top() + slot as f64 * PITCH;
                         self.send_home(card, Space::Doc(ci), (x, y, 0.0));
                         // Rows far out of sight jump to their slot: only what can be
                         // seen animates, however long the list.
@@ -1570,8 +1589,8 @@ impl Board {
         let h = self.height.get();
         let speed = if y > h - AUTOSCROLL_EDGE {
             (y - (h - AUTOSCROLL_EDGE)) / AUTOSCROLL_EDGE
-        } else if y < LIST_TOP + AUTOSCROLL_EDGE {
-            -(LIST_TOP + AUTOSCROLL_EDGE - y) / AUTOSCROLL_EDGE
+        } else if y < self.list_top() + AUTOSCROLL_EDGE {
+            -(self.list_top() + AUTOSCROLL_EDGE - y) / AUTOSCROLL_EDGE
         } else {
             return;
         };
@@ -1940,7 +1959,7 @@ impl Board {
                         .filter(|id| !drag.ids.contains(id))
                         .count();
                     let centre = p.y - drag.grab.1 + CARD_H / 2.0 - self.offset(Space::Doc(ci)).1;
-                    physics::insert_index(centre + LIST_GAP / 2.0, LIST_TOP, PITCH, n)
+                    physics::insert_index(centre + LIST_GAP / 2.0, self.list_top(), PITCH, n)
                 }
                 _ => 0,
             };

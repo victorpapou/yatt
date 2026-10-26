@@ -2,10 +2,10 @@
 //! against the views it already has: cards are kept per task id, updated in place
 //! and moved with animations, so reorders and column moves stay smooth.
 //!
-//! Layout: the timer row in a native toolbar unified with the titlebar (a
-//! progress ring, the digits, the phase, the controls), then the board split into
-//! three columns by
-//! full-height 1 px dividers. Each column's title and count sit in a glass chip in
+//! Layout: the timer row in a native toolbar unified with the titlebar (the
+//! digits in its middle, the controls on the right), the board running under it,
+//! split into three columns by 1 px dividers that fade in from the top. Each
+//! column's title and count sit in a small glass chip right under the toolbar, in
 //! the column's colour, floating over the cards; one header button switches the
 //! whole board between lists and stacks.
 //! The new-task field floats over the bottom of the board as a glass capsule.
@@ -52,8 +52,8 @@ pub enum DemoMouse {
     Up,
 }
 use crate::classes::{
-    ActionTarget, EditCmd, FieldDelegate, Fill, FillView, FlippedView, PassView, PlainToolbarItem,
-    RootView, ToolbarDelegate, WindowDelegate, editing_in_web_view, editing_text,
+    ActionTarget, EditCmd, FadeLine, FieldDelegate, Fill, FillView, FlippedView, PassView,
+    PlainToolbarItem, RootView, ToolbarDelegate, WindowDelegate, editing_in_web_view, editing_text,
 };
 use crate::modal::Modal;
 use crate::model::{Snapshot, TimerSnap, UiEvent, format_clock};
@@ -72,8 +72,8 @@ const RING_D_MINI: f64 = 34.0;
 const RING_LINE: f64 = 3.0;
 const PAD: f64 = 16.0;
 /// Column chips: height and distance from the top of the board.
-const CHIP_H: f64 = 18.0;
-const CHIP_TOP: f64 = 12.0;
+const CHIP_H: f64 = 16.0;
+const CHIP_TOP: f64 = 4.0;
 /// The new-task capsule.
 const CAPSULE_H: f64 = 44.0;
 const CAPSULE_MAX_W: f64 = 460.0;
@@ -108,8 +108,7 @@ struct Ui {
     top_inset: Cell<f64>,
     /// Everything below the header; hidden in minimal mode.
     board: Retained<FlippedView>,
-    header_rule: Retained<FillView>,
-    dividers: [Retained<FillView>; 2],
+    dividers: [Retained<FadeLine>; 2],
     columns: [Column; 3],
     /// Holds the column chips above the cards; clicks elsewhere fall through.
     heads: Retained<PassView>,
@@ -183,7 +182,11 @@ impl MainWindow {
         };
         unsafe { window.setReleasedWhenClosed(false) };
         window.setTitle(ns_string!("yatt"));
-        window.setTitlebarAppearsTransparent(true);
+        // The system's own titlebar and toolbar material over the board, which
+        // runs under it.
+        window.setTitlebarAppearsTransparent(false);
+        // No line under it: the columns start right there.
+        window.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::None);
         window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
         window.setMinSize(NSSize::new(760.0, 480.0));
 
@@ -294,17 +297,12 @@ impl MainWindow {
 
         let board = FlippedView::new(mtm, NSRect::ZERO);
         root.addSubview(&board);
-        let header_rule = FillView::new(mtm, Fill::Separator);
-        board.addSubview(&header_rule);
 
         let columns = [0, 1, 2].map(|i| Column::new(mtm, i));
         for c in &columns {
             board.addSubview(&c.view);
         }
-        let dividers = [
-            FillView::new(mtm, Fill::Separator),
-            FillView::new(mtm, Fill::Separator),
-        ];
+        let dividers = [FadeLine::new(mtm), FadeLine::new(mtm)];
         for d in &dividers {
             board.addSubview(d);
         }
@@ -359,7 +357,6 @@ impl MainWindow {
             timer_item,
             top_inset: Cell::new(52.0),
             board,
-            header_rule,
             dividers,
             columns,
             heads,
@@ -980,18 +977,16 @@ impl Ui {
         if inset > 20.0 && inset < TOOLBAR_H + 40.0 {
             self.top_inset.set(inset);
         }
+        // The board runs under the toolbar, which blurs it as the system's own
+        // bar does; what must stay clear of it starts `top` down. No rule
+        // between them.
         let top = self.top_inset.get();
-        let board_h = (size.height - top).max(100.0);
-        self.board.setFrame(NSRect::new(
-            NSPoint::new(0.0, top),
-            NSSize::new(size.width, board_h),
-        ));
-        self.header_rule
-            .setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(size.width, 1.0)));
-        // The cards run under the column chips, so the canvas starts right below the rule.
-        let canvas_h = board_h - 1.0;
+        let board_h = size.height.max(100.0);
+        self.board
+            .setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(size.width, board_h)));
+        let canvas_h = board_h;
         self.cards.canvas.setFrame(NSRect::new(
-            NSPoint::new(0.0, 1.0),
+            NSPoint::ZERO,
             NSSize::new(size.width, canvas_h),
         ));
         let full = NSRect::new(NSPoint::ZERO, NSSize::new(size.width, board_h));
@@ -1015,21 +1010,20 @@ impl Ui {
         for (i, c) in self.columns.iter().enumerate() {
             let x = i as f64 * col_w;
             let w = if i == 2 { size.width - x } else { col_w };
-            c.view.setFrame(NSRect::new(
-                NSPoint::new(x, 1.0),
-                NSSize::new(w, board_h - 1.0),
-            ));
+            c.view
+                .setFrame(NSRect::new(NSPoint::new(x, 0.0), NSSize::new(w, board_h)));
             c.tint.setFrame(c.view.bounds());
-            c.layout_chip(x + PAD);
+            c.layout_chip(x + PAD, top + CHIP_TOP);
             if i < 2 {
+                // From under the toolbar, fading in to full by half way down.
                 self.dividers[i].setFrame(NSRect::new(
-                    NSPoint::new(x + w - 0.5, 1.0),
-                    NSSize::new(1.0, board_h),
+                    NSPoint::new(x + w - 0.5, top),
+                    NSSize::new(1.0, board_h - top),
                 ));
             }
             geom[i] = ColumnGeom { x, w };
         }
-        self.cards.set_geometry(geom, canvas_h, 1.0);
+        self.cards.set_geometry(geom, canvas_h, 0.0, top);
     }
 
     fn set_highlight(&self, index: usize, on: bool) {
@@ -1148,7 +1142,10 @@ impl Ui {
                 motion::soften(&c.chip);
                 c.count.setStringValue(&NSString::from_str(&count));
             }
-            c.layout_chip(c.view.frame().origin.x + PAD);
+            c.layout_chip(
+                c.view.frame().origin.x + PAD,
+                self.top_inset.get() + CHIP_TOP,
+            );
         }
         self.cards.render(&snap.columns);
         self.sync_modal(snap);
@@ -1839,17 +1836,17 @@ impl Column {
     }
 
     /// Sizes the chip to its title and count, at `x` on the board.
-    fn layout_chip(&self, x: f64) {
+    fn layout_chip(&self, x: f64, y: f64) {
         let (tw, cw) = (
             self.title.fittingSize().width.ceil(),
             self.count.fittingSize().width.ceil(),
         );
-        // Snug: the chip is CHIP_H tall around 14 pt of text, 2 pt above and
+        // Tight: the chip is CHIP_H tall around 14 pt of text, 1 pt above and
         // below; at the ends a little more, for the round caps. The count sits a
         // short gap after the title.
-        let (pad, gap, text_h) = (8.0, 4.0, 14.0);
+        let (pad, gap, text_h) = (6.0, 3.0, 14.0);
         let frame = NSRect::new(
-            NSPoint::new(x, CHIP_TOP),
+            NSPoint::new(x, y),
             NSSize::new(pad + tw + gap + cw + pad, CHIP_H),
         );
         self.chip.setFrame(frame);
@@ -1918,13 +1915,55 @@ fn tomato() -> Retained<NSImage> {
     TOMATO.with(|t| t.clone())
 }
 
-/// The clock's digits: SF Rounded, medium, tabular.
+/// The clock's digits: SF Rounded, medium, tabular, with case-sensitive forms
+/// on. Each character is a label of its own, so the font never sees the colon
+/// between figures and would leave it low, at lowercase height; the
+/// case-sensitive colon sits on the figures' middle.
 fn clock_font(size: f64) -> Retained<NSFont> {
+    use objc2_app_kit::{
+        NSFontDescriptorAttributeName, NSFontFeatureSelectorIdentifierKey,
+        NSFontFeatureSettingsAttribute, NSFontFeatureTypeIdentifierKey,
+    };
     let base = NSFont::monospacedDigitSystemFontOfSize_weight(size, unsafe { NSFontWeightMedium });
-    base.fontDescriptor()
+    let Some(rounded) = base
+        .fontDescriptor()
         .fontDescriptorWithDesign(unsafe { objc2_app_kit::NSFontDescriptorSystemDesignRounded })
-        .and_then(|d| NSFont::fontWithDescriptor_size(&d, size))
-        .unwrap_or(base)
+    else {
+        return base;
+    };
+    // kCaseSensitiveLayoutType (33), kCaseSensitiveLayoutOnSelector (0).
+    let feature = objc2_foundation::NSDictionary::<
+        objc2_app_kit::NSFontDescriptorFeatureKey,
+        AnyObject,
+    >::from_retained_objects(
+        &[unsafe { NSFontFeatureTypeIdentifierKey }, unsafe {
+            NSFontFeatureSelectorIdentifierKey
+        }],
+        &[
+            Retained::into_super(Retained::into_super(Retained::into_super(
+                NSNumber::new_i64(33),
+            ))),
+            Retained::into_super(Retained::into_super(Retained::into_super(
+                NSNumber::new_i64(0),
+            ))),
+        ],
+    );
+    let mut settings: Vec<Retained<AnyObject>> = unsafe {
+        rounded
+            .objectForKey(NSFontFeatureSettingsAttribute)
+            .and_then(|v| v.downcast::<NSArray>().ok())
+            .map(|a| a.to_vec())
+            .unwrap_or_default()
+    };
+    settings.push(Retained::into_super(Retained::into_super(feature)));
+    let attrs = objc2_foundation::NSDictionary::<NSFontDescriptorAttributeName, AnyObject>::from_retained_objects(
+        &[unsafe { NSFontFeatureSettingsAttribute }],
+        &[Retained::into_super(Retained::into_super(
+            NSArray::from_retained_slice(&settings),
+        ))],
+    );
+    let desc = unsafe { rounded.fontDescriptorByAddingAttributes(&attrs) };
+    NSFont::fontWithDescriptor_size(&desc, size).unwrap_or(base)
 }
 
 fn label(mtm: MainThreadMarker, text: &str, size: f64, weight: f64) -> Retained<NSTextField> {

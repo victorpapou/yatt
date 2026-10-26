@@ -707,6 +707,52 @@ impl PassView {
     }
 }
 
+define_class!(
+    // SAFETY: NSView has no subclassing requirements; no Drop impl.
+    #[unsafe(super(NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = NoIvars]
+    /// A column divider: the separator colour, fading in from nothing at the
+    /// top to full by half its height. Drawn, so it follows the appearance.
+    pub struct FadeLine;
+
+    impl FadeLine {
+        #[unsafe(method(isFlipped))]
+        fn is_flipped(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(drawRect:))]
+        fn draw_rect(&self, _dirty: NSRect) {
+            let b = self.bounds();
+            let line = NSColor::separatorColor();
+            let Some(gradient) = objc2_app_kit::NSGradient::initWithStartingColor_endingColor(
+                objc2_app_kit::NSGradient::alloc(),
+                &line.colorWithAlphaComponent(0.0),
+                &line,
+            ) else {
+                return;
+            };
+            // y runs down here: clear at the top, full at half the height and on.
+            // The gradient fills whatever is clipped, so clip it to the line.
+            objc2_app_kit::NSBezierPath::bezierPathWithRect(b).addClip();
+            let half = b.size.height / 2.0;
+            gradient.drawFromPoint_toPoint_options(
+                NSPoint::new(b.origin.x, b.origin.y),
+                NSPoint::new(b.origin.x, b.origin.y + half),
+                objc2_app_kit::NSGradientDrawingOptions::DrawsAfterEndingLocation,
+            );
+        }
+    }
+);
+
+impl FadeLine {
+    pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(NoIvars);
+        unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] }
+    }
+}
+
 // ---- text field delegate ----
 
 pub struct FieldIvars {
