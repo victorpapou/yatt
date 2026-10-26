@@ -29,7 +29,8 @@ use objc2_app_kit::{
     NSFontWeightMedium, NSFontWeightRegular, NSImage, NSLineBreakMode, NSNormalWindowLevel,
     NSPasteboard, NSPasteboardTypeString, NSTextAlignment, NSTextField, NSToolbar,
     NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem,
-    NSToolbarSpaceItemIdentifier, NSView, NSWindow, NSWindowOrderingMode, NSWindowStyleMask,
+    NSToolbarSpaceItemIdentifier, NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
+    NSVisualEffectState, NSVisualEffectView, NSWindow, NSWindowOrderingMode, NSWindowStyleMask,
     NSWindowTitleVisibility, NSWindowToolbarStyle,
 };
 use objc2_core_graphics::CGMutablePath;
@@ -52,8 +53,9 @@ pub enum DemoMouse {
     Up,
 }
 use crate::classes::{
-    ActionTarget, EditCmd, FadeLine, FieldDelegate, Fill, FillView, FlippedView, PassView,
-    PlainToolbarItem, RootView, ToolbarDelegate, WindowDelegate, editing_in_web_view, editing_text,
+    ActionTarget, BottomFade, EditCmd, FadeLine, FieldDelegate, Fill, FillView, FlippedView,
+    PassView, PlainToolbarItem, RootView, ToolbarDelegate, WindowDelegate, editing_in_web_view,
+    editing_text,
 };
 use crate::modal::Modal;
 use crate::model::{Snapshot, TimerSnap, UiEvent, format_clock};
@@ -74,10 +76,16 @@ const PAD: f64 = 16.0;
 /// Column chips: height and distance from the top of the board.
 const CHIP_H: f64 = 16.0;
 const CHIP_TOP: f64 = 4.0;
+/// Column chips: the text's inset at each end, and the gap before the count
+/// (labels bring 2 pt of inset of their own, so the ink sits 2 pt further in).
+const CHIP_PAD: f64 = 4.0;
+const CHIP_GAP: f64 = 1.0;
 /// The new-task capsule.
 const CAPSULE_H: f64 = 44.0;
 const CAPSULE_MAX_W: f64 = 460.0;
 const CAPSULE_BOTTOM: f64 = 22.0;
+/// The fade under the capsule: from clear to the background over this height.
+const BOTTOM_FADE_H: f64 = 72.0;
 /// The clock's digits in minimal mode: font size, the step from one digit to the
 /// next and from a colon on (tabular figures, tracked tight), and height.
 const DIGITS_MINI: (f64, f64, f64, f64) = (46.0, 26.0, 12.0, 56.0);
@@ -113,6 +121,8 @@ struct Ui {
     /// Holds the column chips above the cards; clicks elsewhere fall through.
     heads: Retained<PassView>,
     capsule: Retained<NSView>,
+    bottom_fade: Retained<BottomFade>,
+    bar_material: Retained<NSVisualEffectView>,
     new_task: Retained<NSTextField>,
     cards: Rc<Board>,
     modal: Modal,
@@ -182,9 +192,10 @@ impl MainWindow {
         };
         unsafe { window.setReleasedWhenClosed(false) };
         window.setTitle(ns_string!("yatt"));
-        // The system's own titlebar and toolbar material over the board, which
-        // runs under it.
-        window.setTitlebarAppearsTransparent(false);
+        // The board runs under the toolbar; the bar's material is a view of its
+        // own over it (`bar_material`), live from the first frame: the system's
+        // scroll-edge blur of an opaque titlebar caught up a beat late.
+        window.setTitlebarAppearsTransparent(true);
         // No line under it: the columns start right there.
         window.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::None);
         window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
@@ -339,8 +350,19 @@ impl MainWindow {
         new_task.setFocusRingType(NSFocusRingType::None);
         new_task.setFont(Some(&NSFont::systemFontOfSize(14.0)));
         capsule_content.addSubview(&new_task);
+        // The cards fade out under the capsule.
+        let bottom_fade = BottomFade::new(mtm);
+        board.addSubview(&bottom_fade);
         board.addSubview(&capsule);
         board.addSubview(&cards.overlay);
+        // The toolbar's material over the top of the board: the system's
+        // titlebar blur, live (a within-window backdrop) on every frame, cards
+        // scrolled up go under it.
+        let bar_material = NSVisualEffectView::new(mtm);
+        bar_material.setMaterial(NSVisualEffectMaterial::Titlebar);
+        bar_material.setBlendingMode(NSVisualEffectBlendingMode::WithinWindow);
+        bar_material.setState(NSVisualEffectState::FollowsWindowActiveState);
+        root.addSubview(&bar_material);
 
         let modal = Modal::new(mtm, &sink);
         root.addSubview(&modal.dim);
@@ -361,6 +383,8 @@ impl MainWindow {
             columns,
             heads,
             capsule,
+            bottom_fade,
+            bar_material,
             new_task,
             cards,
             modal,
@@ -608,6 +632,19 @@ impl MainWindow {
             digit("0"),
             digit(":"),
         )
+    }
+
+    /// Development aid: each column's chip frame and the column's middle, in the
+    /// board's points.
+    pub fn demo_chips(&self) -> Vec<(NSRect, f64)> {
+        self.ui
+            .columns
+            .iter()
+            .map(|c| {
+                let f = c.view.frame();
+                (c.chip.frame(), f.origin.x + f.size.width / 2.0)
+            })
+            .collect()
     }
 
     /// Development aid: the board's list/stack toggle.
@@ -992,6 +1029,12 @@ impl Ui {
         let full = NSRect::new(NSPoint::ZERO, NSSize::new(size.width, board_h));
         self.cards.overlay.setFrame(full);
         self.heads.setFrame(full);
+        self.bar_material
+            .setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(size.width, top)));
+        self.bottom_fade.setFrame(NSRect::new(
+            NSPoint::new(0.0, board_h - BOTTOM_FADE_H),
+            NSSize::new(size.width, BOTTOM_FADE_H),
+        ));
         let cw = (size.width - 80.0).min(CAPSULE_MAX_W);
         self.capsule.setFrame(NSRect::new(
             NSPoint::new(
@@ -1013,7 +1056,7 @@ impl Ui {
             c.view
                 .setFrame(NSRect::new(NSPoint::new(x, 0.0), NSSize::new(w, board_h)));
             c.tint.setFrame(c.view.bounds());
-            c.layout_chip(x + PAD, top + CHIP_TOP);
+            c.layout_chip(x + w / 2.0, top + CHIP_TOP);
             if i < 2 {
                 // From under the toolbar, fading in to full by half way down.
                 self.dividers[i].setFrame(NSRect::new(
@@ -1142,8 +1185,9 @@ impl Ui {
                 motion::soften(&c.chip);
                 c.count.setStringValue(&NSString::from_str(&count));
             }
+            let f = c.view.frame();
             c.layout_chip(
-                c.view.frame().origin.x + PAD,
+                f.origin.x + f.size.width / 2.0,
                 self.top_inset.get() + CHIP_TOP,
             );
         }
@@ -1835,20 +1879,15 @@ impl Column {
         }
     }
 
-    /// Sizes the chip to its title and count, at `x` on the board.
-    fn layout_chip(&self, x: f64, y: f64) {
+    /// Sizes the chip to its title and count, centred on `centre_x` (the
+    /// column's middle, the cards' centre line), its top at `y`.
+    fn layout_chip(&self, centre_x: f64, y: f64) {
         let (tw, cw) = (
             self.title.fittingSize().width.ceil(),
             self.count.fittingSize().width.ceil(),
         );
-        // Tight: the chip is CHIP_H tall around 14 pt of text, 1 pt above and
-        // below; at the ends a little more, for the round caps. The count sits a
-        // short gap after the title.
-        let (pad, gap, text_h) = (6.0, 3.0, 14.0);
-        let frame = NSRect::new(
-            NSPoint::new(x, y),
-            NSSize::new(pad + tw + gap + cw + pad, CHIP_H),
-        );
+        let (pad, gap, text_h) = (CHIP_PAD, CHIP_GAP, 14.0);
+        let frame = chip_frame(centre_x, y, tw, cw);
         self.chip.setFrame(frame);
         self.chip_glass.setFrame(frame);
         let y = ((CHIP_H - text_h) / 2.0).round();
@@ -1862,6 +1901,16 @@ impl Column {
 }
 
 // ---- helpers ----
+
+/// A column chip's frame for a title `tw` and a count `cw` wide: [`CHIP_H`]
+/// tall, [`CHIP_PAD`] at the ends, [`CHIP_GAP`] between, centred on `centre_x`.
+fn chip_frame(centre_x: f64, y: f64, tw: f64, cw: f64) -> NSRect {
+    let w = CHIP_PAD + tw + CHIP_GAP + cw + CHIP_PAD;
+    NSRect::new(
+        NSPoint::new((centre_x - w / 2.0).round(), y),
+        NSSize::new(w, CHIP_H),
+    )
+}
 
 /// An SF Symbol by name.
 /// How far the toolbar digits sit below their box's geometric centre line.
@@ -2005,4 +2054,19 @@ pub(crate) fn animate_with_completion(secs: f64, changes: impl Fn(), done: impl 
     });
     let done = RcBlock::new(done);
     NSAnimationContext::runAnimationGroup_completionHandler(&block, Some(&done));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_chip_is_snug_and_centred_on_its_column() {
+        let f = chip_frame(300.0, 44.0, 50.0, 8.0);
+        assert_eq!(f.size.height, CHIP_H);
+        assert_eq!(f.size.width, CHIP_PAD + 50.0 + CHIP_GAP + 8.0 + CHIP_PAD);
+        assert!((f.origin.x + f.size.width / 2.0 - 300.0).abs() <= 0.5);
+        assert_eq!(f.origin.y, 44.0);
+        assert!(CHIP_H <= 16.0 && CHIP_PAD <= 6.0 && CHIP_GAP <= 3.0);
+    }
 }

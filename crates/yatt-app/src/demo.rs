@@ -266,6 +266,16 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             }
             wait(900).await;
             shot("toolbar");
+            for (i, (chip, middle)) in window.demo_chips().iter().enumerate() {
+                eprintln!(
+                    "demo: chip {i}: {:.1}x{:.1} at {:.1},{:.1}, centre {:.1}, column middle {middle:.1}",
+                    chip.size.width,
+                    chip.size.height,
+                    chip.origin.x,
+                    chip.origin.y,
+                    chip.origin.x + chip.size.width / 2.0
+                );
+            }
             // The clock stands in the toolbar's middle at any width.
             for w in [900.0, 1200.0, 1600.0] {
                 window.demo_resize(w, 700.0);

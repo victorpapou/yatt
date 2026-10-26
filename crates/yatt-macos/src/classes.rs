@@ -746,6 +746,55 @@ define_class!(
     }
 );
 
+define_class!(
+    // SAFETY: NSView has no subclassing requirements; no Drop impl.
+    #[unsafe(super(NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = NoIvars]
+    /// The board's bottom edge: the window's background fading in from clear at
+    /// the top to nearly solid at the bottom, so the cards fade out under the
+    /// new-task capsule. Drawn, so it follows the appearance; clicks go through.
+    pub struct BottomFade;
+
+    impl BottomFade {
+        #[unsafe(method(isFlipped))]
+        fn is_flipped(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method_id(hitTest:))]
+        fn hit_test(&self, _point: NSPoint) -> Option<Retained<NSView>> {
+            None
+        }
+
+        #[unsafe(method(drawRect:))]
+        fn draw_rect(&self, _dirty: NSRect) {
+            let b = self.bounds();
+            let bg = NSColor::textBackgroundColor();
+            let Some(gradient) = objc2_app_kit::NSGradient::initWithStartingColor_endingColor(
+                objc2_app_kit::NSGradient::alloc(),
+                &bg.colorWithAlphaComponent(0.0),
+                &bg.colorWithAlphaComponent(0.92),
+            ) else {
+                return;
+            };
+            objc2_app_kit::NSBezierPath::bezierPathWithRect(b).addClip();
+            gradient.drawFromPoint_toPoint_options(
+                NSPoint::new(b.origin.x, b.origin.y),
+                NSPoint::new(b.origin.x, b.origin.y + b.size.height),
+                objc2_app_kit::NSGradientDrawingOptions::empty(),
+            );
+        }
+    }
+);
+
+impl BottomFade {
+    pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(NoIvars);
+        unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] }
+    }
+}
+
 impl FadeLine {
     pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(NoIvars);

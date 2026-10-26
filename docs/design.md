@@ -35,10 +35,14 @@ content and colour. Nothing is cross-faded or swapped for a separate view.
 
 ## Header
 
-The timer row is a native `NSToolbar`, unified with the titlebar, in the
-system's own titlebar material (not transparent, no separator line): the board
-runs under it from the window's top, so cards scrolled up go under the bar and
-it blurs them, and the list, chips and dividers start below it (`top`). The
+The timer row is a native `NSToolbar`, unified with the titlebar, over the
+system's titlebar material (`NSVisualEffectView`, `.titlebar`, within-window,
+so the blur is live on every frame; the opaque titlebar's own scroll-edge blur
+caught up a beat late), no separator line: the board runs under it from the
+window's top, so cards scrolled up go under the bar and it blurs them, and the
+list, chips and dividers start below it (`top`). At the bottom the cards fade
+out under the new-task capsule: the background from clear to 92% over 72 pt
+(drawn per appearance, clicks pass through). The
 digits alone, no ring, in SF Rounded (medium, tabular; case-sensitive forms
 on, so the colon, a label of its own, sits on the figures' middle, not low), as plain text (an item that
 tells AppKit it wants no glass, `glassBehavior` 0) and a centred item, so the
@@ -197,8 +201,9 @@ interval p95 of about 16–18 ms on the plain blur.
 
 Each column's title and count sit in a small glass chip: the cards' backdrop
 (4 pt blur, saturation 1.5) under a light tint of the column's colour, 16 pt
-tall, 4 pt under the toolbar, 6 pt at the ends, the count 3 pt after the title
-and a little dimmer. No rule under the toolbar; the dividers between columns
+tall, 4 pt under the toolbar, centred on its column (the cards' centre line),
+4 pt at the ends and 1 pt before the count (the labels' own 2 pt inset on top),
+the count a little dimmer (`chip_frame`, tested). No rule under the toolbar; the dividers between columns
 fade in from clear at the top to the separator colour by half their height. The colours:
 «Бэклог» grey, «В работе» yellow, «Готово» green; the grey card is denser than
 the colours (85%), or its pale tint over other cards reads as a white halo round
