@@ -266,6 +266,17 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             }
             wait(900).await;
             shot("toolbar");
+            // The clock stands in the toolbar's middle at any width.
+            for w in [900.0, 1200.0, 1600.0] {
+                window.demo_resize(w, 700.0);
+                wait(400).await;
+                let (clock, middle, digit, colon) = window.demo_timer_center();
+                eprintln!(
+                    "demo: window {w}: clock centre {clock:.1}, window centre {middle:.1} ({}); digit {digit:.1}, colon {colon:.1}",
+                    if (clock - middle).abs() <= 1.0 { "centred" } else { "OFF CENTRE (wrong)" }
+                );
+                shot(&format!("toolbar-{w}"));
+            }
             eprintln!(
                 "demo: layer capture {}",
                 window.capture_layers_png(&format!("{dir}/toolbar-layers.png"))

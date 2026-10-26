@@ -62,12 +62,12 @@ use crate::style;
 
 pub type Sink = Rc<dyn Fn(UiEvent)>;
 
-/// The toolbar's timer item: the ring and five digits.
-const TIMER_ITEM_W: f64 = 112.0;
+/// The toolbar's timer item: room for the longest clock («0:00:00»), the
+/// digits centred in it; the item itself stands in the toolbar's middle.
+const TIMER_ITEM_W: f64 = 100.0;
 /// Height of the timer row in the toolbar.
 const TOOLBAR_H: f64 = 40.0;
-/// The progress ring: diameter and stroke, in the toolbar and in minimal mode.
-const RING_D: f64 = 22.0;
+/// The progress ring (minimal mode only): diameter and stroke.
 const RING_D_MINI: f64 = 34.0;
 const RING_LINE: f64 = 3.0;
 const PAD: f64 = 16.0;
@@ -82,7 +82,7 @@ const CAPSULE_BOTTOM: f64 = 22.0;
 /// next and from a colon on (tabular figures, tracked tight), and height.
 const DIGITS_MINI: (f64, f64, f64, f64) = (46.0, 26.0, 12.0, 56.0);
 /// The same in the toolbar.
-const DIGITS_BAR: (f64, f64, f64, f64) = (24.0, 14.0, 7.0, 32.0);
+const DIGITS_BAR: (f64, f64, f64, f64) = (24.0, 15.0, 7.0, 32.0);
 /// Each digit's label is this much wider than its step, so the glyph is never
 /// clipped by the field's inset; neighbouring labels overlap, glyphs don't.
 const DIGIT_PAD: f64 = 6.0;
@@ -244,7 +244,7 @@ impl MainWindow {
         }
         let toolbar =
             NSToolbar::initWithIdentifier(NSToolbar::alloc(mtm), ns_string!("yatt.toolbar"));
-        // [ring, digits, phase] … [Старт] [Секундомер] [Пропустить] [Стоп] [▤ ⤡]
+        // … [digits] … [Старт] [Секундомер] [Пропустить] [Стоп] [▤ ⤡]
         let bar = &header.bar;
         let items: Vec<Retained<NSToolbarItem>> = vec![
             timer_item.clone(),
@@ -260,7 +260,10 @@ impl MainWindow {
         let id = |item: &Retained<NSToolbarItem>| item.itemIdentifier();
         let flexible = unsafe { NSToolbarFlexibleSpaceItemIdentifier }.copy();
         let space = unsafe { NSToolbarSpaceItemIdentifier }.copy();
+        // The timer in the middle of the toolbar (a centred item, so it stays
+        // there as the window resizes), the controls on the right.
         let order: Vec<Retained<NSString>> = vec![
+            flexible.clone(),
             id(&items[0]),
             flexible,
             id(&items[1]),
@@ -280,6 +283,9 @@ impl MainWindow {
         };
         let toolbar_delegate = ToolbarDelegate::new(mtm, items, order);
         toolbar.setDelegate(Some(ProtocolObject::from_ref(&*toolbar_delegate)));
+        toolbar.setCenteredItemIdentifiers(&objc2_foundation::NSSet::from_retained_slice(&[
+            timer_item.itemIdentifier(),
+        ]));
         toolbar.setDisplayMode(NSToolbarDisplayMode::IconOnly);
         toolbar.setAllowsUserCustomization(false);
         window.setToolbar(Some(&toolbar));
@@ -584,6 +590,27 @@ impl MainWindow {
         self.ui
             .window
             .setAppearance(objc2_app_kit::NSAppearance::appearanceNamed(name).as_deref());
+    }
+
+    /// Development aid: the clock digits' middle and the window's, in window
+    /// points, and how wide a rounded clock digit and colon draw.
+    pub fn demo_timer_center(&self) -> (f64, f64, f64, f64) {
+        let b = &self.ui.header.digits_box;
+        let r = b.convertRect_toView(b.bounds(), None);
+        let digit = |c: &str| {
+            let font = clock_font(DIGITS_BAR.0);
+            let attrs = objc2_foundation::NSDictionary::from_retained_objects(
+                &[unsafe { objc2_app_kit::NSFontAttributeName }],
+                &[Retained::into_super(Retained::into_super(font))],
+            );
+            unsafe { NSString::from_str(c).sizeWithAttributes(Some(&attrs)) }.width
+        };
+        (
+            r.origin.x + r.size.width / 2.0,
+            self.ui.window.frame().size.width / 2.0,
+            digit("0"),
+            digit(":"),
+        )
     }
 
     /// Development aid: the board's list/stack toggle.
@@ -1437,16 +1464,12 @@ impl Header {
             ));
             return;
         }
-        // One toolbar row, everything on its centre line: ring, digits, phase over
-        // the tasks, then the controls on the right.
+        // One toolbar row: just the digits, centred in the item (no ring), the
+        // controls are items of their own on the right.
         let mid = height / 2.0;
         let (_, _, _, dh) = DIGITS_BAR;
-        self.ring.view.setFrame(NSRect::new(
-            NSPoint::new(0.0, mid - RING_D / 2.0),
-            NSSize::new(RING_D, RING_D),
-        ));
-        self.ring.layout();
-        let dx = RING_D + 8.0;
+        self.ring.view.setHidden(true);
+        let dx = ((width - digits_w) / 2.0).max(0.0).round();
         // Optically centred: the digits' line box sits a little high of their
         // ink (measured on the toolbar capture: 1.5 pt).
         self.digits_box.setFrame(NSRect::new(
@@ -1548,10 +1571,7 @@ impl Header {
                     colon_w
                 };
                 let d = label(mtm, &ch.to_string(), size, unsafe { NSFontWeightMedium });
-                d.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(
-                    size,
-                    unsafe { NSFontWeightMedium },
-                )));
+                d.setFont(Some(&clock_font(size)));
                 d.setAlignment(NSTextAlignment::Center);
                 d.setWantsLayer(true);
                 d.setLayerUsesCoreImageFilters(true);
@@ -1896,6 +1916,15 @@ fn tomato() -> Retained<NSImage> {
         };
     }
     TOMATO.with(|t| t.clone())
+}
+
+/// The clock's digits: SF Rounded, medium, tabular.
+fn clock_font(size: f64) -> Retained<NSFont> {
+    let base = NSFont::monospacedDigitSystemFontOfSize_weight(size, unsafe { NSFontWeightMedium });
+    base.fontDescriptor()
+        .fontDescriptorWithDesign(unsafe { objc2_app_kit::NSFontDescriptorSystemDesignRounded })
+        .and_then(|d| NSFont::fontWithDescriptor_size(&d, size))
+        .unwrap_or(base)
 }
 
 fn label(mtm: MainThreadMarker, text: &str, size: f64, weight: f64) -> Retained<NSTextField> {

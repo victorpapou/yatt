@@ -35,9 +35,11 @@ content and colour. Nothing is cross-faded or swapped for a separate view.
 
 ## Header
 
-The timer row is a native `NSToolbar`, unified with the titlebar: the progress
-ring and the digits as plain text (an item that tells AppKit it wants no glass,
-`glassBehavior` 0), then … [🍅 / ⏸ / ▶] [▶ stopwatch] [⏭ skip] [■ stop] (icons with tooltips) [view
+The timer row is a native `NSToolbar`, unified with the titlebar: the digits
+alone, no ring, in SF Rounded (medium, tabular), as plain text (an item that
+tells AppKit it wants no glass, `glassBehavior` 0) and a centred item, so the
+clock stands in the window's middle at any width (`YATT_DEMO_TOOLBAR` checks
+it at 900, 1200 and 1600 pt); then on the right [🍅 / ⏸ / ▶] [▶ stopwatch] [⏭ skip] [■ stop] (icons with tooltips) [view
 icons, sharing one bubble]. The toolbar puts neighbouring items into one shared
 bubble, so fixed spaces separate them. A changed digit does the system's numeric
 transition: the old glyph shrinks to 0.8, blurs to 4 pt and fades up, the new
