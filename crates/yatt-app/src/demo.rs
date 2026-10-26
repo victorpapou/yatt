@@ -235,6 +235,43 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             eprintln!("demo: finished");
             return;
         }
+        if std::env::var_os("YATT_DEMO_SPAWN").is_some() {
+            // Tasks typed into the capsule (↩ and ⌘↩): every few ms from the
+            // submit, where the new card's view is. It must stay on the way
+            // from the capsule to its slot, never at the board's corner.
+            sink(UiEvent::NewTask {
+                title: "Старая".into(),
+                status: Status::Backlog,
+            });
+            wait(600).await;
+            for (col, in_progress) in [(0, false), (1, true)] {
+                let before = ids(cx, col);
+                window.demo_new_task("Новая из капсулы", in_progress);
+                let mut path = Vec::new();
+                for _ in 0..60 {
+                    wait(4).await;
+                    if let Some(id) = ids(cx, col).into_iter().find(|id| !before.contains(id))
+                        && let Some(c) = window.demo_view_center(id)
+                    {
+                        path.push(c);
+                    }
+                }
+                // A card-sized view left at the origin has its centre here.
+                let corner = path
+                    .iter()
+                    .filter(|(x, y)| (x - 115.0).abs() < 3.0 && (y - 50.5).abs() < 3.0)
+                    .count();
+                eprintln!(
+                    "demo: new card from the capsule, column {col}: {} samples, first {:?}, last {:?}, {}",
+                    path.len(),
+                    path.first(),
+                    path.last(),
+                    if corner == 0 { "never at the corner".to_string() } else { format!("{corner} AT THE CORNER (wrong)") }
+                );
+            }
+            eprintln!("demo: finished");
+            return;
+        }
         if std::env::var_os("YATT_DEMO_FLIP").is_some() {
             // Cards made in the dark appearance, then the system turns light (and
             // back): every card must be in the light colours, as if made there.

@@ -453,12 +453,16 @@ impl Board {
                         card.flying = true;
                         card.grow = Some((0.0, r.size));
                         card.space = Space::Overlay;
+                        // On the capsule before it is ever drawn: a new view
+                        // stands at the origin until its first frame is applied.
+                        motion::quietly(|| card.apply_frame(self.overlay_dy.get()));
                         self.overlay.addSubview(&card.view);
                     } else {
                         let (x, y) = self.slot(ci, i);
                         card.body = Body::at(x, y - 8.0);
                         card.space = self.home_of(ci);
                         card.home = card.space;
+                        motion::quietly(|| card.apply_frame(self.overlay_dy.get()));
                         self.parent(card.space).addSubview(&card.view);
                         card.view.setAlphaValue(0.0);
                         let view = card.view.clone();
