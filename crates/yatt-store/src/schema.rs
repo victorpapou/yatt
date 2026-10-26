@@ -2,8 +2,9 @@ use rusqlite_migration::{M, Migrations};
 
 /// Timestamps are UTC milliseconds (INTEGER), ids are hyphenated UUIDv7 (TEXT).
 pub fn migrations() -> Migrations<'static> {
-    Migrations::new(vec![M::up(
-        r#"
+    Migrations::new(vec![
+        M::up(
+            r#"
 CREATE TABLE projects (
     id          TEXT PRIMARY KEY,
     name        TEXT NOT NULL,
@@ -95,5 +96,11 @@ CREATE TABLE kv (
     value  TEXT NOT NULL
 );
 "#,
-    )])
+        ),
+        // The card's own colour and icon.
+        M::up(
+            "ALTER TABLE tasks ADD COLUMN color INTEGER;
+         ALTER TABLE tasks ADD COLUMN icon TEXT;",
+        ),
+    ])
 }

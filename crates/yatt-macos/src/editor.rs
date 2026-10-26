@@ -1,6 +1,11 @@
 //! The markdown notes editor: Tiptap (bundled from `editor/`, see its package.json)
 //! running in a WKWebView. Content goes in with `yatt.setMarkdown`, comes back as
 //! `notes:<markdown>` messages, debounced in the page.
+//!
+//! Those messages arrive late (the debounce, and the flush when the panel closes),
+//! when another task may already be open. So each load first posts `key:<task>`
+//! through the same channel; messages keep their order, and every notes message is
+//! filed under the key posted before it.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -17,7 +22,8 @@ use crate::classes::ScriptHandler;
 const BUNDLE: &str = include_str!("../editor/dist/editor.js");
 
 pub enum EditorMsg {
-    Notes(String),
+    /// The notes of the task loaded under `key`.
+    Notes { key: String, md: String },
     /// Esc pressed inside the editor.
     Close,
 }
@@ -25,8 +31,8 @@ pub enum EditorMsg {
 pub struct NotesEditor {
     pub view: Retained<WKWebView>,
     ready: Rc<Cell<bool>>,
-    /// Content to load once the page is ready.
-    pending: Rc<RefCell<Option<String>>>,
+    /// Content (and its key) to load once the page is ready.
+    pending: Rc<RefCell<Option<(String, String)>>>,
     /// Text colour (CSS) to apply once the page is ready.
     ink: Rc<RefCell<Option<String>>>,
     _handler: Retained<ScriptHandler>,
@@ -35,8 +41,10 @@ pub struct NotesEditor {
 impl NotesEditor {
     pub fn new(mtm: MainThreadMarker, on_msg: impl Fn(EditorMsg) + 'static) -> Self {
         let ready = Rc::new(Cell::new(false));
-        let pending: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        let pending: Rc<RefCell<Option<(String, String)>>> = Rc::new(RefCell::new(None));
         let ink: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        // The key the next notes messages belong to, as posted from the page.
+        let key = Rc::new(RefCell::new(String::new()));
         let config = unsafe { WKWebViewConfiguration::new(mtm) };
         let view = unsafe {
             WKWebView::initWithFrame_configuration(WKWebView::alloc(mtm), NSRect::ZERO, &config)
@@ -50,13 +58,18 @@ impl NotesEditor {
                     if let Some(css) = ink.borrow().as_ref() {
                         eval(&view, &set_ink_js(css));
                     }
-                    if let Some(md) = pending.borrow_mut().take() {
-                        eval(&view, &set_markdown_js(&md));
+                    if let Some((md, k)) = pending.borrow_mut().take() {
+                        eval(&view, &set_markdown_js(&md, &k));
                     }
                 } else if msg == "close" {
                     on_msg(EditorMsg::Close);
+                } else if let Some(k) = msg.strip_prefix("key:") {
+                    *key.borrow_mut() = k.to_string();
                 } else if let Some(md) = msg.strip_prefix("notes:") {
-                    on_msg(EditorMsg::Notes(md.to_string()));
+                    on_msg(EditorMsg::Notes {
+                        key: key.borrow().clone(),
+                        md: md.to_string(),
+                    });
                 }
             })
         };
@@ -85,11 +98,12 @@ impl NotesEditor {
         }
     }
 
-    pub fn set_markdown(&self, md: &str) {
+    /// Loads `md`; the notes that come back from now on belong to `key`.
+    pub fn set_markdown(&self, md: &str, key: &str) {
         if self.ready.get() {
-            eval(&self.view, &set_markdown_js(md));
+            eval(&self.view, &set_markdown_js(md, key));
         } else {
-            *self.pending.borrow_mut() = Some(md.to_string());
+            *self.pending.borrow_mut() = Some((md.to_string(), key.to_string()));
         }
     }
 
@@ -106,6 +120,19 @@ impl NotesEditor {
         if self.ready.get() {
             eval(&self.view, "window.yatt.flush()");
         }
+    }
+
+    /// The editor's own undo or redo (ProseMirror's history), for ⌘Z and ⌘⇧Z,
+    /// which the app's menu takes before the page can see them.
+    pub fn undo(&self, redo: bool) {
+        eval(
+            &self.view,
+            if redo {
+                "window.yatt.redo()"
+            } else {
+                "window.yatt.undo()"
+            },
+        );
     }
 
     pub fn focus(&self) {
@@ -136,9 +163,20 @@ impl NotesEditor {
 }
 
 fn set_ink_js(css: &str) -> String {
-    let rule = js_string(&format!(".ProseMirror {{ color: {css}; }}"));
+    // The body's ink, and the placeholder and quiet parts in it, in the panel's
+    // own appearance (system colours there follow the colour scheme).
+    let rule = js_string(&format!(
+        ".ProseMirror {{ color: {css}; }} \
+         .ProseMirror p.is-editor-empty:first-child::before {{ \
+         color: color-mix(in srgb, {css} 45%, transparent); }}"
+    ));
+    let scheme = if crate::style::dark() {
+        "dark"
+    } else {
+        "light"
+    };
     format!(
-        "document.documentElement.style.colorScheme = 'light';\
+        "document.documentElement.style.colorScheme = '{scheme}';\
          (document.getElementById('ink') || document.head.appendChild(\
          Object.assign(document.createElement('style'), {{ id: 'ink' }}))).textContent = {rule};"
     )
@@ -148,8 +186,16 @@ fn eval(view: &WKWebView, js: &str) {
     unsafe { view.evaluateJavaScript_completionHandler(&NSString::from_str(js), None) };
 }
 
-fn set_markdown_js(md: &str) -> String {
-    format!("window.yatt.setMarkdown({})", js_string(md))
+/// Flushes edits still waiting for the debounce (they go out under the old key),
+/// posts the new key, then loads the notes.
+fn set_markdown_js(md: &str, key: &str) -> String {
+    format!(
+        "window.yatt.flush();\
+         window.webkit.messageHandlers.yatt.postMessage({});\
+         window.yatt.setMarkdown({})",
+        js_string(&format!("key:{key}")),
+        js_string(md)
+    )
 }
 
 /// A JavaScript string literal for any text.

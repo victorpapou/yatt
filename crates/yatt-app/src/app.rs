@@ -158,39 +158,43 @@ fn install_menus(cx: &mut App, window: &Rc<MainWindow>, sink: &yatt_macos::Sink)
     let f = send(UiEvent::Skip);
     cx.on_action(move |a: &Skip, _| f(a));
 
-    cx.set_menus(vec![
-        Menu {
-            name: "yatt".into(),
-            items: vec![MenuItem::action("Выйти из yatt", Quit)],
-        },
-        Menu {
-            name: "Файл".into(),
-            items: vec![MenuItem::action("Новая задача", NewTask)],
-        },
-        Menu {
-            name: "Правка".into(),
-            items: vec![
-                MenuItem::os_action("Отменить", Undo, OsAction::Undo),
-                MenuItem::os_action("Повторить", Redo, OsAction::Redo),
-                MenuItem::separator(),
-                MenuItem::os_action("Вырезать", Cut, OsAction::Cut),
-                MenuItem::os_action("Скопировать", Copy, OsAction::Copy),
-                MenuItem::os_action("Вставить", Paste, OsAction::Paste),
-                MenuItem::os_action("Выбрать все", SelectAll, OsAction::SelectAll),
-            ],
-        },
-        Menu {
-            name: "Таймер".into(),
-            items: vec![
-                MenuItem::action("Старт / пауза (пробел)", StartPause),
-                MenuItem::action("Секундомер", Stopwatch),
-                MenuItem::action("Пропустить фазу", Skip),
-                MenuItem::action("Стоп", Stop),
-            ],
-        },
-        Menu {
+    cx.set_menus(
+        vec![
+            Menu {
+                name: "yatt".into(),
+                items: vec![MenuItem::action("Выйти из yatt", Quit)],
+            },
+            Menu {
+                name: "Файл".into(),
+                items: vec![MenuItem::action("Новая задача", NewTask)],
+            },
+            Menu {
+                name: "Правка".into(),
+                items: vec![
+                    MenuItem::os_action("Отменить", Undo, OsAction::Undo),
+                    MenuItem::os_action("Повторить", Redo, OsAction::Redo),
+                    MenuItem::separator(),
+                    MenuItem::os_action("Вырезать", Cut, OsAction::Cut),
+                    MenuItem::os_action("Скопировать", Copy, OsAction::Copy),
+                    MenuItem::os_action("Вставить", Paste, OsAction::Paste),
+                    MenuItem::os_action("Выбрать все", SelectAll, OsAction::SelectAll),
+                ],
+            },
+            Menu {
+                name: "Таймер".into(),
+                items: vec![
+                    MenuItem::action("Старт / пауза (пробел)", StartPause),
+                    MenuItem::action("Секундомер", Stopwatch),
+                    MenuItem::action("Пропустить фазу", Skip),
+                    MenuItem::action("Стоп", Stop),
+                ],
+            },
+        ]
+        .into_iter()
+        .chain(yatt_macos::model::MINIMAL_MODE.then(|| Menu {
             name: "Вид".into(),
             items: vec![MenuItem::action("Только таймер", Minimal)],
-        },
-    ]);
+        }))
+        .collect(),
+    );
 }

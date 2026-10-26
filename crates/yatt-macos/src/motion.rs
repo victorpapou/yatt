@@ -51,6 +51,30 @@ pub fn quietly(f: impl FnOnce()) {
 }
 
 /// System setting "Reduce motion": cross-fade instead of moving things around.
+/// Asked at most once a second: the frame timer asks every frame, and the system
+/// call is not free.
 pub fn reduce_motion() -> bool {
-    NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
+    thread_local! {
+        static CACHE: std::cell::Cell<(f64, bool)> = const { std::cell::Cell::new((f64::NEG_INFINITY, false)) };
+    }
+    let now = objc2_quartz_core::CACurrentMediaTime();
+    CACHE.with(|c| {
+        let (at, on) = c.get();
+        if now - at < 1.0 {
+            return on;
+        }
+        let on = NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion();
+        c.set((now, on));
+        on
+    })
+}
+
+/// Runs `f` inside a Core Animation transaction lasting `secs`, so the layer
+/// properties it sets ease over instead of jumping.
+pub fn eased(secs: f64, f: impl FnOnce()) {
+    objc2_quartz_core::CATransaction::begin();
+    objc2_quartz_core::CATransaction::setDisableActions(false);
+    objc2_quartz_core::CATransaction::setAnimationDuration(secs);
+    f();
+    objc2_quartz_core::CATransaction::commit();
 }

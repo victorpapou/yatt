@@ -73,7 +73,7 @@ impl Store {
     pub fn load_tasks(&self) -> Result<Vec<Task>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, title, notes, status, position, project_id, priority, due_at, estimate_pomodoros,
-                    created_at, updated_at, completed_at, deleted_at
+                    created_at, updated_at, completed_at, deleted_at, color, icon
              FROM tasks",
         )?;
         let rows = stmt.query_map([], task_from_row)?;
@@ -251,14 +251,14 @@ fn merged_len(sorted: Vec<(i64, i64)>) -> i64 {
 fn save_task(conn: &Connection, t: &Task) -> Result<()> {
     conn.execute(
         "INSERT INTO tasks (id, title, notes, status, position, project_id, priority, due_at, estimate_pomodoros,
-                            created_at, updated_at, completed_at, deleted_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                            created_at, updated_at, completed_at, deleted_at, color, icon)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
          ON CONFLICT(id) DO UPDATE SET
             title = excluded.title, notes = excluded.notes, status = excluded.status,
             position = excluded.position, project_id = excluded.project_id, priority = excluded.priority,
             due_at = excluded.due_at, estimate_pomodoros = excluded.estimate_pomodoros,
             updated_at = excluded.updated_at, completed_at = excluded.completed_at,
-            deleted_at = excluded.deleted_at",
+            deleted_at = excluded.deleted_at, color = excluded.color, icon = excluded.icon",
         params![
             t.id.0.to_string(),
             t.title,
@@ -273,6 +273,8 @@ fn save_task(conn: &Connection, t: &Task) -> Result<()> {
             ms(t.updated_at),
             t.completed_at.map(ms),
             t.deleted_at.map(ms),
+            t.color,
+            t.icon,
         ],
     )?;
     Ok(())
@@ -313,6 +315,8 @@ fn task_from_row(r: &Row<'_>) -> rusqlite::Result<Result<Task>> {
         updated_at: ts(r.get(10)?)?,
         completed_at: r.get::<_, Option<i64>>(11)?.map(ts).transpose()?,
         deleted_at: r.get::<_, Option<i64>>(12)?.map(ts).transpose()?,
+        color: r.get(13)?,
+        icon: r.get(14)?,
     }))
 }
 
@@ -355,10 +359,22 @@ mod tests {
             t(10),
         )
         .unwrap();
+        // The card's own colour and icon survive too.
+        h.execute(
+            &mut board,
+            Command::SetLook {
+                id,
+                color: Some(3),
+                icon: Some("star.fill".into()),
+            },
+            t(11),
+        )
+        .unwrap();
         store.save_task(board.get(id).unwrap()).unwrap();
 
         let loaded = store.load_tasks().unwrap();
         assert_eq!(loaded, vec![board.get(id).unwrap().clone()]);
+        assert_eq!(loaded[0].color, Some(3));
     }
 
     #[test]

@@ -6,9 +6,11 @@ use jiff::tz::TimeZone;
 use yatt_core::{Command, Mode, Phase, Placement, Status, TaskId};
 use yatt_engine::Engine;
 use yatt_macos::{CardSnap, ColumnSnap, Snapshot, TimerSnap, UiEvent, format_duration};
+use yatt_platform::MenuBarTimer;
 
 /// How many time entries the expanded card lists.
-const ENTRIES_SHOWN: usize = 8;
+/// Every entry of the open task, for copying.
+const ENTRIES_SHOWN: usize = usize::MAX;
 
 pub struct Workspace {
     pub engine: Engine,
@@ -36,6 +38,11 @@ impl Workspace {
             UiEvent::Move { id, status, index } => {
                 e.move_task(id, status, Placement::Index(index));
             }
+            UiEvent::OpenTask(id) => {
+                if e.board.get(id).is_some() {
+                    self.expanded = Some(id);
+                }
+            }
             UiEvent::ToggleExpand(id) => {
                 self.expanded = if self.expanded == Some(id) {
                     None
@@ -45,6 +52,22 @@ impl Workspace {
             }
             UiEvent::Rename(id, title) => e.execute(Command::Rename { id, title }),
             UiEvent::SetNotes(id, notes) => e.execute(Command::SetNotes { id, notes }),
+            UiEvent::SetLook { id, color, icon } => e.execute(Command::SetLook { id, color, icon }),
+            UiEvent::Paste { .. } | UiEvent::Group(_) => {
+                // A paste, or a group of moves or deletes: one step to undo.
+                let mut cmds = Vec::new();
+                board_commands(event, &mut cmds);
+                if let Some(open) = self.expanded
+                    && cmds
+                        .iter()
+                        .any(|c| matches!(c, Command::Delete { id } if *id == open))
+                {
+                    self.expanded = None;
+                }
+                if !cmds.is_empty() {
+                    e.execute(Command::Batch(cmds));
+                }
+            }
             UiEvent::Delete(id) => {
                 e.delete_task(id);
                 if self.expanded == Some(id) {
@@ -52,6 +75,10 @@ impl Workspace {
                 }
             }
             UiEvent::StartPause => e.start_or_pause(Mode::Pomodoro),
+            UiEvent::SetDurations {
+                work_min,
+                break_min,
+            } => e.set_durations(work_min, break_min),
             UiEvent::StartStopwatch => e.start_or_pause(Mode::Stopwatch),
             UiEvent::Skip => e.skip(),
             UiEvent::Stop => e.stop(),
@@ -103,6 +130,8 @@ impl Workspace {
                         } else {
                             Vec::new()
                         },
+                        color: t.color,
+                        icon: t.icon.clone(),
                     }
                 })
                 .collect(),
@@ -152,6 +181,20 @@ impl Workspace {
             can_stop: t.phase != Phase::Idle,
             progress: t.progress(now),
             running: t.is_running(),
+            work_min: t.settings.work_secs / 60,
+            break_min: t.settings.short_break_secs / 60,
+            menu_bar: match (t.phase, t.planned_secs()) {
+                (Phase::Idle, _) => MenuBarTimer::Idle,
+                (_, Some(p)) => MenuBarTimer::Pomodoro {
+                    remaining_ms: t.remaining_ms(now).unwrap_or(0),
+                    total_ms: p as i64 * 1000,
+                    paused: !t.is_running(),
+                },
+                (_, None) => MenuBarTimer::Stopwatch {
+                    elapsed_ms: t.elapsed_ms(now),
+                    paused: !t.is_running(),
+                },
+            },
         }
     }
 }
@@ -181,6 +224,40 @@ fn entry_label(start: Timestamp, end: Option<Timestamp>, now: Timestamp) -> Stri
     )
 }
 
+/// The board commands a UI event stands for, appended to `out`: moves, deletes
+/// and pasted copies (each pasted card lands on top, so the last goes in first
+/// to keep their order). Other events stand for none.
+fn board_commands(event: UiEvent, out: &mut Vec<Command>) {
+    match event {
+        UiEvent::Move { id, status, index } => out.push(Command::Move {
+            id,
+            status,
+            placement: Placement::Index(index),
+        }),
+        UiEvent::Delete(id) => out.push(Command::Delete { id }),
+        UiEvent::Paste { items, status } => {
+            for (title, notes) in items.into_iter().rev() {
+                let id = TaskId::new();
+                out.push(Command::Create {
+                    id,
+                    title,
+                    status,
+                    placement: Placement::Top,
+                });
+                if !notes.is_empty() {
+                    out.push(Command::SetNotes { id, notes });
+                }
+            }
+        }
+        UiEvent::Group(events) => {
+            for e in events {
+                board_commands(e, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,6 +265,23 @@ mod tests {
 
     fn workspace() -> Workspace {
         Workspace::new(Engine::load(Store::open_in_memory().unwrap()).unwrap())
+    }
+
+    #[test]
+    fn opening_a_task_from_the_menu_bar_shows_its_panel() {
+        let mut ws = workspace();
+        ws.handle(UiEvent::NewTask {
+            title: "А".into(),
+            status: Status::InProgress,
+        });
+        let id = ws.snapshot().columns[1].cards[0].id;
+        ws.handle(UiEvent::OpenTask(id));
+        assert_eq!(ws.snapshot().expanded, Some(id));
+        // Again: it stays open (not a toggle).
+        ws.handle(UiEvent::OpenTask(id));
+        assert_eq!(ws.snapshot().expanded, Some(id));
+        ws.handle(UiEvent::OpenTask(yatt_core::TaskId::new()));
+        assert_eq!(ws.snapshot().expanded, Some(id));
     }
 
     #[test]

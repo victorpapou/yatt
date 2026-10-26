@@ -30,6 +30,9 @@ pub struct CardSnap {
     pub tracking: bool,
     /// Latest time entries, formatted ("20:08 – 20:31 · 0:23:00"). Filled only for the expanded card.
     pub entries: Vec<String>,
+    /// The card's own colour and icon, when it chose them.
+    pub color: Option<u8>,
+    pub icon: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -47,6 +50,23 @@ pub struct TimerSnap {
     /// Phase progress in 0.0..=1.0.
     pub progress: f32,
     pub running: bool,
+    /// The pomodoro's lengths, in minutes.
+    pub work_min: u32,
+    pub break_min: u32,
+    /// For the menu bar.
+    pub menu_bar: yatt_platform::MenuBarTimer,
+}
+
+/// The timer-only window mode (⇧⌘M): off for now; the code stays.
+pub const MINIMAL_MODE: bool = false;
+
+/// A status's name, as its column is called.
+pub fn status_label(status: Status) -> &'static str {
+    match status {
+        Status::Backlog => "Бэклог",
+        Status::InProgress => "В работе",
+        Status::Done => "Готово",
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -63,10 +83,30 @@ pub enum UiEvent {
         index: usize,
     },
     ToggleExpand(TaskId),
+    /// Opens that task's panel, whatever was open (from the menu bar).
+    OpenTask(TaskId),
     Rename(TaskId, String),
     SetNotes(TaskId, String),
     Delete(TaskId),
+    /// The card's colour and icon (`None`: from its id).
+    SetLook {
+        id: TaskId,
+        color: Option<u8>,
+        icon: Option<String>,
+    },
+    /// Several moves or deletes made together: undone and redone as one.
+    Group(Vec<UiEvent>),
+    /// Copies of tasks, `(title, notes)` in order, on top of `status`.
+    Paste {
+        items: Vec<(String, String)>,
+        status: Status,
+    },
     StartPause,
+    /// The pomodoro's work and break lengths, in minutes.
+    SetDurations {
+        work_min: u32,
+        break_min: u32,
+    },
     StartStopwatch,
     Skip,
     Stop,

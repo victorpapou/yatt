@@ -64,6 +64,10 @@ pub struct Task {
     pub priority: Priority,
     pub due_at: Option<Timestamp>,
     pub estimate_pomodoros: Option<u32>,
+    /// The card's colour (an index into the app's palette) and icon (an SF
+    /// Symbol name); `None`: picked from the id.
+    pub color: Option<u8>,
+    pub icon: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
     pub completed_at: Option<Timestamp>,
@@ -88,6 +92,8 @@ impl Task {
             priority: Priority::None,
             due_at: None,
             estimate_pomodoros: None,
+            color: None,
+            icon: None,
             created_at: now,
             updated_at: now,
             completed_at: (status == Status::Done).then_some(now),

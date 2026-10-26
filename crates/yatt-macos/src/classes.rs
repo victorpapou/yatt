@@ -10,11 +10,11 @@ use objc2::{
     msg_send, sel,
 };
 use objc2_app_kit::{
-    NSColor, NSControl, NSControlTextEditingDelegate, NSEvent, NSEventModifierFlags, NSEventPhase,
-    NSResponder, NSTextFieldDelegate, NSTextView, NSTrackingArea, NSTrackingAreaOptions, NSView,
-    NSWindow, NSWindowDelegate,
+    NSColor, NSControl, NSControlTextEditingDelegate, NSEvent, NSEventModifierFlags, NSResponder,
+    NSTextFieldDelegate, NSTextView, NSToolbarDelegate, NSToolbarItem, NSTrackingArea,
+    NSTrackingAreaOptions, NSView, NSWindow, NSWindowDelegate,
 };
-use objc2_foundation::{NSNotification, NSPoint, NSRect, NSString};
+use objc2_foundation::{NSArray, NSNotification, NSPoint, NSRect, NSString};
 use objc2_web_kit::{WKScriptMessage, WKScriptMessageHandler, WKUserContentController};
 
 pub type KeyHandler = Box<dyn Fn(&NSEvent) -> bool>;
@@ -86,6 +86,89 @@ impl WindowDelegate {
     }
 }
 
+// ---- toolbar ----
+
+pub struct ToolbarIvars {
+    items: Vec<Retained<NSToolbarItem>>,
+    /// Identifiers in order, the system's spaces included.
+    order: Vec<Retained<NSString>>,
+}
+
+define_class!(
+    // SAFETY: NSObject has no subclassing requirements; no Drop impl.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = ToolbarIvars]
+    /// Serves the window's toolbar its items, in a fixed order.
+    pub struct ToolbarDelegate;
+
+    unsafe impl NSObjectProtocol for ToolbarDelegate {}
+
+    unsafe impl NSToolbarDelegate for ToolbarDelegate {
+        #[unsafe(method_id(toolbar:itemForItemIdentifier:willBeInsertedIntoToolbar:))]
+        fn item_for(
+            &self,
+            _toolbar: &objc2_app_kit::NSToolbar,
+            id: &NSString,
+            _flag: bool,
+        ) -> Option<Retained<NSToolbarItem>> {
+            self.ivars()
+                .items
+                .iter()
+                .find(|item| *item.itemIdentifier() == *id)
+                .cloned()
+        }
+
+        #[unsafe(method_id(toolbarDefaultItemIdentifiers:))]
+        fn default_ids(&self, _toolbar: &objc2_app_kit::NSToolbar) -> Retained<NSArray<NSString>> {
+            NSArray::from_retained_slice(&self.ivars().order)
+        }
+
+        #[unsafe(method_id(toolbarAllowedItemIdentifiers:))]
+        fn allowed_ids(&self, _toolbar: &objc2_app_kit::NSToolbar) -> Retained<NSArray<NSString>> {
+            NSArray::from_retained_slice(&self.ivars().order)
+        }
+    }
+);
+
+impl ToolbarDelegate {
+    pub fn new(
+        mtm: MainThreadMarker,
+        items: Vec<Retained<NSToolbarItem>>,
+        order: Vec<Retained<NSString>>,
+    ) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(ToolbarIvars { items, order });
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+define_class!(
+    // SAFETY: NSToolbarItem has no subclassing requirements; no Drop impl.
+    #[unsafe(super(NSToolbarItem, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    /// A toolbar item for plain content: it asks the toolbar for no glass bubble.
+    /// `glassBehavior` is AppKit's own private, read-only switch for that on
+    /// macOS 26 and later; `hidesSharedBackground` is not there on 27.2.
+    pub struct PlainToolbarItem;
+
+    impl PlainToolbarItem {
+        #[unsafe(method(glassBehavior))]
+        fn glass_behavior(&self) -> usize {
+            // 0: no glass. Any other value (1–3 tried) gives the item a bubble.
+            0
+        }
+    }
+);
+
+impl PlainToolbarItem {
+    /// A new item, as the plain toolbar item it is to everyone else.
+    pub fn item(mtm: MainThreadMarker, id: &NSString) -> Retained<NSToolbarItem> {
+        let this = Self::alloc(mtm).set_ivars(());
+        let this: Retained<Self> = unsafe { msg_send![super(this), initWithItemIdentifier: id] };
+        Retained::into_super(this)
+    }
+}
+
 // ---- views ----
 
 /// A flipped plain view: y grows downwards, like the layouts here.
@@ -114,12 +197,29 @@ impl FlippedView {
     }
 }
 
+/// The standard edit commands as they reach the board: from the Edit menu (or
+/// its shortcuts) when no text field is editing, and Delete/Backspace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditCmd {
+    Copy,
+    Cut,
+    Paste,
+    SelectAll,
+    Delete,
+}
+
+pub type EditHandler = Box<dyn Fn(EditCmd)>;
+
 pub struct RootIvars {
     pub on_layout: RefCell<Option<Box<dyn Fn()>>>,
+    /// Copy, cut, paste, select all and delete for the board's selection.
+    pub on_edit: RefCell<Option<EditHandler>>,
     /// Esc anywhere in the window that nothing else handled (`cancelOperation:`).
     pub on_cancel: RefCell<Option<Box<dyn Fn()>>>,
     /// Returns true when it handled the key.
     pub on_key: RefCell<Option<KeyHandler>>,
+    /// The window turned light or dark.
+    pub on_appearance: RefCell<Option<Box<dyn Fn()>>>,
 }
 
 define_class!(
@@ -135,6 +235,13 @@ define_class!(
             true
         }
 
+        #[unsafe(method(viewDidChangeEffectiveAppearance))]
+        fn did_change_appearance(&self) {
+            if let Some(f) = self.ivars().on_appearance.borrow().as_ref() {
+                f();
+            }
+        }
+
         #[unsafe(method(acceptsFirstResponder))]
         fn accepts_first_responder(&self) -> bool {
             true
@@ -145,6 +252,33 @@ define_class!(
             if let Some(f) = self.ivars().on_layout.borrow().as_ref() {
                 f();
             }
+        }
+
+        // The Edit menu's actions travel the responder chain: a text field that is
+        // editing takes them first; otherwise they land here, for the board.
+        #[unsafe(method(copy:))]
+        fn copy(&self, _sender: Option<&AnyObject>) {
+            self.edit(EditCmd::Copy);
+        }
+
+        #[unsafe(method(cut:))]
+        fn cut(&self, _sender: Option<&AnyObject>) {
+            self.edit(EditCmd::Cut);
+        }
+
+        #[unsafe(method(paste:))]
+        fn paste(&self, _sender: Option<&AnyObject>) {
+            self.edit(EditCmd::Paste);
+        }
+
+        #[unsafe(method(selectAll:))]
+        fn select_all(&self, _sender: Option<&AnyObject>) {
+            self.edit(EditCmd::SelectAll);
+        }
+
+        #[unsafe(method(delete:))]
+        fn delete(&self, _sender: Option<&AnyObject>) {
+            self.edit(EditCmd::Delete);
         }
 
         #[unsafe(method(cancelOperation:))]
@@ -170,11 +304,19 @@ define_class!(
 );
 
 impl RootView {
+    fn edit(&self, cmd: EditCmd) {
+        if let Some(f) = self.ivars().on_edit.borrow().as_ref() {
+            f(cmd);
+        }
+    }
+
     pub fn new(mtm: MainThreadMarker, frame: NSRect) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(RootIvars {
             on_layout: RefCell::new(None),
+            on_edit: RefCell::new(None),
             on_cancel: RefCell::new(None),
             on_key: RefCell::new(None),
+            on_appearance: RefCell::new(None),
         });
         unsafe { msg_send![super(this), initWithFrame: frame] }
     }
@@ -189,22 +331,26 @@ pub enum Fill {
         tracking: bool,
         selected: bool,
     },
-    /// The "N скрыто" capsule.
-    Badge,
     /// A column's header pill, tinted in the column's colour.
     Chip(usize),
     /// A 1 px divider line.
     Separator,
-    /// The light tint over the column a card is dragged over.
-    Tint,
+    /// The faint tint, in the column's own colour, over the column a card is
+    /// dragged over.
+    Tint(usize),
     /// The backdrop behind the task modal.
     Dim,
     /// The modal panel itself.
     Panel,
+    /// The task panel's white body under its tinted header: rounded at the
+    /// bottom only.
+    Sheet,
 }
 
 pub struct FillIvars {
     pub fill: Cell<Fill>,
+    /// A card's corners shrink with the card: its radius is CARD_RADIUS × this.
+    pub corner_scale: Cell<f64>,
     pub on_click: RefCell<Option<Box<dyn Fn()>>>,
 }
 
@@ -232,43 +378,36 @@ define_class!(
             let fill = self.ivars().fill.get();
             let color = match fill {
                 Fill::Card { hue, .. } => crate::style::fill(hue),
-                Fill::Badge => NSColor::whiteColor().colorWithAlphaComponent(0.38),
                 Fill::Chip(i) => crate::style::column_color(i).colorWithAlphaComponent(0.14),
                 Fill::Separator => NSColor::separatorColor(),
-                Fill::Tint => NSColor::labelColor().colorWithAlphaComponent(0.035),
+                Fill::Tint(i) => crate::style::column_color(i).colorWithAlphaComponent(0.045),
                 Fill::Dim => NSColor::blackColor().colorWithAlphaComponent(0.28),
                 // The panel's look comes from the card material inside it.
                 Fill::Panel => NSColor::clearColor(),
+                Fill::Sheet => NSColor::textBackgroundColor(),
             };
             layer.setBackgroundColor(Some(&color.CGColor()));
             match fill {
-                Fill::Card { selected, .. } => {
-                    crate::style::round(&layer, crate::style::CARD_RADIUS);
-                    // A light hairline; selection gets an accent ring. A running timer
-                    // shows as ● on the card itself.
-                    // A plain 1 px light rim; selection gets an accent ring.
-                    layer.setBorderWidth(if selected { 2.5 } else { 1.0 });
-                    let rim = if selected {
-                        NSColor::controlAccentColor()
-                    } else {
-                        NSColor::whiteColor().colorWithAlphaComponent(0.6)
-                    };
-                    layer.setBorderColor(Some(&rim.CGColor()));
-                    // A thin soft white glow over the card's faint dark shadow.
-                    layer.setShadowColor(Some(&NSColor::whiteColor().CGColor()));
-                    layer.setShadowOpacity(0.4);
-                    layer.setShadowRadius(4.0);
-                    layer.setShadowOffset(objc2_foundation::NSSize::new(0.0, 0.0));
+                Fill::Card { .. } => {
+                    crate::style::round(
+                        &layer,
+                        crate::style::CARD_RADIUS * self.ivars().corner_scale.get(),
+                    );
+                    // No stroke or shadow: the card's edge, and the selection ring
+                    // outside it, are layers of their own (`style::Edges`). A
+                    // running timer shows as ● in the text.
+                    layer.setBorderWidth(0.0);
                 }
-                Fill::Badge => crate::style::round(&layer, 9.0),
-                Fill::Chip(_) => crate::style::round(&layer, 10.0),
+                Fill::Chip(_) => crate::style::round(&layer, 9.0),
+                Fill::Sheet => {
+                    crate::style::round(&layer, crate::style::CARD_RADIUS);
+                    // The flipped view's layer counts y down: the bottom corners.
+                    layer.setMaskedCorners(
+                        objc2_quartz_core::CACornerMask::LayerMinXMaxYCorner
+                            | objc2_quartz_core::CACornerMask::LayerMaxXMaxYCorner,
+                    );
+                }
                 _ => {}
-            }
-            if fill == Fill::Panel {
-                layer.setShadowColor(Some(&NSColor::shadowColor().CGColor()));
-                layer.setShadowOpacity(0.22);
-                layer.setShadowRadius(24.0);
-                layer.setShadowOffset(objc2_foundation::NSSize::new(0.0, -8.0));
             }
         }
 
@@ -285,6 +424,20 @@ define_class!(
 );
 
 impl FillView {
+    /// A card's tint at `scale` of its size: the corners go with it.
+    pub fn set_corner_scale(&self, scale: f64) {
+        self.ivars().corner_scale.set(scale);
+        if let Some(layer) = self.layer() {
+            layer.setCornerRadius(crate::style::CARD_RADIUS * scale);
+        }
+    }
+
+    /// Draws again in the current colours (the appearance changed), easing over.
+    pub fn repaint(&self) {
+        crate::motion::soften(self);
+        self.setNeedsDisplay(true);
+    }
+
     pub fn set_fill(&self, fill: Fill) {
         if self.ivars().fill.replace(fill) != fill {
             // Selection rings, tints and fills ease over instead of jumping.
@@ -296,6 +449,7 @@ impl FillView {
     pub fn new(mtm: MainThreadMarker, fill: Fill) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(FillIvars {
             fill: Cell::new(fill),
+            corner_scale: Cell::new(1.0),
             on_click: RefCell::new(None),
         });
         let view: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
@@ -356,25 +510,14 @@ pub enum CanvasMsg {
     Hover(Option<NSPoint>),
 }
 
-/// Where a trackpad gesture is; `None` for a plain mouse wheel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Swipe {
-    None,
-    Began,
-    Changed,
-    Ended,
-    /// Momentum after the fingers lifted.
-    Coasting,
-}
-
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Scroll {
+    /// The trackpad or wheel event itself, for handing on to a column's scroll view.
+    pub event: Option<Retained<NSEvent>>,
     pub at: NSPoint,
-    /// Finger travel in canvas points (y down), whatever the scrolling direction setting.
-    pub finger: (f64, f64),
-    /// How far the content should scroll (positive: further down the list).
-    pub scroll: f64,
-    pub swipe: Swipe,
+    /// How far the fingers (or the wheel) move down, in points (negative: up),
+    /// the same whatever the natural-scrolling setting.
+    pub down: f64,
 }
 
 pub struct CanvasIvars {
@@ -403,7 +546,14 @@ define_class!(
         #[unsafe(method_id(hitTest:))]
         fn hit_test(&self, point: NSPoint) -> Option<Retained<NSView>> {
             let hit: Option<Retained<NSView>> = unsafe { msg_send![super(self), hitTest: point] };
-            hit.map(|_| Retained::into_super(self.retain()))
+            // The columns' scrollers keep their own clicks; everything else is ours.
+            hit.map(|v| {
+                if v.isKindOfClass(objc2_app_kit::NSScroller::class()) {
+                    v
+                } else {
+                    Retained::into_super(self.retain())
+                }
+            })
         }
 
         #[unsafe(method(updateTrackingAreas))]
@@ -430,7 +580,14 @@ define_class!(
 
         #[unsafe(method(mouseMoved:))]
         fn mouse_moved(&self, event: &NSEvent) {
-            self.send(CanvasMsg::Hover(Some(self.local(event))));
+            // Over something drawn above the canvas (the capsule, a chip, the
+            // panel) the pointer is that view's: it keeps its own cursor.
+            let on_top = self.window().and_then(|w| w.contentView()).and_then(|content| {
+                let frame = unsafe { content.superview() }.unwrap_or(content.clone());
+                frame.hitTest(frame.convertPoint_fromView(event.locationInWindow(), None))
+            });
+            let ours = on_top.is_some_and(|v| std::ptr::eq::<NSView>(&*v, self.as_ref()));
+            self.send(CanvasMsg::Hover(ours.then(|| self.local(event))));
         }
 
         #[unsafe(method(mouseExited:))]
@@ -461,30 +618,14 @@ define_class!(
 
         #[unsafe(method(scrollWheel:))]
         fn scroll_wheel(&self, event: &NSEvent) {
-            let (dx, dy) = (event.scrollingDeltaX(), event.scrollingDeltaY());
-            let precise = event.hasPreciseScrollingDeltas();
-            let k = if precise { 1.0 } else { 16.0 };
-            // With natural scrolling the deltas follow the fingers; otherwise they oppose them.
-            let sign = if event.isDirectionInvertedFromDevice() { 1.0 } else { -1.0 };
-            let phase = event.phase();
-            let swipe = if !precise {
-                Swipe::None
-            } else if event.momentumPhase() != NSEventPhase::None {
-                Swipe::Coasting
-            } else if phase.contains(NSEventPhase::Began) {
-                Swipe::Began
-            } else if phase.intersects(NSEventPhase::Ended | NSEventPhase::Cancelled) {
-                Swipe::Ended
-            } else if phase.intersects(NSEventPhase::Changed | NSEventPhase::Stationary) {
-                Swipe::Changed
-            } else {
-                Swipe::None
-            };
+            let k = if event.hasPreciseScrollingDeltas() { 1.0 } else { 16.0 };
             self.send(CanvasMsg::Scroll(Scroll {
+                event: Some(event.retain()),
                 at: self.local(event),
-                finger: (sign * dx * k, sign * dy * k),
-                scroll: -dy * k,
-                swipe,
+                down: crate::physics::gesture_down(
+                    event.scrollingDeltaY() * k,
+                    event.isDirectionInvertedFromDevice(),
+                ),
             }));
         }
     }
@@ -605,6 +746,21 @@ impl FieldDelegate {
 }
 
 /// The window's current first responder is a text editor (a field being edited or a text view).
+/// Whether the first responder is inside a web view (the notes editor).
+pub fn editing_in_web_view(window: &NSWindow) -> bool {
+    let Some(r) = window.firstResponder() else {
+        return false;
+    };
+    let mut view = r.downcast::<NSView>().ok();
+    while let Some(v) = view {
+        if v.isKindOfClass(objc2_web_kit::WKWebView::class()) {
+            return true;
+        }
+        view = unsafe { v.superview() };
+    }
+    false
+}
+
 pub fn editing_text(window: &NSWindow) -> bool {
     let Some(r) = window.firstResponder() else {
         return false;
@@ -621,4 +777,53 @@ pub fn editing_text(window: &NSWindow) -> bool {
         view = unsafe { v.superview() };
     }
     false
+}
+
+// ---- a button that also knows a long press ----
+
+pub type HoldHandler = Box<dyn Fn(&NSView)>;
+
+pub struct HoldIvars {
+    /// Held down for [`HOLD_SECS`]: this runs instead of the click.
+    pub on_hold: RefCell<Option<HoldHandler>>,
+}
+
+/// How long a press must last to count as a hold.
+pub const HOLD_SECS: f64 = 0.4;
+
+define_class!(
+    // SAFETY: NSButton has no subclassing requirements; no Drop impl.
+    #[unsafe(super(objc2_app_kit::NSButton, NSControl, NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = HoldIvars]
+    pub struct HoldButton;
+
+    impl HoldButton {
+        #[unsafe(method(mouseDown:))]
+        fn mouse_down(&self, event: &NSEvent) {
+            let Some(window) = self.window() else { return };
+            let until = objc2_foundation::NSDate::dateWithTimeIntervalSinceNow(HOLD_SECS);
+            let up = window.nextEventMatchingMask_untilDate_inMode_dequeue(
+                objc2_app_kit::NSEventMask::LeftMouseUp,
+                Some(&until),
+                unsafe { objc2_foundation::NSDefaultRunLoopMode },
+                false,
+            );
+            if up.is_some() {
+                // A click: the button's own tracking takes the mouse-up.
+                unsafe { msg_send![super(self), mouseDown: event] }
+            } else if let Some(f) = self.ivars().on_hold.borrow().as_ref() {
+                f(self);
+            }
+        }
+    }
+);
+
+impl HoldButton {
+    pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(HoldIvars {
+            on_hold: RefCell::new(None),
+        });
+        unsafe { msg_send![super(this), init] }
+    }
 }
