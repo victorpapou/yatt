@@ -2067,6 +2067,6 @@ mod tests {
         assert_eq!(f.size.width, CHIP_PAD + 50.0 + CHIP_GAP + 8.0 + CHIP_PAD);
         assert!((f.origin.x + f.size.width / 2.0 - 300.0).abs() <= 0.5);
         assert_eq!(f.origin.y, 44.0);
-        assert!(CHIP_H <= 16.0 && CHIP_PAD <= 6.0 && CHIP_GAP <= 3.0);
+        const { assert!(CHIP_H <= 16.0 && CHIP_PAD <= 6.0 && CHIP_GAP <= 3.0) };
     }
 }
