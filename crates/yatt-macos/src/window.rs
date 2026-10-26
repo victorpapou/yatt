@@ -562,6 +562,30 @@ impl MainWindow {
         self.ui.cards.is_fanned()
     }
 
+    /// Development aid: the task panel's frame, angle, openness and alphas (dim, panel,
+    /// controls, card text).
+    pub fn demo_modal_state(&self) -> (NSRect, f64, f64, [f64; 4]) {
+        self.ui.modal.debug_state()
+    }
+
+    /// Development aid: the notes editor's place and its text's, on stderr.
+    pub fn demo_editor_geometry(&self) {
+        self.ui.modal.debug_editor_geometry();
+    }
+
+    /// Development aid: switches the window to the dark or light appearance, as
+    /// the system would.
+    pub fn demo_appearance(&self, dark: bool) {
+        let name = if dark {
+            unsafe { NSAppearanceNameDarkAqua }
+        } else {
+            unsafe { NSAppearanceNameAqua }
+        };
+        self.ui
+            .window
+            .setAppearance(objc2_app_kit::NSAppearance::appearanceNamed(name).as_deref());
+    }
+
     /// Development aid: the board's list/stack toggle.
     pub fn demo_toggle_stack(&self) {
         self.ui.toggle_stack();

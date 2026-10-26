@@ -20,15 +20,15 @@ use objc2::rc::{Retained, Weak as ObjcWeak};
 use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSAnimatablePropertyContainer, NSButton, NSColor, NSFont, NSFontWeightMedium,
-    NSFontWeightRegular, NSImage, NSImageSymbolConfiguration, NSLineBreakMode, NSMenu, NSMenuItem,
-    NSPasteboard, NSPasteboardTypeString, NSTextField, NSView,
+    NSButton, NSColor, NSFont, NSFontWeightMedium, NSFontWeightRegular, NSImage,
+    NSImageSymbolConfiguration, NSLineBreakMode, NSMenu, NSMenuItem, NSPasteboard,
+    NSPasteboardTypeString, NSTextField, NSView,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString, NSTimer, ns_string};
 use objc2_quartz_core::{CACornerMask, CACurrentMediaTime};
 use yatt_core::{Status, TaskId};
 
-use crate::board::{Face, card_face, set_meta, set_title, time_text};
+use crate::board::{Face, card_face, refresh_meta, refresh_title, set_meta, set_title, time_text};
 use crate::classes::{ActionTarget, Fill, FillView, FlippedView};
 use crate::editor::{EditorMsg, NotesEditor};
 use crate::model::{CardSnap, UiEvent, format_duration};
@@ -36,12 +36,13 @@ use crate::motion;
 use crate::physics::{self, Body};
 use crate::picker::{Current, Picker};
 use crate::style;
-use crate::window::{Sink, animate};
+use crate::window::Sink;
 
 /// The card's parts that change as it opens into the panel.
 struct Parts {
     content: Retained<FlippedView>,
     card_box: Retained<FlippedView>,
+    editor_clip: Retained<FlippedView>,
     face: Retained<FillView>,
     sheet: Retained<FillView>,
 }
@@ -58,9 +59,21 @@ fn blend(parts: &Parts, openness: f64, size: NSSize) {
         let t = ((openness - a) / (b - a)).clamp(0.0, 1.0);
         t * t * (3.0 - 2.0 * t)
     };
-    parts.card_box.setAlphaValue(1.0 - ease(0.15, 0.55));
-    parts.content.setAlphaValue(ease(0.45, 0.95));
+    // The two overlap a little, so the card is never without text midway.
+    parts.card_box.setAlphaValue(1.0 - ease(0.1, 0.45));
+    parts.content.setAlphaValue(ease(0.35, 0.85));
     let (w, h) = (size.width.max(1.0), size.height.max(1.0));
+    // The editor keeps its open size (no reflow of the notes on every frame);
+    // only its viewport follows the growing card, so it shows as the card
+    // grows round it.
+    let editor_height = (h - EDITOR_TOP - EDITOR_BOTTOM).max(0.0);
+    motion::quietly(|| {
+        parts.editor_clip.setFrame(NSRect::new(
+            NSPoint::new(0.0, EDITOR_TOP),
+            NSSize::new(w, editor_height),
+        ));
+    });
+    parts.editor_clip.setHidden(editor_height < 1.0);
     let head = (style::CARD_H + (HEADER_H - style::CARD_H) * ease(0.1, 0.7)).min(h);
     motion::quietly(|| {
         parts
@@ -86,6 +99,14 @@ fn blend(parts: &Parts, openness: f64, size: NSSize) {
 
 /// The panel's header: title and stats, in the card's colour.
 const HEADER_H: f64 = 80.0;
+/// The time entries' line at the bottom.
+const FOOTER_H: f64 = 44.0;
+const PANEL_PAD: f64 = 24.0;
+/// The editor spans the body between the two rules, edge to edge; the margins
+/// round the notes are the page's own padding (editor/src/editor.js), so the
+/// scroller sits at the panel's edge and the text scrolls under the rules.
+const EDITOR_TOP: f64 = HEADER_H + 1.0;
+const EDITOR_BOTTOM: f64 = FOOTER_H;
 
 pub struct Modal {
     pub dim: Retained<FillView>,
@@ -104,6 +125,7 @@ pub struct Modal {
     stats: Retained<NSTextField>,
     rules: [Retained<FillView>; 2],
     editor: NotesEditor,
+    editor_clip: Retained<FlippedView>,
     /// The time entries' one line, and every entry, as written.
     times: Retained<NSButton>,
     all_entries: Rc<RefCell<Vec<String>>>,
@@ -142,6 +164,9 @@ struct Morph {
     on_progress: RefCell<Option<ProgressFn>>,
     from_w: Cell<f64>,
     to_w: Cell<f64>,
+    from_progress: Cell<f64>,
+    to_progress: Cell<f64>,
+    progress: Cell<f64>,
 }
 
 impl Morph {
@@ -170,7 +195,7 @@ impl Morph {
     }
 
     /// Springs to `r`, then runs `done` (dropping any earlier one unrun).
-    fn to(self: &Rc<Self>, r: NSRect, deg: f64, done: Option<Box<dyn Fn()>>) {
+    fn to(self: &Rc<Self>, r: NSRect, deg: f64, target_progress: f64, done: Option<Box<dyn Fn()>>) {
         let (mut o, mut s) = (self.origin.get(), self.size.get());
         // Growing: a little jelly; shrinking back: lighter.
         let spring = if r.size.width >= s.x {
@@ -182,6 +207,8 @@ impl Morph {
         s.spring = spring;
         self.from_w.set(s.x);
         self.to_w.set(r.size.width);
+        self.from_progress.set(self.progress.get());
+        self.to_progress.set(target_progress);
         o.target(r.origin.x, r.origin.y, deg);
         s.target(r.size.width, r.size.height, 0.0);
         self.origin.set(o);
@@ -189,8 +216,9 @@ impl Morph {
         *self.done.borrow_mut() = done;
         if motion::reduce_motion() {
             self.jump(r, deg);
+            self.progress.set(target_progress);
             if let Some(f) = self.on_progress.borrow().as_ref() {
-                f(1.0, r);
+                f(target_progress, r);
             }
             self.finish();
             return;
@@ -227,13 +255,23 @@ impl Morph {
         self.place(o, s);
         if let Some(f) = self.on_progress.borrow().as_ref() {
             let span = self.to_w.get() - self.from_w.get();
-            let p = if span.abs() < 1.0 {
+            let local = if span.abs() < 1.0 {
                 1.0
             } else {
-                ((s.x - self.from_w.get()) / span).clamp(0.0, 1.0)
+                ((s.x - self.from_w.get()) / span).clamp(0.0, 0.99)
             };
             let frame = NSRect::new(NSPoint::new(o.x, o.y), NSSize::new(s.x, s.y));
-            f(if rest { 1.0 } else { p }, frame);
+            let candidate = self.from_progress.get()
+                + (self.to_progress.get() - self.from_progress.get()) * local;
+            let p = if rest {
+                self.to_progress.get()
+            } else if self.to_progress.get() >= self.from_progress.get() {
+                self.progress.get().max(candidate)
+            } else {
+                self.progress.get().min(candidate)
+            };
+            self.progress.set(p);
+            f(p, frame);
         }
         if rest {
             if let Some(t) = self.timer.borrow_mut().take() {
@@ -369,6 +407,19 @@ impl Modal {
                 }
             })
         };
+        // WKWebView is hosted by WebKit and can paint outside the panel's
+        // animated bounds. Keep it in a flipped, layer-backed viewport so its
+        // frame uses the same top-left coordinates as the panel content.
+        let editor_clip = FlippedView::new(mtm, NSRect::ZERO);
+        editor_clip.setWantsLayer(true);
+        if let Some(layer) = editor_clip.layer() {
+            layer.setMasksToBounds(true);
+        }
+        editor.view.setWantsLayer(true);
+        if let Some(layer) = editor.view.layer() {
+            layer.setMasksToBounds(true);
+        }
+        editor_clip.addSubview(&editor.view);
 
         // The look and status, in a popover off a small button in the header.
         let picker = Rc::new(Picker::new(mtm, sink));
@@ -450,7 +501,7 @@ impl Modal {
             &stats,
             &look,
             &rules[0],
-            &editor.view,
+            &editor_clip,
             &rules[1],
             &times,
         ];
@@ -468,6 +519,9 @@ impl Modal {
             on_progress: RefCell::new(None),
             from_w: Cell::new(0.0),
             to_w: Cell::new(0.0),
+            from_progress: Cell::new(0.0),
+            to_progress: Cell::new(0.0),
+            progress: Cell::new(0.0),
         });
 
         Self {
@@ -484,6 +538,7 @@ impl Modal {
             stats,
             rules,
             editor,
+            editor_clip,
             times,
             all_entries,
             look,
@@ -500,6 +555,7 @@ impl Modal {
         Parts {
             content: self.content.clone(),
             card_box: self.card_box.clone(),
+            editor_clip: self.editor_clip.clone(),
             face: self.face.clone(),
             sheet: self.sheet.clone(),
         }
@@ -512,6 +568,47 @@ impl Modal {
 
     pub fn debug_print_editor(&self) {
         self.editor.debug_print_html();
+    }
+
+    /// Development aid: the panel's frame (unturned) and angle, how far open it
+    /// is, and the alphas of
+    /// the dim, the panel, its controls and the card's text.
+    pub fn debug_state(&self) -> (NSRect, f64, f64, [f64; 4]) {
+        let (o, s) = (self.morph.origin.get(), self.morph.size.get());
+        (
+            NSRect::new(NSPoint::new(o.x, o.y), NSSize::new(s.x, s.y)),
+            o.r,
+            self.morph.progress.get(),
+            [
+                self.dim.alphaValue(),
+                self.panel.alphaValue(),
+                self.content.alphaValue(),
+                self.card_box.alphaValue(),
+            ],
+        )
+    }
+
+    /// Development aid: where the editor sits in the panel, and its page's text
+    /// box, on stderr.
+    pub fn debug_editor_geometry(&self) {
+        let f = self
+            .editor
+            .view
+            .convertRect_toView(self.editor.view.bounds(), Some(&self.panel));
+        eprintln!(
+            "editor view in panel: x {:.1} y {:.1} w {:.1} h {:.1}; panel w {:.1} h {:.1}",
+            f.origin.x,
+            f.origin.y,
+            f.size.width,
+            f.size.height,
+            self.panel.frame().size.width,
+            self.panel.frame().size.height
+        );
+        self.editor.debug_eval(
+            "(() => { const r = document.querySelector('.ProseMirror p').getBoundingClientRect(); \
+             const s = document.getElementById('editor'); \
+             return `first line at x ${r.left} y ${r.top} w ${r.width}; scroller ${s.clientWidth}x${s.clientHeight} of ${s.scrollHeight}`; })()",
+        );
     }
 
     pub fn open_task(&self) -> Option<TaskId> {
@@ -539,11 +636,11 @@ impl Modal {
             self.morph.jump(frame, 0.0);
         }
         let (w, h) = (frame.size.width, frame.size.height);
-        let pad = 24.0;
+        let pad = PANEL_PAD;
         let iw = w - 2.0 * pad;
         self.title.setFrame(NSRect::new(
-            NSPoint::new(pad - 2.0, 20.0),
-            NSSize::new(iw + 4.0 - 40.0, 28.0),
+            NSPoint::new(pad, 20.0),
+            NSSize::new(iw - 40.0, 28.0),
         ));
         self.look.setFrame(NSRect::new(
             NSPoint::new(w - pad - 28.0, 20.0),
@@ -551,21 +648,26 @@ impl Modal {
         ));
         self.stats
             .setFrame(NSRect::new(NSPoint::new(pad, 52.0), NSSize::new(iw, 16.0)));
-        self.rules[0].setFrame(NSRect::new(NSPoint::new(0.0, 80.0), NSSize::new(w, 1.0)));
+        self.rules[0].setFrame(NSRect::new(
+            NSPoint::new(0.0, HEADER_H),
+            NSSize::new(w, 1.0),
+        ));
         if self.open.get().is_some() {
             blend(&self.parts(), 1.0, NSSize::new(w, h));
         }
-        let bottom_h = 44.0;
-        self.editor.view.setFrame(NSRect::new(
-            NSPoint::new(pad - 4.0, 92.0),
-            NSSize::new(iw + 8.0, h - 92.0 - bottom_h - 8.0),
-        ));
+        let bottom_h = FOOTER_H;
+        let editor_size = NSSize::new(w, (h - EDITOR_TOP - EDITOR_BOTTOM).max(0.0));
+        self.editor_clip
+            .setFrame(NSRect::new(NSPoint::new(0.0, EDITOR_TOP), editor_size));
+        self.editor
+            .view
+            .setFrame(NSRect::new(NSPoint::ZERO, editor_size));
         self.rules[1].setFrame(NSRect::new(
             NSPoint::new(0.0, h - bottom_h),
             NSSize::new(w, 1.0),
         ));
         self.times.setFrame(NSRect::new(
-            NSPoint::new(pad - 2.0, h - bottom_h + 12.0),
+            NSPoint::new(pad, h - bottom_h + 12.0),
             NSSize::new(iw, 20.0),
         ));
     }
@@ -597,13 +699,10 @@ impl Modal {
         self.panel.setAlphaValue(1.0);
         self.dim.setAlphaValue(0.0);
         motion::quietly(|| {
+            self.morph.progress.set(0.0);
             self.morph.jump(from, deg);
             self.dim.setHidden(false);
             self.panel.setHidden(false);
-        });
-        let dim = self.dim.clone();
-        animate(true, motion::MODAL_OPEN_SECS, move || {
-            dim.animator().setAlphaValue(1.0)
         });
         // Grown and still: the card's text hands over to the panel's controls.
         // One element all the way: as the panel grows, the card's text fades out
@@ -611,11 +710,13 @@ impl Modal {
         // over the second, driven by the morph itself.
         self.content.setBoundsOrigin(NSPoint::ZERO);
         let parts = self.parts();
+        let dim = self.dim.clone();
         blend(&parts, 0.0, from.size);
         *self.morph.on_progress.borrow_mut() = Some(Box::new(move |p, frame| {
             blend(&parts, p, frame.size);
+            dim.setAlphaValue(p);
         }));
-        self.morph.to(target, 0.0, None);
+        self.morph.to(target, 0.0, 1.0, None);
         if let Some(window) = self.panel.window() {
             window.makeFirstResponder(Some(&self.editor.view));
         }
@@ -645,30 +746,41 @@ impl Modal {
         self.open.set(None);
         // The controls hand back to the card's text first, then the panel shrinks
         // with that text on it all the way.
-        let (panel, dim) = (self.panel.clone(), self.dim.clone());
         let gone = to.is_none();
         // The same blend backwards: the card closes round its contents.
         let parts = self.parts();
-        *self.morph.on_progress.borrow_mut() = Some(Box::new(move |p, frame| {
-            blend(&parts, 1.0 - p, frame.size);
-        }));
-        animate(true, motion::MODAL_CLOSE_SECS, move || {
-            if gone {
-                panel.animator().setAlphaValue(0.0);
-            }
-            dim.animator().setAlphaValue(0.0);
-        });
         let (panel, dim) = (self.panel.clone(), self.dim.clone());
-        let to = to.unwrap_or_else(|| self.panel.frame());
+        *self.morph.on_progress.borrow_mut() = Some(Box::new(move |p, frame| {
+            blend(&parts, p, frame.size);
+            dim.setAlphaValue(p);
+            // No card to land on: the panel sinks a little and fades with the dim.
+            if gone {
+                panel.setAlphaValue(p);
+            }
+        }));
+        let (panel, dim) = (self.panel.clone(), self.dim.clone());
+        let to = to.unwrap_or_else(|| {
+            let f = self.panel.frame();
+            let (dw, dh) = (f.size.width * 0.04, f.size.height * 0.04);
+            NSRect::new(
+                NSPoint::new(f.origin.x + dw, f.origin.y + dh),
+                NSSize::new(f.size.width - 2.0 * dw, f.size.height - 2.0 * dh),
+            )
+        });
         self.morph.to(
             to,
             deg,
+            0.0,
             // On the card's exact pixels: the card takes over in the same frame.
             Some(Box::new(move || {
                 motion::quietly(|| {
                     panel.setHidden(true);
                     panel.setAlphaValue(1.0);
                     dim.setHidden(true);
+                    dim.setAlphaValue(0.0);
+                    if gone {
+                        panel.setAlphaValue(0.0);
+                    }
                     done();
                 });
             })),
@@ -681,6 +793,14 @@ impl Modal {
         self.face.repaint();
         self.sheet.repaint();
         self.edges.restyle();
+        if let (Some(id), Some(face)) = (self.open_task(), self.card.borrow().as_ref()) {
+            let ink = style::text(style::hue_of(id));
+            face.title.setTextColor(Some(&ink));
+            face.time
+                .setTextColor(Some(&ink.colorWithAlphaComponent(0.5)));
+            refresh_title(&face.title);
+            refresh_meta(&face.time);
+        }
     }
 
     /// Refreshes what the open task shows, without touching what is being typed.

@@ -8,13 +8,20 @@ import Image from '@tiptap/extension-image'
 
 const css = `
 :root { color-scheme: light dark; }
-html, body { margin: 0; background: transparent; }
+html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; }
 body {
   font: 14px/1.5 -apple-system, BlinkMacSystemFont, sans-serif;
   color: CanvasText;
   -webkit-font-smoothing: antialiased;
 }
-.ProseMirror { outline: none; min-height: 100vh; padding: 2px 2px 24px; }
+/* The page fills the panel's body edge to edge, so the scroller sits at the
+   panel's edge and text scrolls away under the rules; the panel's margins are
+   the text's own padding, inside what scrolls. */
+#editor { width: 100%; height: 100%; overflow: auto; }
+.ProseMirror {
+  box-sizing: border-box; width: 100%; min-height: 100%; outline: none;
+  padding: 20px 24px 24px;
+}
 .ProseMirror > :first-child { margin-top: 0; }
 .ProseMirror p { margin: 0 0 8px; }
 .ProseMirror h1 { font-size: 20px; margin: 12px 0 6px; }

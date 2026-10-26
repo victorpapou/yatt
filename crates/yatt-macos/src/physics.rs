@@ -90,13 +90,14 @@ pub const SLOT: Spring = Spring::new(1500.0, 1.0);
 /// A new card flying from the new-task field into its column.
 pub const FLY: Spring = Spring::new(220.0, 1.0);
 /// The task modal growing out of its card: a little jelly, one soft give past
-/// its size (about [`MORPH_GIVE`]) and back; the panel's contents are clipped by
-/// its frame, so nothing inside moves.
-pub const MORPH: Spring = Spring::new(430.0, 0.72);
-/// Shrinking back into the card: lighter, barely past (under 1%).
-pub const MORPH_BACK: Spring = Spring::new(520.0, 0.84);
-/// How far past its size the opening panel grows, as a share of the way.
-pub const MORPH_GIVE: f64 = 0.04;
+/// its size (at most [`MORPH_GIVE`], about 1.5%) and back, settled in about
+/// 0.4 s; the panel's contents are clipped by its frame, so nothing inside moves.
+pub const MORPH: Spring = Spring::new(300.0, 0.8);
+/// Shrinking back into the card: critically damped, so it never dips under the
+/// card's size before the card takes over.
+pub const MORPH_BACK: Spring = Spring::new(360.0, 1.0);
+/// Upper bound on how far past its size the opening panel grows.
+pub const MORPH_GIVE: f64 = 0.02;
 
 /// How far behind the card ahead each follower of a dragged group hangs, in
 /// seconds of lag at a steady speed: for a group of two, of three, and of four
@@ -420,13 +421,18 @@ impl Body {
             } else {
                 0.0
             };
-            let zeta = if self.swings { SWING_ZETA } else { 1.0 };
             let swing = self.r - tr - lean;
-            self.vr += (-w0 * w0 * swing - 2.0 * zeta * w0 * self.vr) * h;
+            if self.swings {
+                self.vr += (-w0 * w0 * swing - 2.0 * SWING_ZETA * w0 * self.vr) * h;
+            } else {
+                // The panel turns on its own spring, with its frame, all the way
+                // from the card's angle: no swing, no limit.
+                self.vr += (-k * swing - c * self.vr) * h;
+            }
             self.r += self.vr * h;
             // On a fan the card turns with its way round, freely.
             let limit = SWING_MAX;
-            if self.orbit.is_none() && (self.r - tr).abs() > limit {
+            if self.swings && self.orbit.is_none() && (self.r - tr).abs() > limit {
                 self.r = tr + limit.copysign(self.r - tr);
                 self.vr = 0.0;
             }
@@ -1133,6 +1139,26 @@ mod tests {
     }
 
     #[test]
+    fn the_panel_turns_from_a_fanned_card_without_a_jump() {
+        // A card turned −70° in a fan grows into the upright panel: the angle
+        // eases all the way, never more than a few degrees a frame.
+        let mut b = Body::at(0.0, 0.0);
+        b.spring = MORPH;
+        b.swings = false;
+        b.r = -70.0;
+        b.tr = -70.0;
+        b.target(200.0, 100.0, 0.0);
+        let (dt, mut last, mut t) = (1.0 / 120.0, -70.0_f64, 0.0);
+        while !b.at_rest() && t < 2.0 {
+            b.step(dt);
+            assert!((b.r - last).abs() < 6.0, "{last} -> {} at {t}", b.r);
+            last = b.r;
+            t += dt;
+        }
+        assert!(t < 0.8, "settled after {t}s");
+    }
+
+    #[test]
     fn morph_spring_settles_quickly() {
         let mut b = Body::at(0.0, 0.0);
         b.spring = MORPH;
@@ -1154,10 +1180,18 @@ mod tests {
             b.step(1.0 / 120.0);
             far = far.max(b.x);
         }
-        assert!(
-            far > 101.0 && far < 100.0 * (1.0 + MORPH_GIVE + 0.01),
-            "{far}"
-        );
+        assert!(far > 100.5 && far < 100.0 * (1.0 + MORPH_GIVE), "{far}");
+        // Back into the card: never under its size.
+        let mut b = Body::at(100.0, 0.0);
+        b.spring = MORPH_BACK;
+        b.swings = false;
+        b.target(0.0, 0.0, 0.0);
+        let mut low = 100.0_f64;
+        for _ in 0..240 {
+            b.step(1.0 / 120.0);
+            low = low.min(b.x);
+        }
+        assert!(low > -1e-6, "{low}");
     }
 
     #[test]

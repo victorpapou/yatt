@@ -181,6 +181,69 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             eprintln!("demo: finished");
             return;
         }
+        if std::env::var_os("YATT_DEMO_MODAL").is_some() {
+            // A card in a fan opened into the panel and closed again, the panel's
+            // frame and alphas every frame and a layer capture every other.
+            for i in 0..5 {
+                sink(UiEvent::NewTask {
+                    title: format!("Задача {}", i + 1),
+                    status: Status::Backlog,
+                });
+            }
+            wait(500).await;
+            let backlog = ids(cx, 0);
+            sink(UiEvent::SetNotes(backlog[0], notes(0)));
+            window.demo_toggle_stack();
+            wait(700).await;
+            window.demo_scroll_at(centre(backlog[0]), 60.0);
+            wait(900).await;
+            let record = |phase: &str, f: usize| {
+                let (r, deg, p, [dim, panel, controls, card]) = window.demo_modal_state();
+                eprintln!(
+                    "modal,{phase},{f},{:.1},{:.1},{:.1},{:.1},{deg:.1},{p:.3},{dim:.2},{panel:.2},{controls:.2},{card:.2}",
+                    r.origin.x, r.origin.y, r.size.width, r.size.height
+                );
+                if f.is_multiple_of(2) {
+                    window.capture_layers_png(&format!("{dir}/modal-{phase}-{f:02}.png"));
+                }
+            };
+            sink(UiEvent::ToggleExpand(backlog[0]));
+            for f in 0..40 {
+                record("open", f);
+                wait(16).await;
+            }
+            window.demo_editor_geometry();
+            wait(300).await;
+            shot("modal-open");
+            sink(UiEvent::ToggleExpand(backlog[0]));
+            for f in 0..36 {
+                record("close", f);
+                wait(16).await;
+            }
+            eprintln!("demo: finished");
+            return;
+        }
+        if std::env::var_os("YATT_DEMO_FLIP").is_some() {
+            // Cards made in the dark appearance, then the system turns light (and
+            // back): every card must be in the light colours, as if made there.
+            window.demo_appearance(true);
+            for i in 0..6 {
+                sink(UiEvent::NewTask {
+                    title: format!("Задача {}", i + 1),
+                    status: [Status::Backlog, Status::InProgress][i % 2],
+                });
+            }
+            wait(900).await;
+            shot("flip-dark");
+            window.demo_appearance(false);
+            wait(600).await;
+            shot("flip-light");
+            window.demo_appearance(true);
+            wait(600).await;
+            shot("flip-dark-again");
+            eprintln!("demo: finished");
+            return;
+        }
         if std::env::var_os("YATT_DEMO_TOOLBAR").is_some() {
             // Just the window as it opens, for a look at the toolbar.
             for i in 0..4 {

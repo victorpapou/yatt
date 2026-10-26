@@ -38,9 +38,8 @@ pub const CARD_SATURATE: f64 = 1.5;
 
 type Rgb = (u8, u8, u8);
 
-/// (fill, text) as sRGB: the clip's blue, pink, purple, yellow and green with a
-/// quarter more saturation, and white.
-const HUES: [(Rgb, Rgb); 6] = [
+/// (fill, text) as sRGB. The original six indices stay stable for saved tasks.
+const HUES: [(Rgb, Rgb); 15] = [
     ((0x62, 0x86, 0xF5), (0x22, 0x31, 0x6B)),
     ((0xF2, 0x71, 0x85), (0x6B, 0x1E, 0x2A)),
     ((0xA5, 0x3A, 0xF0), (0x3E, 0x11, 0x60)),
@@ -48,18 +47,41 @@ const HUES: [(Rgb, Rgb); 6] = [
     ((0x7F, 0xD0, 0x96), (0x22, 0x54, 0x3A)),
     // The "white" card: a light neutral grey, so it reads as a card of its own.
     ((0xE4, 0xE4, 0xE8), (0x2E, 0x2E, 0x34)),
+    ((0xFF, 0x7A, 0x66), (0x72, 0x25, 0x1C)),
+    ((0xFF, 0xA8, 0x52), (0x6E, 0x3B, 0x0D)),
+    ((0xFF, 0xC2, 0x28), (0x65, 0x49, 0x08)),
+    ((0x96, 0xB5, 0xA0), (0x25, 0x3F, 0x2E)),
+    ((0x00, 0xC8, 0xA0), (0x05, 0x55, 0x47)),
+    ((0x00, 0xB8, 0xE8), (0x05, 0x4E, 0x68)),
+    ((0xB8, 0x99, 0x75), (0x4F, 0x38, 0x23)),
+    ((0x4B, 0x63, 0xC8), (0x24, 0x32, 0x70)),
+    ((0xB5, 0x74, 0xDE), (0x52, 0x24, 0x72)),
 ];
 
 /// The same colours for the dark appearance: deep tints of each hue, the text a
 /// pale version of it, so a card reads as the same colour on a dark board.
-const HUES_DARK: [(Rgb, Rgb); 6] = [
+const HUES_DARK: [(Rgb, Rgb); 15] = [
     ((0x2C, 0x45, 0x9C), (0xD6, 0xE0, 0xFF)),
     ((0x9C, 0x33, 0x48), (0xFF, 0xD9, 0xE0)),
     ((0x63, 0x24, 0x9A), (0xEC, 0xD9, 0xFF)),
     ((0x7A, 0x80, 0x22), (0xF7, 0xFA, 0xCF)),
     ((0x2F, 0x78, 0x4A), (0xD5, 0xF5, 0xDF)),
     ((0x3A, 0x3A, 0x40), (0xEC, 0xEC, 0xF0)),
+    ((0xA5, 0x3B, 0x31), (0xFF, 0xDE, 0xD8)),
+    ((0xA6, 0x5F, 0x21), (0xFF, 0xE7, 0xCB)),
+    ((0xA3, 0x7C, 0x18), (0xFF, 0xEF, 0xC6)),
+    ((0x49, 0x6B, 0x56), (0xE1, 0xF1, 0xE5)),
+    ((0x0A, 0x84, 0x6D), (0xD1, 0xFA, 0xF1)),
+    ((0x0B, 0x7D, 0xA0), (0xD1, 0xF3, 0xFF)),
+    ((0x6D, 0x55, 0x42), (0xF2, 0xE6, 0xD7)),
+    ((0x3E, 0x4E, 0xA0), (0xDF, 0xE4, 0xFF)),
+    ((0x75, 0x4E, 0x9C), (0xF0, 0xE2, 0xFF)),
 ];
+
+const NEUTRAL_HUE: usize = 5;
+/// A task with no colour of its own takes one of the original six from its id,
+/// so the colours added later never repaint old cards.
+const AUTO_HUES: usize = 6;
 
 thread_local! {
     static DARK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -74,7 +96,7 @@ pub fn set_dark(on: bool) {
     DARK.with(|d| d.set(on));
 }
 
-fn palette() -> &'static [(Rgb, Rgb); 6] {
+fn palette() -> &'static [(Rgb, Rgb); 15] {
     if dark() { &HUES_DARK } else { &HUES }
 }
 
@@ -90,7 +112,7 @@ const GLYPHS: [&str; 6] = [
 
 /// Every icon a card can wear, for the picker: the six picked from the id
 /// first.
-pub const ICONS: [&str; 24] = [
+pub const ICONS: [&str; 48] = [
     "paperplane.fill",
     "flag.fill",
     "bubble.left.fill",
@@ -115,6 +137,30 @@ pub const ICONS: [&str; 24] = [
     "graduationcap.fill",
     "music.note",
     "gamecontroller.fill",
+    "car.fill",
+    "bus.fill",
+    "tram.fill",
+    "bicycle",
+    "fuelpump.fill",
+    "binoculars.fill",
+    "map.fill",
+    "figure.walk",
+    "figure.walk.motion",
+    "location.north.circle.fill",
+    "arrow.up.and.down.and.arrow.left.and.right",
+    "arrow.turn.up.right",
+    "arrow.uturn.right",
+    "waveform",
+    "applewatch",
+    "laptopcomputer",
+    "keyboard.fill",
+    "printer.fill",
+    "server.rack",
+    "display",
+    "headphones",
+    "ear.fill",
+    "hifispeaker.fill",
+    "airpodspro",
 ];
 
 /// How many colours a card can be.
@@ -151,13 +197,22 @@ fn look(id: TaskId) -> Look {
 pub fn hue_of(id: TaskId) -> usize {
     look(id)
         .0
-        .unwrap_or((fold(id) % HUES.len() as u64) as usize)
+        .unwrap_or((mix(fold(id)) % AUTO_HUES as u64) as usize)
 }
 
 pub fn glyph_of(id: TaskId) -> &'static str {
     look(id)
         .1
         .unwrap_or(GLYPHS[((fold(id) / 7) % GLYPHS.len() as u64) as usize])
+}
+
+/// Spreads every bit of `x` over the result (SplitMix64's finaliser): the low
+/// bits of a UUIDv7's tail are a counter, the same for ids made close together,
+/// so taken plainly they would give most new tasks the same few colours.
+fn mix(mut x: u64) -> u64 {
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    x ^ (x >> 31)
 }
 
 fn fold(id: TaskId) -> u64 {
@@ -181,7 +236,7 @@ pub fn fill(hue: usize) -> Retained<NSColor> {
     // Dense enough that text behind is only a soft patch under the light blur.
     // Over the system's glass the tint is lighter, so less of the frost shows
     // through as colour mud; over the plain blur it is denser.
-    let white = hue % HUES.len() == HUES.len() - 1;
+    let white = hue % HUES.len() == NEUTRAL_HUE;
     // The grey card is denser than the colours: a pale, thin grey over other
     // cards reads as a white halo round the card in front, not as a card.
     let alpha = match (real_glass(), white) {
@@ -750,7 +805,13 @@ pub fn glyph_image(symbol: &str, hue: usize) -> Option<Retained<CGImage>> {
                 let base = NSImage::imageWithSystemSymbolName_accessibilityDescription(
                     &NSString::from_str(symbol),
                     None,
-                )?;
+                )
+                .or_else(|| {
+                    NSImage::imageWithSystemSymbolName_accessibilityDescription(
+                        ns_string!("questionmark.circle"),
+                        None,
+                    )
+                })?;
                 let config = NSImageSymbolConfiguration::configurationWithPaletteColors(
                     &NSArray::from_retained_slice(&[ink]),
                 );
@@ -790,6 +851,16 @@ pub fn set_tracked(label: &NSTextField, text: &str, kern: f64) {
     if label.stringValue().to_string() == text {
         return;
     }
+    set_tracked_value(label, text, kern);
+}
+
+/// Reapplies a tracked label's attributes after its font or colour changes.
+pub fn refresh_tracked(label: &NSTextField, kern: f64) {
+    let text = label.stringValue().to_string();
+    set_tracked_value(label, &text, kern);
+}
+
+fn set_tracked_value(label: &NSTextField, text: &str, kern: f64) {
     let style = NSMutableParagraphStyle::new();
     style.setLineBreakMode(label.lineBreakMode());
     style.setAlignment(label.alignment());
@@ -861,6 +932,73 @@ pub fn glass(mtm: MainThreadMarker, radius: f64) -> (Retained<NSView>, Retained<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The light palette as it was before the dark appearance came in.
+    const LIGHT_BEFORE_DARK: [(Rgb, Rgb); 6] = [
+        ((0x62, 0x86, 0xF5), (0x22, 0x31, 0x6B)),
+        ((0xF2, 0x71, 0x85), (0x6B, 0x1E, 0x2A)),
+        ((0xA5, 0x3A, 0xF0), (0x3E, 0x11, 0x60)),
+        ((0xEC, 0xF5, 0x72), (0x4F, 0x54, 0x1A)),
+        ((0x7F, 0xD0, 0x96), (0x22, 0x54, 0x3A)),
+        ((0xE4, 0xE4, 0xE8), (0x2E, 0x2E, 0x34)),
+    ];
+
+    #[test]
+    fn the_light_palette_is_the_one_from_before_dark() {
+        assert_eq!(HUES[..6], LIGHT_BEFORE_DARK);
+        // Tasks with no colour of their own keep the hue they always had.
+        // Ids made one after another spread evenly over those six.
+        let mut seen = [0; 6];
+        for _ in 0..600 {
+            seen[hue_of(TaskId::new())] += 1;
+        }
+        assert!(seen.iter().all(|&n| (60..=140).contains(&n)), "{seen:?}");
+    }
+
+    /// WCAG contrast of `ink` over the card's tint on its board.
+    fn contrast(ink: Rgb, tint: Rgb, alpha: f64, board: Rgb) -> f64 {
+        let lin = |c: f64| {
+            let c = c / 255.0;
+            if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        let lum = |(r, g, b): (f64, f64, f64)| 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+        let over = |f: u8, b: u8| f as f64 * alpha + b as f64 * (1.0 - alpha);
+        let card = (
+            over(tint.0, board.0),
+            over(tint.1, board.1),
+            over(tint.2, board.2),
+        );
+        let text = (ink.0 as f64, ink.1 as f64, ink.2 as f64);
+        let (a, b) = (lum(card), lum(text));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn card_text_reads_on_its_tint_in_both_appearances() {
+        for dark in [false, true] {
+            set_dark(dark);
+            // The window's background in each appearance.
+            let board = if dark {
+                (0x1E, 0x1E, 0x1E)
+            } else {
+                (0xFF, 0xFF, 0xFF)
+            };
+            for hue in 0..HUE_COUNT {
+                let (tint, ink) = palette()[hue];
+                let alpha = fill(hue).alphaComponent();
+                let c = contrast(ink, tint, alpha, board);
+                assert!(c >= 4.5, "hue {hue}, dark {dark}: contrast {c:.2}");
+                // Dark ink in light, pale ink in dark: never the other way round.
+                let sum = ink.0 as u32 + ink.1 as u32 + ink.2 as u32;
+                assert_eq!(sum > 3 * 128, dark, "hue {hue}, dark {dark}: ink {ink:?}");
+            }
+        }
+        set_dark(false);
+    }
 
     /// Renders a card's plain layers (tint, then the inner edge; no backdrop) into
     /// a bitmap at 2 px per point and returns its BGRA pixels and row length.

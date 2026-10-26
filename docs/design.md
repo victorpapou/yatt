@@ -8,8 +8,14 @@ content and colour. Nothing is cross-faded or swapped for a separate view.
 - New task: the new-task capsule, typed text and all, grows into the card on its
   way to the column; the text becomes the card's title.
 - Card to modal: the panel is the card itself, one element (same frame, angle,
-  material, colour and text), growing on one quick, lightly damped spring (about
-  0.25 s). Its coloured face stays on top and eases from the card's height to the
+  material, colour and text), growing on one softly damped spring (about 1.5%
+  past its size, settled in about 0.4 s) and shrinking back on a critically
+  damped one, so it never dips under the card before the card takes over. The
+  angle rides the same spring from the card's own (a fanned card at −70° turns
+  upright all the way, no snap). The dim follows that same progress, so the
+  board and panel settle together. The notes editor keeps its open size during
+  the morph (no reflow); the panel clips it. `YATT_DEMO_MODAL=1` logs the frame,
+  angle and alphas every frame and captures the layers. Its coloured face stays on top and eases from the card's height to the
   header's; below it the same card shows its white body, growing downward as the
   card grows (none of it at card size), so the editor is the card's own content
   area, not a plate that comes in. The title and the editor stay at the card's
@@ -189,16 +195,27 @@ on the root view): the board, chips, dividers and the panel's body use system
 colours; the cards switch palette. In dark, each hue is a deep tint of itself
 (denser, +0.2 alpha) with a pale text of the same hue, and the white inner edge
 is fainter (20% instead of 51%) so it does not read as a frame. Card glyphs are
-cached per appearance. Changed fills ease over (`motion::soften`).
+cached per appearance; the tracked title and time are rebuilt in the new ink
+(their colour lives in an attributed string). Changed fills ease over
+(`motion::soften`). The light palette's first six are the original ones,
+unchanged; a task with no colour of its own takes one of those six, picked by a
+mixed hash of its id (a UUIDv7's low tail bits are a counter, so taken plainly
+most new tasks came out the same grey). `YATT_DEMO_FLIP=1` captures a board made
+in dark, turned light and back.
 `YATT_APPEARANCE=dark|light` pins one for the demo's captures.
 
 ## The task panel
 
+The notes editor fills the body between the header's rule and the footer's,
+edge to edge; the 24 pt margins round the notes are the page's own padding,
+inside what scrolls, so the scroller sits at the panel's edge, the text lines up
+with the title and scrolls away under the rules.
+
 No Done or Delete buttons: the panel closes by Esc or a click outside, as
 before. A palette button at the header's right opens a native popover
 (transient, closes on a click outside): the card colours as swatches, the
-status (the three columns, a segmented control), a grid of icons (24 SF
-Symbols, six a row; more icons are more rows) and «Удалить задачу». Colour and
+status (the three columns, a segmented control), a searchable grid of icons
+(48 SF Symbols, eight a row) and «Удалить задачу». Colour and
 icon are stored on the task (`color`, `icon`, migration 2), undoable, and every
 card follows them at once. The time entries are one quiet line (the latest and
 how many); a click opens a menu with «Скопировать всё» and every entry, each

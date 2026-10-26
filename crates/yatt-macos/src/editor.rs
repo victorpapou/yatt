@@ -145,19 +145,22 @@ impl NotesEditor {
 impl NotesEditor {
     /// Development aid: prints what the editor currently renders.
     pub fn debug_print_html(&self) {
+        self.debug_eval("document.querySelector('.ProseMirror')?.innerHTML ?? 'no editor'");
+    }
+
+    /// Development aid: evaluates `js` in the page and prints its result.
+    pub fn debug_eval(&self, js: &str) {
         let block = block2::RcBlock::new(
             |result: *mut objc2::runtime::AnyObject, _err: *mut objc2_foundation::NSError| {
                 let text = unsafe { result.as_ref() }
                     .and_then(|r| r.downcast_ref::<NSString>().map(|s| s.to_string()))
                     .unwrap_or_else(|| "<no result>".into());
-                eprintln!("editor html: {text}");
+                eprintln!("editor: {text}");
             },
         );
         unsafe {
-            self.view.evaluateJavaScript_completionHandler(
-                ns_string!("document.querySelector('.ProseMirror')?.innerHTML ?? 'no editor'"),
-                Some(&block),
-            )
+            self.view
+                .evaluateJavaScript_completionHandler(&NSString::from_str(js), Some(&block))
         };
     }
 }

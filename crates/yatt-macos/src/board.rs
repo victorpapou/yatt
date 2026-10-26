@@ -2018,6 +2018,8 @@ impl Card {
             self.title.setTextColor(Some(&ink));
             self.time
                 .setTextColor(Some(&ink.colorWithAlphaComponent(0.5)));
+            refresh_title(&self.title);
+            refresh_meta(&self.time);
             self.label.setTextColor(Some(&ink));
             self.count
                 .setTextColor(Some(&ink.colorWithAlphaComponent(0.7)));
@@ -2402,6 +2404,14 @@ pub(crate) fn set_title(label: &NSTextField, text: &str) {
 /// A card's meta line, tracked.
 pub(crate) fn set_meta(label: &NSTextField, text: &str) {
     style::set_tracked(label, text, META_KERN);
+}
+
+pub(crate) fn refresh_title(label: &NSTextField) {
+    style::refresh_tracked(label, TITLE_KERN);
+}
+
+pub(crate) fn refresh_meta(label: &NSTextField) {
+    style::refresh_tracked(label, META_KERN);
 }
 
 /// The card's meta line: tracked time, a dot while it runs, a pencil if it has notes.
