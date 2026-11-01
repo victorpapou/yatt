@@ -20,8 +20,8 @@ use objc2::rc::{Retained, Weak as ObjcWeak};
 use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSButton, NSColor, NSFont, NSFontWeightMedium, NSFontWeightRegular, NSLineBreakMode, NSMenu,
-    NSMenuItem, NSPasteboard, NSPasteboardTypeString, NSTextField, NSView,
+    NSButton, NSColor, NSFont, NSFontWeightMedium, NSFontWeightRegular, NSImage,
+    NSImageSymbolConfiguration, NSLineBreakMode, NSMenu, NSMenuItem, NSPasteboard, NSPasteboardTypeString, NSTextField, NSView,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString, NSTimer, ns_string};
 use objc2_quartz_core::{CACornerMask, CACurrentMediaTime};
@@ -156,6 +156,7 @@ pub struct Modal {
     /// appearance it was drawn for.
     look_icon: RefCell<Retained<NSView>>,
     look_drawn: Cell<Option<(usize, bool)>>,
+    trash: Retained<NSButton>,
     picker: Rc<Picker>,
     /// The card's own edge round the panel (outline and inner glow).
     edges: style::Edges,
@@ -488,6 +489,40 @@ impl Modal {
             retained.push(Retained::into_super(Retained::into_super(target)));
             b
         };
+        // «Удалить» right in the open card: the task goes to the trash, ⌘Z brings it back.
+        let trash = {
+            let (sink, open) = (sink.clone(), open.clone());
+            let target = ActionTarget::new(mtm, move || {
+                if let Some(id) = open.get() {
+                    sink(UiEvent::Delete(id));
+                }
+            });
+            let config =
+                NSImageSymbolConfiguration::configurationWithPointSize_weight(15.0, unsafe {
+                    NSFontWeightMedium
+                });
+            let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+                ns_string!("trash"),
+                Some(ns_string!("Удалить")),
+            )
+            .and_then(|i| i.imageWithSymbolConfiguration(&config))
+            .expect("symbol");
+            let b = unsafe {
+                NSButton::buttonWithImage_target_action(
+                    &image,
+                    Some(&target),
+                    Some(ActionTarget::sel()),
+                    mtm,
+                )
+            };
+            b.setBordered(false);
+            b.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageOnly);
+            b.setImageScaling(objc2_app_kit::NSImageScaling::ScaleNone);
+            b.setContentTintColor(Some(&NSColor::systemRedColor()));
+            b.setToolTip(Some(ns_string!("Удалить (⌘Z вернёт)")));
+            retained.push(Retained::into_super(Retained::into_super(target)));
+            b
+        };
         // The time entries: one quiet line; a click lists them to copy, one or
         // all, exactly as written. A menu, so it scrolls however many there are.
         let all_entries: Rc<RefCell<Vec<String>>> = Rc::default();
@@ -553,12 +588,13 @@ impl Modal {
             FillView::new(mtm, Fill::Separator),
         ];
         let look_icon = style::glyph_view(mtm, LOOK_SYMBOL, 0);
-        let views: [&NSView; 9] = [
+        let views: [&NSView; 10] = [
             &rename,
             &title,
             &stats,
             &look_icon,
             &look,
+            &trash,
             &rules[0],
             &editor_clip,
             &rules[1],
@@ -603,6 +639,7 @@ impl Modal {
             look,
             look_icon: RefCell::new(look_icon),
             look_drawn: Cell::new(None),
+            trash,
             picker,
             edges,
             open,
@@ -729,7 +766,11 @@ impl Modal {
         ));
         self.title.setFrame(NSRect::new(
             NSPoint::new(pad, 20.0),
-            NSSize::new(iw - 40.0, 28.0),
+            NSSize::new(iw - 76.0, 28.0),
+        ));
+        self.trash.setFrame(NSRect::new(
+            NSPoint::new(w - pad - 64.0, 20.0),
+            NSSize::new(28.0, 28.0),
         ));
         let look = NSRect::new(NSPoint::new(w - pad - 28.0, 20.0), NSSize::new(28.0, 28.0));
         self.look.setFrame(look);

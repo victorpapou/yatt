@@ -92,6 +92,14 @@ pub enum UiEvent {
     Rename(TaskId, String),
     SetNotes(TaskId, String),
     Delete(TaskId),
+    /// Done task into the archive.
+    Archive(TaskId),
+    /// Every done task on the board into the archive.
+    ArchiveDone,
+    /// A task back from the archive or the trash.
+    BringBack(TaskId),
+    /// The trash emptied for good.
+    EmptyTrash,
     /// The card's colour and icon (`None`: from its id).
     SetLook {
         id: TaskId,

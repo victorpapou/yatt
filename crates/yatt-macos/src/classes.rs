@@ -511,6 +511,11 @@ pub enum CanvasMsg {
     Scroll(Scroll),
     /// The pointer moved over the canvas, or left it (`None`).
     Hover(Option<NSPoint>),
+    /// A right-click (or ctrl-click): the context menu, shown in `view`.
+    Context {
+        at: NSPoint,
+        view: Retained<NSView>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -606,6 +611,14 @@ define_class!(
                 shift: flags.contains(NSEventModifierFlags::Shift),
                 cmd: flags.contains(NSEventModifierFlags::Command),
                 clicks: event.clickCount(),
+            });
+        }
+
+        #[unsafe(method(rightMouseDown:))]
+        fn right_mouse_down(&self, event: &NSEvent) {
+            self.send(CanvasMsg::Context {
+                at: self.local(event),
+                view: Retained::into_super(self.retain()),
             });
         }
 

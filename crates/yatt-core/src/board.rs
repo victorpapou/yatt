@@ -76,6 +76,13 @@ pub enum Command {
     Restore {
         id: TaskId,
     },
+    /// Tucks a done task away from the board.
+    Archive {
+        id: TaskId,
+    },
+    Unarchive {
+        id: TaskId,
+    },
     /// Several commands as one: applied in order, undone as one step. If one
     /// fails, the ones before it are rolled back and nothing changes.
     Batch(Vec<Command>),
@@ -142,12 +149,45 @@ impl Board {
         self.tasks.values()
     }
 
+    /// Archived tasks, newest first.
+    pub fn archived(&self) -> Vec<&Task> {
+        let mut v: Vec<&Task> = self
+            .tasks
+            .values()
+            .filter(|t| t.is_archived() && !t.is_deleted())
+            .collect();
+        v.sort_by(|a, b| b.archived_at.cmp(&a.archived_at).then(a.id.cmp(&b.id)));
+        v
+    }
+
+    /// Tasks in the trash, most recently deleted first.
+    pub fn trashed(&self) -> Vec<&Task> {
+        let mut v: Vec<&Task> = self.tasks.values().filter(|t| t.is_deleted()).collect();
+        v.sort_by(|a, b| b.deleted_at.cmp(&a.deleted_at).then(a.id.cmp(&b.id)));
+        v
+    }
+
+    /// Done tasks still on the board.
+    pub fn done_ids(&self) -> Vec<TaskId> {
+        self.column(Status::Done, &Filter::default())
+            .into_iter()
+            .map(|t| t.id)
+            .collect()
+    }
+
+    /// Forgets tasks for good (after the store dropped them).
+    pub fn purge(&mut self, ids: &[TaskId]) {
+        for id in ids {
+            self.tasks.remove(id);
+        }
+    }
+
     /// Live tasks of one column in display order.
     pub fn column(&self, status: Status, filter: &Filter) -> Vec<&Task> {
         let mut col: Vec<&Task> = self
             .tasks
             .values()
-            .filter(|t| t.status == status && !t.is_deleted() && filter.matches(t))
+            .filter(|t| t.status == status && t.is_live() && filter.matches(t))
             .collect();
         col.sort_by(|a, b| a.position.cmp(&b.position).then(a.id.cmp(&b.id)));
         col
@@ -303,6 +343,24 @@ impl Board {
                     inverse: Command::Delete { id },
                 })
             }
+            Command::Archive { id } => {
+                let task = self.task_mut(id)?;
+                task.archived_at = Some(now);
+                task.updated_at = now;
+                Ok(Applied {
+                    changed: vec![id],
+                    inverse: Command::Unarchive { id },
+                })
+            }
+            Command::Unarchive { id } => {
+                let task = self.task_mut(id)?;
+                task.archived_at = None;
+                task.updated_at = now;
+                Ok(Applied {
+                    changed: vec![id],
+                    inverse: Command::Archive { id },
+                })
+            }
             Command::Batch(cmds) => {
                 let mut changed = Vec::new();
                 let mut inverses = Vec::new();
@@ -383,6 +441,12 @@ pub struct History {
 
 impl History {
     const LIMIT: usize = 200;
+
+    /// Forgets all undo and redo steps (after tasks were dropped for good).
+    pub fn clear(&mut self) {
+        self.undo.clear();
+        self.redo.clear();
+    }
 
     /// Applies a user command and records it for undo.
     pub fn execute(
@@ -595,6 +659,29 @@ mod tests {
         assert!(titles(&b, Status::Backlog).is_empty());
         h.undo(&mut b, now()).unwrap();
         assert_eq!(titles(&b, Status::Backlog), ["a"]);
+    }
+
+    #[test]
+    fn archive_hides_from_board_and_undoes() {
+        let (mut b, mut h) = (Board::default(), History::default());
+        let a = create(&mut b, &mut h, "a");
+        h.execute(&mut b, Command::Archive { id: a }, now())
+            .unwrap();
+        assert!(titles(&b, Status::Backlog).is_empty());
+        assert_eq!(b.archived().len(), 1);
+        h.undo(&mut b, now()).unwrap();
+        assert_eq!(titles(&b, Status::Backlog), ["a"]);
+        assert!(b.archived().is_empty());
+    }
+
+    #[test]
+    fn trash_lists_deleted_and_purges() {
+        let (mut b, mut h) = (Board::default(), History::default());
+        let a = create(&mut b, &mut h, "a");
+        h.execute(&mut b, Command::Delete { id: a }, now()).unwrap();
+        assert_eq!(b.trashed().len(), 1);
+        b.purge(&[a]);
+        assert!(b.trashed().is_empty() && b.get(a).is_none());
     }
 
     #[test]
