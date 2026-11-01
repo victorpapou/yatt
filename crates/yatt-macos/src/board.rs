@@ -107,10 +107,11 @@ pub enum DemoPointer {
     Hover(Option<(f64, f64)>),
 }
 
-/// One column's horizontal extent on the canvas.
-#[derive(Clone, Copy, Default)]
 /// Told how far a list has scrolled (points).
 pub type ScrollHandler = Box<dyn Fn(f64)>;
+
+/// One column's horizontal extent on the canvas.
+#[derive(Clone, Copy, Default)]
 
 pub struct ColumnGeom {
     pub x: f64,
