@@ -108,6 +108,7 @@ pub struct Modal {
     times: Retained<NSButton>,
     all_entries: Rc<RefCell<Vec<String>>>,
     look: Retained<NSButton>,
+    trash: Retained<NSButton>,
     picker: Rc<Picker>,
     /// The card's own edge round the panel (outline and inner glow).
     edges: style::Edges,
@@ -408,6 +409,40 @@ impl Modal {
             retained.push(Retained::into_super(Retained::into_super(target)));
             b
         };
+        // «Удалить» right in the open card: the task goes to the trash, ⌘Z brings it back.
+        let trash = {
+            let (sink, open) = (sink.clone(), open.clone());
+            let target = ActionTarget::new(mtm, move || {
+                if let Some(id) = open.get() {
+                    sink(UiEvent::Delete(id));
+                }
+            });
+            let config =
+                NSImageSymbolConfiguration::configurationWithPointSize_weight(15.0, unsafe {
+                    NSFontWeightMedium
+                });
+            let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+                ns_string!("trash"),
+                Some(ns_string!("Удалить")),
+            )
+            .and_then(|i| i.imageWithSymbolConfiguration(&config))
+            .expect("symbol");
+            let b = unsafe {
+                NSButton::buttonWithImage_target_action(
+                    &image,
+                    Some(&target),
+                    Some(ActionTarget::sel()),
+                    mtm,
+                )
+            };
+            b.setBordered(false);
+            b.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageOnly);
+            b.setImageScaling(objc2_app_kit::NSImageScaling::ScaleNone);
+            b.setContentTintColor(Some(&NSColor::systemRedColor()));
+            b.setToolTip(Some(ns_string!("Удалить (⌘Z вернёт)")));
+            retained.push(Retained::into_super(Retained::into_super(target)));
+            b
+        };
         // The time entries: one quiet line; a click lists them to copy, one or
         // all, exactly as written. A menu, so it scrolls however many there are.
         let all_entries: Rc<RefCell<Vec<String>>> = Rc::default();
@@ -445,10 +480,11 @@ impl Modal {
             FillView::new(mtm, Fill::Separator),
             FillView::new(mtm, Fill::Separator),
         ];
-        let views: [&NSView; 7] = [
+        let views: [&NSView; 8] = [
             &title,
             &stats,
             &look,
+            &trash,
             &rules[0],
             &editor.view,
             &rules[1],
@@ -487,6 +523,7 @@ impl Modal {
             times,
             all_entries,
             look,
+            trash,
             picker,
             edges,
             open,
@@ -543,7 +580,11 @@ impl Modal {
         let iw = w - 2.0 * pad;
         self.title.setFrame(NSRect::new(
             NSPoint::new(pad - 2.0, 20.0),
-            NSSize::new(iw + 4.0 - 40.0, 28.0),
+            NSSize::new(iw + 4.0 - 72.0, 28.0),
+        ));
+        self.trash.setFrame(NSRect::new(
+            NSPoint::new(w - pad - 64.0, 20.0),
+            NSSize::new(28.0, 28.0),
         ));
         self.look.setFrame(NSRect::new(
             NSPoint::new(w - pad - 28.0, 20.0),

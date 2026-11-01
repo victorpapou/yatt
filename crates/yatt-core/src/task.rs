@@ -71,8 +71,14 @@ pub struct Task {
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
     pub completed_at: Option<Timestamp>,
+    /// Done tasks tucked away from the board; they keep their column.
+    pub archived_at: Option<Timestamp>,
+    /// In the trash since; emptied for good after [`TRASH_DAYS`].
     pub deleted_at: Option<Timestamp>,
 }
+
+/// How long a deleted task stays in the trash.
+pub const TRASH_DAYS: i64 = 30;
 
 impl Task {
     pub fn new(
@@ -97,11 +103,21 @@ impl Task {
             created_at: now,
             updated_at: now,
             completed_at: (status == Status::Done).then_some(now),
+            archived_at: None,
             deleted_at: None,
         }
     }
 
     pub fn is_deleted(&self) -> bool {
         self.deleted_at.is_some()
+    }
+
+    pub fn is_archived(&self) -> bool {
+        self.archived_at.is_some()
+    }
+
+    /// On the board: neither in the trash nor archived.
+    pub fn is_live(&self) -> bool {
+        !self.is_deleted() && !self.is_archived()
     }
 }

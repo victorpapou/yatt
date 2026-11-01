@@ -74,6 +74,22 @@ impl Workspace {
                     self.expanded = None;
                 }
             }
+            UiEvent::Archive(id) => {
+                e.archive_task(id);
+                if self.expanded == Some(id) {
+                    self.expanded = None;
+                }
+            }
+            UiEvent::ArchiveDone => {
+                if let Some(open) = self.expanded
+                    && e.board.done_ids().contains(&open)
+                {
+                    self.expanded = None;
+                }
+                e.archive_done();
+            }
+            UiEvent::BringBack(id) => e.bring_back(id),
+            UiEvent::EmptyTrash => e.empty_trash(),
             UiEvent::StartPause => e.start_or_pause(Mode::Pomodoro),
             UiEvent::SetDurations {
                 work_min,
@@ -316,5 +332,18 @@ mod tests {
         ws.handle(UiEvent::Undo);
         assert_eq!(ws.snapshot().columns[1].cards[0].title, "План");
         assert!(!ws.handle(UiEvent::Quit));
+    }
+
+    #[test]
+    fn archive_done_clears_the_column_and_undo_returns_it() {
+        let mut ws = workspace();
+        ws.handle(UiEvent::NewTask {
+            title: "готово".into(),
+            status: Status::Done,
+        });
+        ws.handle(UiEvent::ArchiveDone);
+        assert!(ws.snapshot().columns.iter().all(|c| c.cards.is_empty()));
+        ws.handle(UiEvent::Undo);
+        assert_eq!(ws.snapshot().columns[2].cards.len(), 1);
     }
 }
