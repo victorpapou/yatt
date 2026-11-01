@@ -18,7 +18,7 @@ actions!(
     yatt,
     [
         Quit, NewTask, Undo, Redo, StartPause, Stopwatch, Stop, Skip, Minimal, Cut, Copy, Paste,
-        SelectAll
+        SelectAll, Find
     ]
 );
 
@@ -200,6 +200,7 @@ fn install_menus(cx: &mut App, window: &Rc<MainWindow>, sink: &yatt_macos::Sink)
         KeyBinding::new("cmd-c", Copy, None),
         KeyBinding::new("cmd-v", Paste, None),
         KeyBinding::new("cmd-a", SelectAll, None),
+        KeyBinding::new("cmd-f", Find, None),
     ]);
 
     {
@@ -221,6 +222,10 @@ fn install_menus(cx: &mut App, window: &Rc<MainWindow>, sink: &yatt_macos::Sink)
     {
         let window = window.clone();
         cx.on_action(move |_: &NewTask, _| window.focus_new_task());
+    }
+    {
+        let window = window.clone();
+        cx.on_action(move |_: &Find, _| window.focus_search());
     }
     {
         let window = window.clone();
@@ -275,6 +280,8 @@ fn install_menus(cx: &mut App, window: &Rc<MainWindow>, sink: &yatt_macos::Sink)
                     MenuItem::os_action("Скопировать", Copy, OsAction::Copy),
                     MenuItem::os_action("Вставить", Paste, OsAction::Paste),
                     MenuItem::os_action("Выбрать все", SelectAll, OsAction::SelectAll),
+                    MenuItem::separator(),
+                    MenuItem::action("Найти", Find),
                 ],
             },
             Menu {

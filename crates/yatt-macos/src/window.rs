@@ -27,11 +27,11 @@ use objc2_app_kit::{
     NSBackingStoreType, NSBezelStyle, NSButton, NSColor, NSControlSize, NSEvent,
     NSEventModifierFlags, NSEventType, NSFloatingWindowLevel, NSFocusRingType, NSFont,
     NSFontWeightMedium, NSFontWeightRegular, NSImage, NSLineBreakMode, NSNormalWindowLevel,
-    NSPasteboard, NSPasteboardTypeString, NSSearchField, NSTextAlignment, NSTextField, NSToolbar,
-    NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem,
-    NSToolbarSpaceItemIdentifier, NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
-    NSVisualEffectState, NSVisualEffectView, NSWindow, NSWindowOrderingMode, NSWindowStyleMask,
-    NSWindowTitleVisibility, NSWindowToolbarStyle,
+    NSPasteboard, NSPasteboardTypeString, NSSearchField, NSSearchToolbarItem, NSTextAlignment,
+    NSTextField, NSToolbar, NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier,
+    NSToolbarItem, NSToolbarSpaceItemIdentifier, NSView, NSVisualEffectBlendingMode,
+    NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindow,
+    NSWindowOrderingMode, NSWindowStyleMask, NSWindowTitleVisibility, NSWindowToolbarStyle,
 };
 use objc2_core_graphics::CGMutablePath;
 use objc2_foundation::{NSArray, NSNumber, NSObjectNSKeyValueCoding, NSValue};
@@ -115,6 +115,7 @@ struct Ui {
     toolbar: Retained<NSToolbar>,
     /// The toolbar's one item, holding the header's view outside minimal mode.
     timer_item: Retained<NSToolbarItem>,
+    search_item: Retained<NSSearchToolbarItem>,
     /// Height of the titlebar with the toolbar: where the board starts.
     top_inset: Cell<f64>,
     /// Everything below the header; hidden in minimal mode.
@@ -274,14 +275,15 @@ impl MainWindow {
             search.setTarget(Some(&search_target));
             search.setAction(Some(ActionTarget::sel()));
         }
-        let search_item = PlainToolbarItem::item(mtm, ns_string!("yatt.search"));
-        search_item.setView(Some(&search));
-        search_item.setBordered(false);
-        #[allow(deprecated)]
-        {
-            search_item.setMinSize(NSSize::new(120.0, 24.0));
-            search_item.setMaxSize(NSSize::new(200.0, 24.0));
-        }
+        // The system's own search item: it sits at the right edge, grows when
+        // focused and folds back to a magnifier when left empty.
+        let search_item = NSSearchToolbarItem::initWithItemIdentifier(
+            NSSearchToolbarItem::alloc(mtm),
+            ns_string!("yatt.search"),
+        );
+        search_item.setSearchField(&search);
+        search_item.setPreferredWidthForSearchField(220.0);
+        search_item.setResignsFirstResponderWithCancel(true);
         retained.push(Retained::into_super(Retained::into_super(search_target)));
         let toolbar =
             NSToolbar::initWithIdentifier(NSToolbar::alloc(mtm), ns_string!("yatt.toolbar"));
@@ -295,7 +297,7 @@ impl MainWindow {
             bar.stop.clone(),
             bar.stack.clone(),
             bar.mini.clone(),
-            search_item,
+            Retained::into_super(search_item.clone()),
         ];
         // The toolbar gives neighbouring items one shared bubble; a fixed space
         // between two items gives each its own.
@@ -440,6 +442,7 @@ impl MainWindow {
             status,
             toolbar,
             timer_item,
+            search_item,
             top_inset: Cell::new(52.0),
             board,
             dividers,
@@ -512,6 +515,14 @@ impl MainWindow {
             self.ui.toggle_minimal();
         }
         self.ui.window.makeFirstResponder(Some(&self.ui.new_task));
+    }
+
+    /// cmd-F: the toolbar search expands and takes the cursor.
+    pub fn focus_search(&self) {
+        if self.ui.minimal.get() {
+            self.ui.toggle_minimal();
+        }
+        self.ui.search_item.beginSearchInteraction();
     }
 
     /// cmd-shift-M: the timer alone in a small floating window, or back to the board.
