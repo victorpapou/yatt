@@ -31,6 +31,9 @@ pub struct Engine {
     clock: Clock,
     tz: TimeZone,
     last_refresh: i64,
+    last_saved: i64,
+    /// A clock jump longer than this while running means sleep or a closed app.
+    pub max_gap_ms: i64,
 }
 
 impl Engine {
@@ -51,6 +54,8 @@ impl Engine {
             clock,
             tz,
             last_refresh: 0,
+            last_saved: 0,
+            max_gap_ms: 15_000,
         };
         // Catch up on phases that ended while the app was closed.
         engine.tick();
@@ -143,6 +148,12 @@ impl Engine {
         self.apply_timer(Vec::new());
     }
 
+    /// The Mac is going to sleep or the screen locks: stop counting right now.
+    pub fn system_sleep(&mut self) {
+        let fx = self.timer.interrupt(self.now());
+        self.apply_timer(fx);
+    }
+
     pub fn skip(&mut self) {
         let fx = self.timer.skip(self.now());
         self.apply_timer(fx);
@@ -151,12 +162,20 @@ impl Engine {
     /// Advances the timer. Returns true when something worth redrawing beyond the clock changed.
     pub fn tick(&mut self) -> bool {
         let now = self.now();
-        let fx = self.timer.tick(now);
+        let mut fx = self.timer.heartbeat(now, self.max_gap_ms);
+        fx.extend(self.timer.tick(now));
         let changed = !fx.is_empty();
         if changed {
             self.apply_timer(fx);
         }
         let sec = now.as_second();
+        // Keep the last-seen moment on disk so a crash or quit loses at most a few seconds.
+        if !changed && self.timer.is_running() && sec - self.last_saved >= 5 {
+            self.last_saved = sec;
+            if let Err(e) = self.store.save_timer(&self.timer) {
+                eprintln!("saving timer failed: {e}");
+            }
+        }
         if self.timer.is_running() && sec != self.last_refresh {
             self.last_refresh = sec;
             let active: Vec<TaskId> = self.timer.active_tasks.iter().copied().collect();
@@ -270,6 +289,8 @@ mod tests {
                 TimeZone::UTC,
             )
             .unwrap();
+            let mut engine = engine;
+            engine.max_gap_ms = i64::MAX / 2; // tests jump the clock freely
             Self { engine, clock }
         }
 
@@ -357,6 +378,18 @@ mod tests {
         assert_eq!(f.engine.timer.settings.short_break_secs, 15 * 60);
         assert_eq!(f.engine.timer.elapsed_ms(now), 600_000);
         assert_eq!(f.engine.timer.remaining_ms(now), Some(40 * 60_000));
+    }
+
+    #[test]
+    fn sleep_gap_is_not_tracked() {
+        let mut f = Fixture::new();
+        let a = f.task("a", Status::InProgress);
+        f.at(0).start_or_pause(Mode::Stopwatch);
+        f.engine.max_gap_ms = 15_000;
+        f.at(5).tick();
+        f.at(36_000).tick(); // woke up ten hours later
+        assert_eq!(f.total(a), 5_000);
+        assert!(!f.engine.timer.is_running());
     }
 
     #[test]
