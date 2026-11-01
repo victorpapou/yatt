@@ -326,6 +326,25 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             eprintln!("demo: finished");
             return;
         }
+        if std::env::var_os("YATT_DEMO_SCROLL").is_some() {
+            // Long columns scrolled under the toolbar: the content must go under
+            // it and the scroller must start below it.
+            for i in 0..9 {
+                sink(UiEvent::NewTask {
+                    title: format!("Задача {}", i + 1),
+                    status: Status::Backlog,
+                });
+            }
+            wait(500).await;
+            window.demo_toggle_stack();
+            wait(1500).await;
+            shot("scroll-top");
+            window.demo_scroll(0, 260.0);
+            wait(700).await;
+            shot("scroll-mid");
+            eprintln!("demo: finished");
+            return;
+        }
         if std::env::var_os("YATT_DEMO_TOOLBAR").is_some() {
             // Just the window as it opens, for a look at the toolbar.
             for i in 0..4 {

@@ -114,9 +114,6 @@ pub enum DemoPointer {
     Hover(Option<(f64, f64)>),
 }
 
-/// Told how far a list has scrolled (points).
-pub type ScrollHandler = Box<dyn Fn(f64)>;
-
 /// One column's horizontal extent on the canvas.
 #[derive(Clone, Copy, Default)]
 pub struct ColumnGeom {
@@ -380,9 +377,6 @@ pub struct Board {
     perf: RefCell<Option<Vec<(f64, f64)>>>,
     /// Tells the window which column to tint while dragging.
     on_target: Box<dyn Fn(Option<usize>)>,
-    /// Told how far the furthest-scrolled list has gone up under the toolbar
-    /// (points; 0 at the top or rubber-banding past it), on every scroll.
-    pub on_scrolled: RefCell<Option<ScrollHandler>>,
 }
 
 impl Board {
@@ -405,9 +399,10 @@ impl Board {
             scroll.setVerticalScrollElasticity(NSScrollElasticity::Allowed);
             scroll.setHorizontalScrollElasticity(NSScrollElasticity::None);
             scroll.contentView().setDrawsBackground(false);
-            // It runs under the toolbar, which blurs it; the list keeps clear
-            // of the toolbar by itself (`list_top`).
-            scroll.setAutomaticallyAdjustsContentInsets(false);
+            // The system keeps the list clear of the toolbar (a top content
+            // inset, the scroller starting below it) and softens the edge where
+            // the rows go under it.
+            scroll.setAutomaticallyAdjustsContentInsets(true);
             let doc = FlippedView::new(mtm, NSRect::ZERO);
             scroll.setDocumentView(Some(&doc));
             canvas.addSubview(&scroll);
@@ -452,7 +447,6 @@ impl Board {
             last_tick: Cell::new(0.0),
             perf: RefCell::new(std::env::var_os("YATT_PERF").map(|_| Vec::new())),
             on_target: Box::new(on_target),
-            on_scrolled: RefCell::new(None),
         });
         // Scrolling (momentum and rubber band included) shows the rows coming near.
         for col in &board.cols {
@@ -462,7 +456,6 @@ impl Board {
             let block = RcBlock::new(move |_note: NonNull<NSNotification>| {
                 if let Some(b) = weak.upgrade() {
                     b.cull_lists();
-                    b.report_scroll();
                 }
             });
             let token = unsafe {
@@ -500,24 +493,16 @@ impl Board {
         }
     }
 
-    /// How far the furthest-scrolled list has gone up (stacks do not scroll),
-    /// to whoever listens.
-    pub fn report_scroll(&self) {
-        let up = self
-            .cols
-            .iter()
-            .zip(self.layouts.get())
-            .filter(|(_, l)| *l == Layout::List)
-            .map(|(c, _)| c.scroll.contentView().bounds().origin.y)
-            .fold(0.0_f64, f64::max);
-        if let Some(f) = self.on_scrolled.borrow().as_ref() {
-            f(up);
-        }
-    }
-
     /// Where the list starts: below the toolbar and the chips.
     fn list_top(&self) -> f64 {
         LIST_TOP + self.top.get()
+    }
+
+    /// Where the first row sits in a list's own (document) coordinates: the
+    /// scroll view's automatic top inset already keeps the list below the toolbar,
+    /// so only the chips' room is left.
+    fn doc_top(&self) -> f64 {
+        LIST_TOP
     }
 
     /// `top`: how far the toolbar reaches over the board, which runs under it.
@@ -901,7 +886,7 @@ impl Board {
     /// Where the `i`-th card of a column sits, ignoring drags.
     fn slot(&self, ci: usize, i: usize) -> (f64, f64) {
         match self.layouts.get()[ci] {
-            Layout::List => (self.list_x(ci), self.list_top() + i as f64 * PITCH),
+            Layout::List => (self.list_x(ci), self.doc_top() + i as f64 * PITCH),
             Layout::Stack { .. } => {
                 let a = self.stack_anchor(ci);
                 (a.0, a.1 + physics::pile(i).0)
@@ -1232,7 +1217,7 @@ impl Board {
                     let x = self.list_x(ci);
                     // The document is as tall as the list (room for the gap included).
                     let slots = n + gap.map_or(0, |(_, k)| k);
-                    let doc_h = (self.list_top() + slots as f64 * PITCH + LIST_BOTTOM)
+                    let doc_h = (self.doc_top() + slots as f64 * PITCH + LIST_BOTTOM)
                         .max(self.height.get());
                     let doc = &self.cols[ci].doc;
                     if doc.frame().size.height != doc_h
@@ -1250,7 +1235,7 @@ impl Board {
                             Some((at, k)) if i >= at => i + k,
                             _ => i,
                         };
-                        let y = self.list_top() + slot as f64 * PITCH;
+                        let y = self.doc_top() + slot as f64 * PITCH;
                         self.send_home(card, Space::Doc(ci), (x, y, 0.0));
                         // Rows far out of sight jump to their slot: only what can be
                         // seen animates, however long the list.
@@ -1771,7 +1756,8 @@ impl Board {
         let clip = scroll.contentView();
         let max = (self.cols[ci].doc.frame().size.height - clip.bounds().size.height).max(0.0);
         let from = self.scrolled(ci);
-        let to = (from + speed.clamp(-1.0, 1.0) * AUTOSCROLL_SPEED * dt).clamp(0.0, max);
+        let min = -scroll.contentInsets().top;
+        let to = (from + speed.clamp(-1.0, 1.0) * AUTOSCROLL_SPEED * dt).clamp(min, max);
         if to != from {
             clip.scrollToPoint(NSPoint::new(0.0, to));
             scroll.reflectScrolledClipView(&clip);
@@ -2261,7 +2247,7 @@ impl Board {
                         .filter(|id| !drag.ids.contains(id))
                         .count();
                     let centre = p.y - drag.grab.1 + CARD_H / 2.0 - self.offset(Space::Doc(ci)).1;
-                    physics::insert_index(centre + LIST_GAP / 2.0, self.list_top(), PITCH, n)
+                    physics::insert_index(centre + LIST_GAP / 2.0, self.doc_top(), PITCH, n)
                 }
                 _ => 0,
             };
