@@ -529,15 +529,16 @@ impl Edges {
         let lift = FlippedView::new(mtm, NSRect::ZERO);
         lift.setLayer(Some(&lift_layer));
         lift.setWantsLayer(true);
-        // The system glass draws its own edge: no custom outline or inner glow.
-        Self {
+        // The system glass draws its own white edge; the dark outline it lacks
+        // is the outer layer here. No inner glow of our own.
+        with_edge_images(|outer, _| Self {
             lift: Retained::into_super(lift),
             lift_layer,
-            outer: layer_view(None, EDGE_PAD),
+            outer: layer_view(outer, EDGE_PAD),
             inner: layer_view(None, 0.0),
             ring: Retained::into_super(ring),
             ring_layer,
-        }
+        })
     }
 
     /// The inner edge for the current appearance.
@@ -1162,7 +1163,7 @@ mod tests {
         };
         let ring = selection_ring_layer();
         ring.setFrame(around(RING_GAP + RING_WIDTH));
-        let (outer, inner) = (edge_layer(None, EDGE_PAD), edge_layer(None, 0.0));
+        let (outer, inner) = with_edge_images(|o, _| (edge_layer(o, EDGE_PAD), edge_layer(None, 0.0)));
         outer.setFrame(around(EDGE_PAD));
         inner.setFrame(card);
         let face = CALayer::new();
