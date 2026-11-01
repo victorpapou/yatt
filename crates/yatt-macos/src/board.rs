@@ -885,6 +885,7 @@ impl Board {
 
         // Real blur of whatever is behind the card inside the window.
         let glass = style::card_blur(mtm);
+        style::tint_glass(&glass, hue);
         glass.setFrame(bounds);
         glass.setAutoresizingMask(fill_mask);
 
@@ -2158,6 +2159,7 @@ impl Card {
             self.icon = icon;
         }
         self.edges.restyle();
+        style::tint_glass(&self.parts[0], hue);
         self.face.repaint();
     }
 

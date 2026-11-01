@@ -380,6 +380,8 @@ define_class!(
             let Some(layer) = self.layer() else { return };
             let fill = self.ivars().fill.get();
             let color = match fill {
+                // Over the system glass the colour is the glass's own tint.
+                Fill::Card { .. } if crate::style::real_glass() => NSColor::clearColor(),
                 Fill::Card { hue, .. } => crate::style::fill(hue),
                 Fill::Chip(i) => crate::style::column_color(i).colorWithAlphaComponent(0.14),
                 Fill::Separator => NSColor::separatorColor(),

@@ -253,6 +253,30 @@ pub fn fill(hue: usize) -> Retained<NSColor> {
     rgb(palette()[hue % HUES.len()].0, alpha)
 }
 
+/// The card's colour as the system glass's tint.
+pub fn glass_tint(hue: usize) -> Retained<NSColor> {
+    let white = hue % HUES.len() == NEUTRAL_HUE;
+    let alpha = match (white, dark()) {
+        (true, false) => 0.0,
+        (true, true) => 0.25,
+        (false, _) => 0.55,
+    };
+    rgb(palette()[hue % HUES.len()].0, alpha)
+}
+
+/// Tints a card's backdrop (as made by [`card_blur`]) with the card's colour,
+/// when it is the system glass.
+pub fn tint_glass(view: &NSView, hue: usize) {
+    if let Some(glass) = view.downcast_ref::<NSGlassEffectView>() {
+        let tint = glass_tint(hue);
+        if tint.alphaComponent() > 0.0 {
+            glass.setTintColor(Some(&tint));
+        } else {
+            glass.setTintColor(None);
+        }
+    }
+}
+
 /// A card colour, solid: for the colour picker.
 pub fn swatch(hue: usize) -> Retained<NSColor> {
     rgb(palette()[hue % HUES.len()].0, 1.0)
@@ -285,32 +309,21 @@ pub fn text_css(hue: usize) -> String {
 /// a system within-window blur where those are missing.
 pub fn card_blur(mtm: MainThreadMarker) -> Retained<NSView> {
     if real_glass() {
+        // The system's Liquid Glass as it is: its own edge, highlight and
+        // shadow, coloured only through its tint. Nothing of ours over or under it.
         let glass = NSGlassEffectView::new(mtm);
         glass.setCornerRadius(CARD_RADIUS);
-        // The public style with the least frost.
-        glass.setStyle(NSGlassEffectViewStyle::Clear);
+        let style = match std::env::var("YATT_GLASS_STYLE").as_deref() {
+            Ok("clear") => NSGlassEffectViewStyle::Clear,
+            _ => NSGlassEffectViewStyle::Regular,
+        };
+        glass.setStyle(style);
         tune_glass(&glass);
-        // The glass has no saturation of its own: under it, a backdrop that only
-        // saturates (no blur), so it shows the same 1.2 boost as the plain path.
-        let holder = FlippedView::new(mtm, NSRect::ZERO);
-        let fill = NSAutoresizingMaskOptions::ViewWidthSizable
-            | NSAutoresizingMaskOptions::ViewHeightSizable;
-        if let Some(layer) = backdrop_layer(0.0) {
-            round(&layer, CARD_RADIUS);
-            layer.setMasksToBounds(true);
-            let saturate = FlippedView::new(mtm, NSRect::ZERO);
-            saturate.setLayer(Some(&layer));
-            saturate.setWantsLayer(true);
-            saturate.setAutoresizingMask(fill);
-            holder.addSubview(&saturate);
-        }
-        glass.setAutoresizingMask(fill);
-        holder.addSubview(&glass);
         if std::env::var_os("YATT_DUMP").is_some() {
             eprintln!("card_blur: NSGlassEffectView path");
-            dump_tree(&holder, 0);
+            dump_tree(&glass, 0);
         }
-        return Retained::into_super(holder);
+        return Retained::into_super(glass);
     }
     if std::env::var_os("YATT_DUMP").is_some() {
         eprintln!("card_blur: fallback path (no NSGlassEffectView)");
@@ -553,7 +566,7 @@ impl Edges {
         with_edge_images(|outer, _| Self {
             lift: Retained::into_super(lift),
             lift_layer,
-            outer: layer_view(outer, EDGE_PAD),
+            outer: layer_view(if real_glass() { None } else { outer }, EDGE_PAD),
             inner: layer_view(None, 0.0),
             ring: Retained::into_super(ring),
             ring_layer,

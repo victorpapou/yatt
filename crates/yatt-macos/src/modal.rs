@@ -134,6 +134,8 @@ pub struct Modal {
     pub panel: Retained<FillView>,
     /// The card's material, so the panel is the card grown big: blur and tint.
     face: Retained<FillView>,
+    /// The card's glass under the face, tinted with the card's colour.
+    glass: Retained<NSView>,
     /// White over the card's tint below the header, once the panel stands open:
     /// only the header keeps the card's colour.
     sheet: Retained<FillView>,
@@ -624,6 +626,7 @@ impl Modal {
             dim,
             panel,
             face,
+            glass,
             sheet,
             card_box,
             card: RefCell::new(None),
@@ -962,6 +965,7 @@ impl Modal {
         self.stats.setStringValue(&NSString::from_str(&stats));
         // The card's own colours, so nothing changes as it grows into the panel.
         let hue = style::hue_of(snap.id);
+        style::tint_glass(&self.glass, hue);
         self.face.set_fill(Fill::Card {
             hue,
             tracking: snap.tracking,
