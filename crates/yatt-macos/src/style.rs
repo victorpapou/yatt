@@ -275,12 +275,12 @@ pub fn card_blur(mtm: MainThreadMarker) -> Retained<NSView> {
 }
 
 /// The cards' backdrop: a plain backdrop blur of exactly [`CARD_BLUR`] points
-/// with the saturation boost, the lightest frost there is. `YATT_GLASS=1` puts
-/// the system's Liquid Glass (`NSGlassEffectView`) there instead, where the
-/// system has it; it has no blur radius to turn down, so it stays an option.
+/// with the saturation boost, the lightest frost there is. The system's Liquid Glass
+/// (`NSGlassEffectView`) is used where the system has it; `YATT_GLASS=0` falls
+/// back to the plain backdrop blur.
 pub fn real_glass() -> bool {
     thread_local! {
-        static ON: bool = std::env::var_os("YATT_GLASS").is_some_and(|v| v != "0")
+        static ON: bool = std::env::var_os("YATT_GLASS").is_none_or(|v| v != "0")
             && AnyClass::get(c"NSGlassEffectView").is_some();
     }
     ON.with(|on| *on)
@@ -474,24 +474,20 @@ impl Edges {
         let lift = FlippedView::new(mtm, NSRect::ZERO);
         lift.setLayer(Some(&lift_layer));
         lift.setWantsLayer(true);
-        with_edge_images(|outer, inner| Self {
+        // The system glass draws its own edge: no custom outline or inner glow.
+        Self {
             lift: Retained::into_super(lift),
             lift_layer,
-            outer: layer_view(outer, EDGE_PAD),
-            inner: layer_view(inner, 0.0),
+            outer: layer_view(None, EDGE_PAD),
+            inner: layer_view(None, 0.0),
             ring: Retained::into_super(ring),
             ring_layer,
-        })
+        }
     }
 
     /// The inner edge for the current appearance.
     pub fn restyle(&self) {
-        with_edge_images(|_, inner| {
-            if let (Some(layer), Some(image)) = (self.inner.layer(), inner) {
-                let image: &AnyObject = unsafe { &*(image as *const CGImage).cast::<AnyObject>() };
-                unsafe { layer.setContents(Some(image)) };
-            }
-        });
+        // Nothing to redraw: the inner edge is the system glass's own.
     }
 
     /// Fits both layers to a `w` × `h` card at the origin of its view.
@@ -586,72 +582,6 @@ fn lift_image() -> Option<CFRetained<CGImage>> {
     IMAGE.with(|i| i.clone())
 }
 
-/// The outline, and the inner edge for light and dark.
-type EdgeImages = (
-    Option<CFRetained<CGImage>>,
-    Option<CFRetained<CGImage>>,
-    Option<CFRetained<CGImage>>,
-);
-
-/// The white inner edge at `alpha`.
-fn inner_edge(alpha: f64) -> Option<CFRetained<CGImage>> {
-    edge_image(0.0, move |cx, card, _side| {
-        // Clip to the card and stroke its outline again and again, each
-        // time wider and faint: the strokes pile up at the edge and thin
-        // out inwards, a white band fading over INSET_DEPTH points.
-        // (A shadow would be blurred in device pixels, not points, and
-        // reads at only half its alpha right at the edge.)
-        CGContext::add_path(Some(cx), Some(card));
-        CGContext::clip(Some(cx));
-        let n = INSET_STEPS as f64;
-        let a = 1.0 - (1.0 - alpha).powf(1.0 / n);
-        let white = CGColor::new_srgb(1.0, 1.0, 1.0, a);
-        CGContext::set_stroke_color_with_color(Some(cx), Some(&white));
-        for k in 0..INSET_STEPS {
-            // The stroke straddles the outline: half of it lies inside.
-            // Half-widths of DEPTH·(1 − √(k/n)) stack up to a glow that
-            // fades as (1 − d/DEPTH)², soft all the way, no line.
-            let half = INSET_DEPTH * (1.0 - (k as f64 / n).sqrt());
-            CGContext::set_line_width(Some(cx), 2.0 * half);
-            CGContext::add_path(Some(cx), Some(card));
-            CGContext::stroke_path(Some(cx));
-        }
-    })
-}
-
-/// The outline and inner-edge bitmaps, drawn once per thread.
-fn with_edge_images<R>(f: impl FnOnce(Option<&CGImage>, Option<&CGImage>) -> R) -> R {
-    thread_local! {
-        static IMAGES: EdgeImages = (
-            edge_image(EDGE_PAD, |cx, card, side| {
-                // Clip to outside the card, then let a filled card cast its
-                // shadow: only the part outside remains.
-                let all = CGMutablePath::new();
-                unsafe {
-                    CGMutablePath::add_rect(Some(&all), std::ptr::null(), CGRect::new(CGPoint::ZERO, CGSize::new(side, side)));
-                    CGMutablePath::add_path(Some(&all), std::ptr::null(), Some(card));
-                }
-                CGContext::add_path(Some(cx), Some(&all));
-                CGContext::eo_clip(Some(cx));
-                let black = CGColor::new_srgb(0.0, 0.0, 0.0, OUTLINE_ALPHA);
-                // Shadow blur is in device pixels whatever the scale: in points it is this.
-                CGContext::set_shadow_with_color(Some(cx), CGSize::new(0.0, 0.0), OUTLINE_BLUR * EDGE_SCALE, Some(&black));
-                CGContext::set_fill_color_with_color(Some(cx), Some(&CGColor::new_srgb(0.0, 0.0, 0.0, 1.0)));
-                CGContext::add_path(Some(cx), Some(card));
-                CGContext::fill_path(Some(cx));
-            }),
-            inner_edge(INSET_ALPHA),
-            inner_edge(INSET_ALPHA_DARK),
-        );
-    }
-    IMAGES.with(|(outer, light, dark)| {
-        f(
-            outer.as_deref(),
-            if self::dark() { dark } else { light }.as_deref(),
-        )
-    })
-}
-
 /// Where the selection ring sits: `RING_GAP` points outside the card (clear of
 /// the 1 pt outline), `RING_WIDTH` wide.
 const RING_GAP: f64 = 1.5;
@@ -685,17 +615,6 @@ fn edge_layer(image: Option<&CGImage>, inset: f64) -> Retained<CALayer> {
     layer.setContentsScale(EDGE_SCALE);
     layer
 }
-
-/// The outline: black at 50%, blurred 1 pt.
-const OUTLINE_ALPHA: f64 = 0.5;
-const OUTLINE_BLUR: f64 = 1.0;
-/// The inner edge: a soft white glow, 51% at the edge, fading out on an ease-out
-/// curve over 3.75 pt, drawn as stacked strokes.
-const INSET_ALPHA: f64 = 0.51;
-/// On a dark card the white edge is fainter, or it reads as a frame.
-const INSET_ALPHA_DARK: f64 = 0.2;
-const INSET_DEPTH: f64 = 3.75;
-const INSET_STEPS: usize = 24;
 
 /// The shadow under a carried card: 20% black, 24 pt blur, 8 pt down.
 const LIFT_PAD: f64 = 40.0;
@@ -862,12 +781,8 @@ pub fn glass(mtm: MainThreadMarker, radius: f64) -> (Retained<NSView>, Retained<
 mod tests {
     use super::*;
 
-    /// Renders a card's plain layers (tint, then the inner edge; no backdrop) into
-    /// a bitmap at 2 px per point and returns its BGRA pixels and row length.
-    fn render_card(tint: (f64, f64, f64)) -> (Vec<u8>, usize) {
-        render_card_at(tint, 1.0)
-    }
-
+    /// Renders a card's plain layers (tint, no backdrop) into a bitmap at 2 px
+    /// per point and returns its BGRA pixels and row length, at `scale`.
     /// The same for a card shown at `scale`, set up the way `Edges` and the tint
     /// scale theirs.
     fn render_card_at(tint: (f64, f64, f64), scale: f64) -> (Vec<u8>, usize) {
@@ -878,7 +793,7 @@ mod tests {
         face.setFrame(root.bounds());
         face.setBackgroundColor(Some(&CGColor::new_srgb(tint.0, tint.1, tint.2, 1.0)));
         round(&face, CARD_RADIUS * scale);
-        let inner = with_edge_images(|_, inner| edge_layer(inner, 0.0));
+        let inner = edge_layer(None, 0.0);
         inner.setContentsScale(EDGE_SCALE / scale);
         inner.setFrame(root.bounds());
         root.addSublayer(&face);
@@ -904,52 +819,6 @@ mod tests {
         root.renderInContext(&cx);
         drop(cx);
         (px, pw)
-    }
-
-    /// Lightness (sum of R, G, B) at a point `x` points in from the left edge, on
-    /// the card's middle row.
-    fn light(px: &[u8], pw: usize, x: f64) -> u32 {
-        let (col, row) = (
-            (x * EDGE_SCALE) as usize,
-            (CARD_H * EDGE_SCALE / 2.0) as usize,
-        );
-        let i = (row * pw + col) * 4;
-        px[i] as u32 + px[i + 1] as u32 + px[i + 2] as u32
-    }
-
-    #[test]
-    fn the_white_inset_shows_inside_the_edge_on_a_coloured_card() {
-        // The purple of Тима's screenshot.
-        let (px, pw) = render_card((0.78, 0.58, 0.95));
-        let centre = light(&px, pw, CARD_W / 2.0);
-        let at = |x| light(&px, pw, x);
-        eprintln!(
-            "lightness (R+G+B): 0.25 pt in {}, 1 pt {}, 1.5 pt {}, 2 pt {}, 3 pt {}, centre {centre}",
-            at(0.25),
-            at(1.0),
-            at(1.5),
-            at(2.0),
-            at(3.0)
-        );
-        // Right inside the edge about a third of the way to white (the glow is
-        // 42% white there), fading softly, gone by about 4 pt.
-        let white = 3 * 255;
-        assert!(
-            (at(0.25) - centre) * 100 > 30 * (white - centre),
-            "edge {} vs centre {centre}",
-            at(0.25)
-        );
-        assert!(
-            (at(1.0) - centre) * 100 > 8 * (white - centre),
-            "1 pt {}",
-            at(1.0)
-        );
-        assert!(at(1.0) > at(1.5) && at(1.5) >= at(2.0));
-        assert!(
-            at(4.5) <= centre + 3,
-            "4.5 pt {} vs centre {centre}",
-            at(4.5)
-        );
     }
 
     #[test]
@@ -1026,7 +895,7 @@ mod tests {
         };
         let ring = selection_ring_layer();
         ring.setFrame(around(RING_GAP + RING_WIDTH));
-        let (outer, inner) = with_edge_images(|o, i| (edge_layer(o, EDGE_PAD), edge_layer(i, 0.0)));
+        let (outer, inner) = (edge_layer(None, EDGE_PAD), edge_layer(None, 0.0));
         outer.setFrame(around(EDGE_PAD));
         inner.setFrame(card);
         let face = CALayer::new();
@@ -1067,29 +936,18 @@ mod tests {
     }
 
     #[test]
-    fn a_selected_card_reads_ring_outline_inset_tint_from_outside_in() {
+    fn a_selected_card_reads_ring_then_tint_from_outside_in() {
         let tint = (0.78, 0.58, 0.95);
         // Offsets from the card's left edge, in points (negative is outside).
-        let at = [-2.5, -0.5, 0.25, CARD_W / 2.0];
+        let at = [-2.5, CARD_W / 2.0];
         let px = selected_cross_section(tint, &at);
         eprintln!("selected card, R G B at {at:?} pt from the edge: {px:?}");
-        let sum = |p: (u8, u8, u8)| p.0 as u32 + p.1 as u32 + p.2 as u32;
-        let (ring, outline, inset, centre) = (px[0], px[1], px[2], px[3]);
+        let ring = px[0];
         // The ring: blue, outside the card.
         let c = |v: u8| v as u32;
         assert!(
             c(ring.2) > c(ring.0) + 60 && c(ring.2) > c(ring.1) + 30,
             "ring {ring:?}"
-        );
-        // The outline: darker than the white page, not blue.
-        assert!(
-            sum(outline) < 3 * 255 - 30 && c(outline.2) < c(outline.0) + 40,
-            "outline {outline:?}"
-        );
-        // The inset: lighter than the tint; the centre is the tint.
-        assert!(
-            sum(inset) > sum(centre) + 30,
-            "inset {inset:?} vs centre {centre:?}"
         );
     }
 }
