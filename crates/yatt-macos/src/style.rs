@@ -253,26 +253,17 @@ pub fn fill(hue: usize) -> Retained<NSColor> {
     rgb(palette()[hue % HUES.len()].0, alpha)
 }
 
-/// The card's colour as the system glass's tint.
-pub fn glass_tint(hue: usize) -> Retained<NSColor> {
-    let white = hue % HUES.len() == NEUTRAL_HUE;
-    let alpha = match (white, dark()) {
-        (true, false) => 0.0,
-        (true, true) => 0.25,
-        (false, _) => 0.55,
-    };
-    rgb(palette()[hue % HUES.len()].0, alpha)
-}
-
 /// Tints a card's backdrop (as made by [`card_blur`]) with the card's colour,
-/// when it is the system glass.
+/// when it is the system glass. The colour goes in solid: how strongly it shows
+/// is the glass's own call, so it follows the system's Liquid Glass setting
+/// (Clear or Tinted) and Reduce Transparency like the system's own glass. The
+/// neutral card has no tint at all: plain system glass.
 pub fn tint_glass(view: &NSView, hue: usize) {
     if let Some(glass) = view.downcast_ref::<NSGlassEffectView>() {
-        let tint = glass_tint(hue);
-        if tint.alphaComponent() > 0.0 {
-            glass.setTintColor(Some(&tint));
-        } else {
+        if hue % HUES.len() == NEUTRAL_HUE {
             glass.setTintColor(None);
+        } else {
+            glass.setTintColor(Some(&swatch(hue)));
         }
     }
 }
