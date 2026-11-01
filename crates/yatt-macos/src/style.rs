@@ -582,72 +582,6 @@ fn lift_image() -> Option<CFRetained<CGImage>> {
     IMAGE.with(|i| i.clone())
 }
 
-/// The outline, and the inner edge for light and dark.
-type EdgeImages = (
-    Option<CFRetained<CGImage>>,
-    Option<CFRetained<CGImage>>,
-    Option<CFRetained<CGImage>>,
-);
-
-/// The white inner edge at `alpha`.
-fn inner_edge(alpha: f64) -> Option<CFRetained<CGImage>> {
-    edge_image(0.0, move |cx, card, _side| {
-        // Clip to the card and stroke its outline again and again, each
-        // time wider and faint: the strokes pile up at the edge and thin
-        // out inwards, a white band fading over INSET_DEPTH points.
-        // (A shadow would be blurred in device pixels, not points, and
-        // reads at only half its alpha right at the edge.)
-        CGContext::add_path(Some(cx), Some(card));
-        CGContext::clip(Some(cx));
-        let n = INSET_STEPS as f64;
-        let a = 1.0 - (1.0 - alpha).powf(1.0 / n);
-        let white = CGColor::new_srgb(1.0, 1.0, 1.0, a);
-        CGContext::set_stroke_color_with_color(Some(cx), Some(&white));
-        for k in 0..INSET_STEPS {
-            // The stroke straddles the outline: half of it lies inside.
-            // Half-widths of DEPTH·(1 − √(k/n)) stack up to a glow that
-            // fades as (1 − d/DEPTH)², soft all the way, no line.
-            let half = INSET_DEPTH * (1.0 - (k as f64 / n).sqrt());
-            CGContext::set_line_width(Some(cx), 2.0 * half);
-            CGContext::add_path(Some(cx), Some(card));
-            CGContext::stroke_path(Some(cx));
-        }
-    })
-}
-
-/// The outline and inner-edge bitmaps, drawn once per thread.
-fn with_edge_images<R>(f: impl FnOnce(Option<&CGImage>, Option<&CGImage>) -> R) -> R {
-    thread_local! {
-        static IMAGES: EdgeImages = (
-            edge_image(EDGE_PAD, |cx, card, side| {
-                // Clip to outside the card, then let a filled card cast its
-                // shadow: only the part outside remains.
-                let all = CGMutablePath::new();
-                unsafe {
-                    CGMutablePath::add_rect(Some(&all), std::ptr::null(), CGRect::new(CGPoint::ZERO, CGSize::new(side, side)));
-                    CGMutablePath::add_path(Some(&all), std::ptr::null(), Some(card));
-                }
-                CGContext::add_path(Some(cx), Some(&all));
-                CGContext::eo_clip(Some(cx));
-                let black = CGColor::new_srgb(0.0, 0.0, 0.0, OUTLINE_ALPHA);
-                // Shadow blur is in device pixels whatever the scale: in points it is this.
-                CGContext::set_shadow_with_color(Some(cx), CGSize::new(0.0, 0.0), OUTLINE_BLUR * EDGE_SCALE, Some(&black));
-                CGContext::set_fill_color_with_color(Some(cx), Some(&CGColor::new_srgb(0.0, 0.0, 0.0, 1.0)));
-                CGContext::add_path(Some(cx), Some(card));
-                CGContext::fill_path(Some(cx));
-            }),
-            inner_edge(INSET_ALPHA),
-            inner_edge(INSET_ALPHA_DARK),
-        );
-    }
-    IMAGES.with(|(outer, light, dark)| {
-        f(
-            outer.as_deref(),
-            if self::dark() { dark } else { light }.as_deref(),
-        )
-    })
-}
-
 /// Where the selection ring sits: `RING_GAP` points outside the card (clear of
 /// the 1 pt outline), `RING_WIDTH` wide.
 const RING_GAP: f64 = 1.5;
@@ -681,17 +615,6 @@ fn edge_layer(image: Option<&CGImage>, inset: f64) -> Retained<CALayer> {
     layer.setContentsScale(EDGE_SCALE);
     layer
 }
-
-/// The outline: black at 50%, blurred 1 pt.
-const OUTLINE_ALPHA: f64 = 0.5;
-const OUTLINE_BLUR: f64 = 1.0;
-/// The inner edge: a soft white glow, 51% at the edge, fading out on an ease-out
-/// curve over 3.75 pt, drawn as stacked strokes.
-const INSET_ALPHA: f64 = 0.51;
-/// On a dark card the white edge is fainter, or it reads as a frame.
-const INSET_ALPHA_DARK: f64 = 0.2;
-const INSET_DEPTH: f64 = 3.75;
-const INSET_STEPS: usize = 24;
 
 /// The shadow under a carried card: 20% black, 24 pt blur, 8 pt down.
 const LIFT_PAD: f64 = 40.0;
