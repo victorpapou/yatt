@@ -112,7 +112,6 @@ pub type ScrollHandler = Box<dyn Fn(f64)>;
 
 /// One column's horizontal extent on the canvas.
 #[derive(Clone, Copy, Default)]
-
 pub struct ColumnGeom {
     pub x: f64,
     pub w: f64,
