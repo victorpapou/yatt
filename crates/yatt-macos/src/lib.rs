@@ -15,11 +15,11 @@ mod durations;
 mod editor;
 #[cfg(target_os = "macos")]
 mod menubar;
-mod notify;
 #[cfg(target_os = "macos")]
 mod modal;
 #[cfg(target_os = "macos")]
 pub mod motion;
+mod notify;
 #[cfg(target_os = "macos")]
 mod picker;
 #[cfg(target_os = "macos")]

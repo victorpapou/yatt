@@ -8,8 +8,9 @@ use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_app_kit::{
-    NSButton, NSButtonType, NSControlStateValueOff, NSControlStateValueOn, NSFont, NSFontWeightRegular, NSPopover, NSPopoverBehavior, NSStepper, NSTextField,
-    NSView, NSViewController,
+    NSButton, NSButtonType, NSControlStateValueOff, NSControlStateValueOn, NSFont,
+    NSFontWeightRegular, NSPopover, NSPopoverBehavior, NSStepper, NSTextField, NSView,
+    NSViewController,
 };
 use objc2_foundation::{NSPoint, NSRect, NSRectEdge, NSSize, NSString};
 
