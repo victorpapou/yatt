@@ -381,8 +381,8 @@ pub fn dump_tree(view: &NSView, depth: usize) {
             layer.opacity(),
             bg,
             unsafe { layer.contents() }.is_some(),
-            unsafe { layer.filters() }.map_or(0, |f| f.count()),
-            layer.sublayers().map_or(0, |l| l.count()),
+            layer.filters().map_or(0, |f| f.count()),
+            unsafe { layer.sublayers() }.map_or(0, |l| l.count()),
         );
     }
     for sub in view.subviews().iter() {
