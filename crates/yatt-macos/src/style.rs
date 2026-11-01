@@ -380,9 +380,7 @@ pub fn dump_tree(view: &NSView, depth: usize) {
             layer.class().name().to_string_lossy(),
             layer.opacity(),
             bg,
-            #[allow(unused_unsafe)]
             unsafe { layer.contents() }.is_some(),
-            #[allow(unused_unsafe)]
             unsafe { layer.filters() }.map_or(0, |f| f.count()),
             layer.sublayers().map_or(0, |l| l.count()),
         );
