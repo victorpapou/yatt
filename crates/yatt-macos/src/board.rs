@@ -129,6 +129,8 @@ struct Column {
     doc: Retained<FlippedView>,
 }
 
+type ScrollHook = RefCell<Option<Box<dyn Fn(f64)>>>;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Layout {
     List,
@@ -284,7 +286,7 @@ pub struct Board {
     on_target: Box<dyn Fn(Option<usize>)>,
     /// Told how far the furthest-scrolled list has gone up under the toolbar
     /// (points; 0 at the top or rubber-banding past it), on every scroll.
-    pub on_scrolled: RefCell<Option<Box<dyn Fn(f64)>>>,
+    pub on_scrolled: ScrollHook,
 }
 
 impl Board {
