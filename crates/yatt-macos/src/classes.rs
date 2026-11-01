@@ -528,21 +528,6 @@ pub struct Scroll {
     /// How far the fingers (or the wheel) move down, in points (negative: up),
     /// the same whatever the natural-scrolling setting.
     pub down: f64,
-    /// Where in a trackpad gesture this step is.
-    pub touch: Touch,
-}
-
-/// Where a scroll step sits in a gesture.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Touch {
-    /// A mouse wheel (no gesture): each step on its own.
-    Wheel,
-    /// Fingers on the trackpad, moving or resting.
-    Hold,
-    /// The fingers just lifted (or the system cancelled the gesture).
-    Release,
-    /// The system's momentum after the fingers lifted.
-    Coast,
 }
 
 pub struct CanvasIvars {
@@ -659,19 +644,6 @@ define_class!(
                     event.scrollingDeltaY() * k,
                     event.isDirectionInvertedFromDevice(),
                 ),
-                touch: {
-                    use objc2_app_kit::NSEventPhase as P;
-                    let (phase, coast) = (event.phase(), event.momentumPhase());
-                    if coast != P::None {
-                        Touch::Coast
-                    } else if phase.intersects(P::Ended | P::Cancelled) {
-                        Touch::Release
-                    } else if phase != P::None {
-                        Touch::Hold
-                    } else {
-                        Touch::Wheel
-                    }
-                },
             }));
         }
     }
