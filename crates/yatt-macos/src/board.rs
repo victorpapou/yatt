@@ -48,7 +48,9 @@ use objc2_foundation::{
 use objc2_quartz_core::CACurrentMediaTime;
 use yatt_core::{Status, TaskId};
 
-use crate::classes::{CanvasMsg, CanvasView, Fill, FillView, FlippedView, OverlayView, Scroll};
+use crate::classes::{
+    CanvasMsg, CanvasView, Fill, FillView, FlippedView, OverlayView, Scroll, Touch,
+};
 use crate::model::{CardSnap, ColumnSnap, UiEvent, format_duration, moves_into};
 use crate::motion;
 use crate::physics::{self, Body};
@@ -141,6 +143,15 @@ struct Column {
 enum Layout {
     List,
     Stack { fanned: bool },
+}
+
+/// A stack held by the fingers on the trackpad: the openness they took it at,
+/// how far they have moved since, and how fast.
+#[derive(Clone, Copy, Debug)]
+struct Held {
+    start: f64,
+    down: f64,
+    swipe: physics::Swipe,
 }
 
 /// A card's place in a stack, both ways: folded on the pile and laid out on
@@ -319,8 +330,10 @@ pub struct Board {
     /// while a scroll drives it), and when that scroll last moved it (media
     /// time).
     open_p: Cell<[f64; 3]>,
-    /// How open each column's stack is: falling toward `open_p`.
+    /// How open each column's stack is: falling toward `open_p`, or held by
+    /// the fingers on the trackpad (`held`).
     opening: Cell<[physics::Opening; 3]>,
+    held: Cell<[Option<Held>; 3]>,
     scrubbed: Cell<[f64; 3]>,
     /// Selected cards, and the one a ⇧-click range starts from.
     selected: RefCell<HashSet<TaskId>>,
@@ -403,6 +416,7 @@ impl Board {
             layouts: Cell::new([Layout::List; 3]),
             open_p: Cell::new([0.0; 3]),
             opening: Cell::new(Default::default()),
+            held: Cell::new([None; 3]),
             scrubbed: Cell::new([0.0; 3]),
             selected: RefCell::new(HashSet::new()),
             anchor: Cell::new(None),
@@ -744,6 +758,7 @@ impl Board {
             event: None,
             at: NSPoint::new(at.0, at.1),
             down,
+            touch: Touch::Wheel,
         });
     }
 
@@ -1451,8 +1466,9 @@ impl Board {
         let now = CACurrentMediaTime();
         // A part-open fan left alone opens or folds, whichever is nearer.
         let mut part = false;
+        let held = self.held.get();
         for (ci, p) in self.open_p.get().into_iter().enumerate() {
-            if p > 0.0 && p < 1.0 {
+            if p > 0.0 && p < 1.0 && held[ci].is_none() {
                 if now - self.scrubbed.get()[ci] > physics::FAN_SNAP_IDLE {
                     self.set_fanned(ci, physics::fan_snap(p));
                 } else {
@@ -1515,6 +1531,11 @@ impl Board {
         let mut opening = self.opening.get();
         let mut opened = [false; 3];
         for (ci, o) in opening.iter_mut().enumerate() {
+            // Held: the fingers set it (`on_scroll`); the cards follow.
+            if held[ci].is_some() {
+                opened[ci] = true;
+                continue;
+            }
             let goal = self.open_goal(ci);
             if o.at != goal || o.v != 0.0 {
                 if reduce {
@@ -2023,38 +2044,112 @@ impl Board {
     /// native scroll view); over a stack, scrolling down fans it out and
     /// scrolling up folds it back.
     fn on_scroll(self: &Rc<Self>, s: Scroll) {
+        // The fingers lifted: every stack they held is let go, wherever the
+        // pointer is now.
+        if s.touch == Touch::Release {
+            self.let_go();
+        }
         let col = self.column_at(s.at.x);
         if let Some(ci) = col
             && matches!(self.layouts.get()[ci], Layout::Stack { .. })
         {
-            // The fan follows the fingers, part open on the way; a fling goes
-            // all the way.
-            if self.order.borrow()[ci].len() < 2 || s.down == 0.0 {
+            if self.order.borrow()[ci].len() < 2 {
                 return;
             }
-            let fanned = self.layouts.get()[ci] == (Layout::Stack { fanned: true });
-            let from = if fanned { 1.0 } else { self.open_p.get()[ci] };
-            let p = physics::fan_scrub(from, s.down);
-            if p >= 1.0 {
-                self.set_fanned(ci, true);
-            } else if p <= 0.0 {
-                self.set_fanned(ci, false);
-            } else {
-                let mut layouts = self.layouts.get();
-                layouts[ci] = Layout::Stack { fanned: false };
-                self.layouts.set(layouts);
-                let mut ps = self.open_p.get();
-                ps[ci] = p;
-                self.open_p.set(ps);
-                let mut at = self.scrubbed.get();
-                at[ci] = CACurrentMediaTime();
-                self.scrubbed.set(at);
-                self.retarget();
-                self.kick();
+            match s.touch {
+                // On the trackpad the stack is in the fingers: it opens one
+                // for one with them, stretches past its ends, and a stack
+                // still moving is caught where it is.
+                Touch::Hold => self.hold(ci, s.down),
+                // After the fingers lift the fall carries it on; the system's
+                // momentum steps are not the fingers.
+                Touch::Release | Touch::Coast => {}
+                // A mouse wheel: each step moves how open it should be; a
+                // fling goes all the way.
+                Touch::Wheel => self.wheel(ci, s.down),
             }
             return;
         }
         self.forward(col, s.event.as_deref());
+    }
+
+    /// The fingers move a stack `down` points.
+    fn hold(self: &Rc<Self>, ci: usize, down: f64) {
+        let now = CACurrentMediaTime();
+        let mut opening = self.opening.get();
+        let mut held = self.held.get();
+        let h = held[ci].get_or_insert(Held {
+            start: opening[ci].at,
+            down: 0.0,
+            swipe: physics::Swipe::default(),
+        });
+        h.down += down;
+        h.swipe.feed(down, now);
+        let at = physics::fan_pull(h.start, h.down);
+        opening[ci] = physics::Opening {
+            at,
+            v: h.swipe.speed(now) / physics::FAN_SCRUB,
+        };
+        self.held.set(held);
+        self.opening.set(opening);
+        let mut layouts = self.layouts.get();
+        layouts[ci] = Layout::Stack { fanned: false };
+        self.layouts.set(layouts);
+        let mut ps = self.open_p.get();
+        ps[ci] = at.clamp(0.0, 1.0);
+        self.open_p.set(ps);
+        let mut t = self.scrubbed.get();
+        t[ci] = now;
+        self.scrubbed.set(t);
+        self.retarget();
+        self.kick();
+    }
+
+    /// Lets go every held stack: each goes open or folded by where it is and
+    /// how fast the fingers threw it, and falls there from that speed.
+    fn let_go(self: &Rc<Self>) {
+        let now = CACurrentMediaTime();
+        let mut held = self.held.get();
+        for ci in 0..3 {
+            let Some(h) = held[ci].take() else { continue };
+            self.held.set(held);
+            let mut opening = self.opening.get();
+            let (open, v) =
+                physics::fan_release(opening[ci].at, h.swipe.speed(now) / physics::FAN_SCRUB);
+            opening[ci].v = v;
+            self.opening.set(opening);
+            self.set_fanned(ci, open);
+        }
+        self.held.set(held);
+        self.retarget();
+        self.kick();
+    }
+
+    /// A mouse wheel step of `down` points over a stack.
+    fn wheel(self: &Rc<Self>, ci: usize, down: f64) {
+        if down == 0.0 {
+            return;
+        }
+        let fanned = self.layouts.get()[ci] == (Layout::Stack { fanned: true });
+        let from = if fanned { 1.0 } else { self.open_p.get()[ci] };
+        let p = physics::fan_scrub(from, down);
+        if p >= 1.0 {
+            self.set_fanned(ci, true);
+        } else if p <= 0.0 {
+            self.set_fanned(ci, false);
+        } else {
+            let mut layouts = self.layouts.get();
+            layouts[ci] = Layout::Stack { fanned: false };
+            self.layouts.set(layouts);
+            let mut ps = self.open_p.get();
+            ps[ci] = p;
+            self.open_p.set(ps);
+            let mut at = self.scrubbed.get();
+            at[ci] = CACurrentMediaTime();
+            self.scrubbed.set(at);
+            self.retarget();
+            self.kick();
+        }
     }
 
     fn begin_drag(self: &Rc<Self>, id: TaskId, start: NSPoint, p: NSPoint) {
