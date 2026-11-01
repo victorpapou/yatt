@@ -167,6 +167,7 @@ pub struct Modal {
     open: Rc<Cell<Option<TaskId>>>,
     /// Last title known to match the store, to tell edits from echoes.
     title_known: Rc<RefCell<String>>,
+    sink: Sink,
     /// Notes known to match the store, per task: a late flush from the editor may
     /// belong to a task that is no longer open.
     notes_known: Rc<RefCell<HashMap<TaskId, String>>>,
@@ -648,6 +649,7 @@ impl Modal {
             edges,
             open,
             title_known,
+            sink: sink.clone(),
             rename,
             notes_known,
             _retained: retained,
@@ -869,10 +871,23 @@ impl Modal {
         *self.card.borrow_mut() = Some(face);
     }
 
+    /// Sends the title field's text as a rename if it differs from the stored one.
+    fn commit_title(&self) {
+        let Some(id) = self.open.get() else { return };
+        let text = self.title.stringValue().to_string().trim().to_string();
+        if !text.is_empty() && text != *self.title_known.borrow() {
+            *self.title_known.borrow_mut() = text.clone();
+            (self.sink)(UiEvent::Rename(id, text));
+        }
+    }
+
     /// Morphs back into `to` (the card's frame), or fades out when the card is gone.
     /// Lands on `to` turned by `deg`, the card's place and angle.
     pub fn close(&self, to: Option<NSRect>, deg: f64, done: impl Fn() + 'static) {
         self.editor.flush();
+        // A click on the dim closes before the field's end-editing action runs:
+        // commit the typed title here, while the task is still the open one.
+        self.commit_title();
         self.picker.close();
         if let Some(window) = self.panel.window() {
             window.makeFirstResponder(None);

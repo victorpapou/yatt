@@ -337,6 +337,8 @@ impl MainWindow {
         toolbar.setAllowsUserCustomization(false);
         window.setToolbar(Some(&toolbar));
         window.setToolbarStyle(NSWindowToolbarStyle::Unified);
+        // Starts folded to the magnifier; click or cmd-F expands it.
+        search_item.endSearchInteraction();
         retained.push(Retained::into_super(Retained::into_super(toolbar_delegate)));
 
         let board = FlippedView::new(mtm, NSRect::ZERO);
