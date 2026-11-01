@@ -843,19 +843,17 @@ impl Board {
         // The edge: the outline under everything, the white inner shadow over the
         // tint and under the text.
         let edges = style::Edges::new(mtm);
-        // On the system glass the custom edge and inner shadow layers are left out.
-        let own_edges = !style::real_glass();
-        let mut stack: Vec<&NSView> = vec![&edges.lift, &edges.ring];
-        if own_edges {
-            stack.push(&edges.outer);
-        }
-        stack.push(&glass);
-        stack.push(&face);
-        if own_edges {
-            stack.push(&edges.inner);
-        }
-        stack.extend([&*content as &NSView, &label, &count]);
-        for v in stack {
+        for v in [
+            &*edges.lift,
+            &edges.ring,
+            &edges.outer,
+            &glass,
+            &face,
+            &edges.inner,
+            &content,
+            &label,
+            &count,
+        ] {
             view.addSubview(v);
         }
         // Squash, stretch and scale change the parts' sizes every frame while a
