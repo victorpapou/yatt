@@ -544,7 +544,7 @@ pub fn centred_top(top: f64, bottom: f64, tall: f64) -> f64 {
 /// top card as thin slivers, two of them; the rest hide behind the second.
 pub fn pile(i: usize) -> (f64, f64) {
     let i = i.min(2) as f64;
-    (7.0 * i, 1.0 - 0.035 * i)
+    (11.0 * i, 1.0 - 0.035 * i)
 }
 
 /// The most cards a fan draws; deeper ones stay hidden in the stack.
