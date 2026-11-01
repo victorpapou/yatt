@@ -290,6 +290,41 @@ impl MainWindow {
             let _: () = objc2::msg_send![&*search_item, setPrefersCompactRepresentation: true];
         }
         retained.push(Retained::into_super(Retained::into_super(search_target)));
+        // A click outside the open search field ends editing, and an empty
+        // field folds back to the magnifier (the board takes no first responder).
+        {
+            let (field, item) = (search.clone(), search_item.clone());
+            let block = block2::RcBlock::new(
+                move |e: std::ptr::NonNull<objc2_app_kit::NSEvent>| -> *mut objc2_app_kit::NSEvent {
+                    let e = unsafe { e.as_ref() };
+                    if let Some(w) = field.window() {
+                        if field.currentEditor().is_some() {
+                            let r = field.convertRect_toView(field.bounds(), None);
+                            let p = e.locationInWindow();
+                            let inside = p.x >= r.origin.x
+                                && p.x <= r.origin.x + r.size.width
+                                && p.y >= r.origin.y
+                                && p.y <= r.origin.y + r.size.height;
+                            if !inside {
+                                let empty = field.stringValue().to_string().is_empty();
+                                w.makeFirstResponder(None);
+                                if empty {
+                                    item.endSearchInteraction();
+                                }
+                            }
+                        }
+                    }
+                    e as *const _ as *mut _
+                },
+            );
+            let mask = objc2_app_kit::NSEventMask::LeftMouseDown
+                | objc2_app_kit::NSEventMask::RightMouseDown;
+            if let Some(m) = unsafe {
+                objc2_app_kit::NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &block)
+            } {
+                retained.push(m);
+            }
+        }
         let toolbar =
             NSToolbar::initWithIdentifier(NSToolbar::alloc(mtm), ns_string!("yatt.toolbar"));
         // … [digits] … [Старт] [Секундомер] [Пропустить] [Стоп] [▤ ⤡]
