@@ -76,9 +76,13 @@ const HOVER_SCALE: f64 = 1.03;
 const FIELD_TEXT_X: f64 = 20.0;
 /// Content blur on a lifted card, in points.
 const LIFT_BLUR: f64 = 5.0;
-/// List layout: first slot's top (below the column chips, which float over the
-/// cards), and the gap between cards.
-const LIST_TOP: f64 = 52.0;
+/// List layout: first slot's top below the toolbar (and the column chips, which
+/// float over the cards), and the gap between cards.
+const LIST_TOP: f64 = 42.0;
+/// The overlay's layer z on the board: under the bottom fade (20) and the
+/// new-task capsule (30), over them while a card grows out of the capsule.
+pub const OVERLAY_Z: f64 = 10.0;
+const OVERLAY_Z_LIFTED: f64 = 40.0;
 const LIST_GAP: f64 = 10.0;
 const PITCH: f64 = CARD_H + LIST_GAP;
 /// Room left under the last card for the new-task field floating over the board.
@@ -124,6 +128,8 @@ struct Column {
     scroll: Retained<NSScrollView>,
     doc: Retained<FlippedView>,
 }
+
+type ScrollHook = RefCell<Option<Box<dyn Fn(f64)>>>;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Layout {
@@ -231,6 +237,8 @@ pub struct Board {
     pub overlay: Retained<OverlayView>,
     /// The canvas's top edge in overlay coordinates.
     overlay_dy: Cell<f64>,
+    /// How far the toolbar reaches over the board (it runs under it, blurred).
+    top: Cell<f64>,
     sink: Sink,
     cols: [Column; 3],
     /// Scroll observers of the columns, kept for as long as the board.
@@ -276,6 +284,9 @@ pub struct Board {
     perf: RefCell<Option<Vec<(f64, f64)>>>,
     /// Tells the window which column to tint while dragging.
     on_target: Box<dyn Fn(Option<usize>)>,
+    /// Told how far the furthest-scrolled list has gone up under the toolbar
+    /// (points; 0 at the top or rubber-banding past it), on every scroll.
+    pub on_scrolled: ScrollHook,
 }
 
 impl Board {
@@ -298,6 +309,9 @@ impl Board {
             scroll.setVerticalScrollElasticity(NSScrollElasticity::Allowed);
             scroll.setHorizontalScrollElasticity(NSScrollElasticity::None);
             scroll.contentView().setDrawsBackground(false);
+            // It runs under the toolbar, which blurs it; the list keeps clear
+            // of the toolbar by itself (`list_top`).
+            scroll.setAutomaticallyAdjustsContentInsets(false);
             let doc = FlippedView::new(mtm, NSRect::ZERO);
             scroll.setDocumentView(Some(&doc));
             canvas.addSubview(&scroll);
@@ -308,6 +322,7 @@ impl Board {
             canvas,
             overlay,
             overlay_dy: Cell::new(0.0),
+            top: Cell::new(0.0),
             sink,
             cols,
             observers: RefCell::new(Vec::new()),
@@ -337,6 +352,7 @@ impl Board {
             last_tick: Cell::new(0.0),
             perf: RefCell::new(std::env::var_os("YATT_PERF").map(|_| Vec::new())),
             on_target: Box::new(on_target),
+            on_scrolled: RefCell::new(None),
         });
         // Scrolling (momentum and rubber band included) shows the rows coming near.
         for col in &board.cols {
@@ -346,6 +362,7 @@ impl Board {
             let block = RcBlock::new(move |_note: NonNull<NSNotification>| {
                 if let Some(b) = weak.upgrade() {
                     b.cull_lists();
+                    b.report_scroll();
                 }
             });
             let token = unsafe {
@@ -368,7 +385,50 @@ impl Board {
     }
 
     /// Column extents, the canvas height, and where the canvas's top is on the overlay.
-    pub fn set_geometry(self: &Rc<Self>, geom: [ColumnGeom; 3], height: f64, overlay_dy: f64) {
+    /// Puts the overlay (flying and dragged cards) over the capsule while a new
+    /// card grows out of it, under the capsule and its fade otherwise.
+    fn lift_overlay(&self, over_capsule: bool) {
+        if let Some(layer) = self.overlay.layer() {
+            let z = if over_capsule {
+                OVERLAY_Z_LIFTED
+            } else {
+                OVERLAY_Z
+            };
+            if layer.zPosition() != z {
+                layer.setZPosition(z);
+            }
+        }
+    }
+
+    /// How far the furthest-scrolled list has gone up (stacks do not scroll),
+    /// to whoever listens.
+    pub fn report_scroll(&self) {
+        let up = self
+            .cols
+            .iter()
+            .zip(self.layouts.get())
+            .filter(|(_, l)| *l == Layout::List)
+            .map(|(c, _)| c.scroll.contentView().bounds().origin.y)
+            .fold(0.0_f64, f64::max);
+        if let Some(f) = self.on_scrolled.borrow().as_ref() {
+            f(up);
+        }
+    }
+
+    /// Where the list starts: below the toolbar and the chips.
+    fn list_top(&self) -> f64 {
+        LIST_TOP + self.top.get()
+    }
+
+    /// `top`: how far the toolbar reaches over the board, which runs under it.
+    pub fn set_geometry(
+        self: &Rc<Self>,
+        geom: [ColumnGeom; 3],
+        height: f64,
+        overlay_dy: f64,
+        top: f64,
+    ) {
+        self.top.set(top);
         self.geom.set(geom);
         self.height.set(height);
         self.overlay_dy.set(overlay_dy);
@@ -434,12 +494,17 @@ impl Board {
                         card.flying = true;
                         card.grow = Some((0.0, r.size));
                         card.space = Space::Overlay;
+                        self.lift_overlay(true);
+                        // On the capsule before it is ever drawn: a new view
+                        // stands at the origin until its first frame is applied.
+                        motion::quietly(|| card.apply_frame(self.overlay_dy.get()));
                         self.overlay.addSubview(&card.view);
                     } else {
                         let (x, y) = self.slot(ci, i);
                         card.body = Body::at(x, y - 8.0);
                         card.space = self.home_of(ci);
                         card.home = card.space;
+                        motion::quietly(|| card.apply_frame(self.overlay_dy.get()));
                         self.parent(card.space).addSubview(&card.view);
                         card.view.setAlphaValue(0.0);
                         let view = card.view.clone();
@@ -734,7 +799,7 @@ impl Board {
     /// Where the `i`-th card of a column sits, ignoring drags.
     fn slot(&self, ci: usize, i: usize) -> (f64, f64) {
         match self.layouts.get()[ci] {
-            Layout::List => (self.list_x(ci), LIST_TOP + i as f64 * PITCH),
+            Layout::List => (self.list_x(ci), self.list_top() + i as f64 * PITCH),
             Layout::Stack { .. } => {
                 let a = self.stack_anchor(ci);
                 (a.0, a.1 + physics::pile(i).0)
@@ -788,7 +853,7 @@ impl Board {
         let pile = CARD_H + physics::pile(2).0;
         (
             physics::centred_left(g.x, g.w, CARD_W),
-            physics::centred_top(LIST_TOP, self.height.get() - CAPSULE_ROOM, pile),
+            physics::centred_top(self.list_top(), self.height.get() - CAPSULE_ROOM, pile),
         )
     }
 
@@ -974,7 +1039,7 @@ impl Board {
                     // height (sticking out past the column a little first), and
                     // centred in the column both ways below the chips.
                     let g = self.geom.get()[ci];
-                    let tall = self.height.get() - LIST_TOP - CAPSULE_ROOM;
+                    let tall = self.height.get() - self.list_top() - CAPSULE_ROOM;
                     let room = (
                         g.w - 2.0 * FAN_MARGIN + 2.0 * FAN_PEEK,
                         tall - 2.0 * FAN_MARGIN,
@@ -983,7 +1048,7 @@ impl Board {
                     let (x0, y0, x1, y1) = physics::fan_bounds(shown_n, (w, h));
                     let centre = (
                         g.x + g.w / 2.0 - (x0 + x1) / 2.0 * scale,
-                        LIST_TOP + tall / 2.0 - (y0 + y1) / 2.0 * scale,
+                        self.list_top() + tall / 2.0 - (y0 + y1) / 2.0 * scale,
                     );
                     for (i, id) in ids.iter().enumerate() {
                         let Some(card) = cards.get_mut(id) else {
@@ -1064,13 +1129,27 @@ impl Board {
                             continue;
                         };
                         let (dy, scale) = physics::pile(i);
+                        // Off a fan: gathered back under the pile the way it
+                        // spilled out, each card its own way and a touch late.
+                        let off_fan = card.body.orbit.is_some();
                         self.send_home(card, Space::Canvas, (a.0, a.1 + dy, 0.0));
+                        if off_fan {
+                            let v = physics::gather_launch(
+                                seed_of(*id),
+                                seed_of(ids[0]),
+                                (card.body.tx - card.body.x, card.body.ty - card.body.y),
+                            );
+                            card.body.vx += v.0;
+                            card.body.vy += v.1;
+                            card.hold_until =
+                                CACurrentMediaTime() + physics::spill_delay(seed_of(*id));
+                        }
                         // Only the top card's text; the rest show as coloured slivers.
                         card.set_muted(i > 0);
                         if i >= STACK_SHOWN {
                             parked.insert(*id);
                         }
-                        card.body.spring = physics::FAN_FOLD;
+                        card.body.spring = physics::gather_spring(seed_of(*id));
                         card.z = (n - i) as f64;
                         card.target_scale = scale;
                         card.set_look(Look::Solid, true);
@@ -1086,8 +1165,8 @@ impl Board {
                     let x = self.list_x(ci);
                     // The document is as tall as the list (room for the gap included).
                     let slots = n + gap.map_or(0, |(_, k)| k);
-                    let doc_h =
-                        (LIST_TOP + slots as f64 * PITCH + LIST_BOTTOM).max(self.height.get());
+                    let doc_h = (self.list_top() + slots as f64 * PITCH + LIST_BOTTOM)
+                        .max(self.height.get());
                     let doc = &self.cols[ci].doc;
                     if doc.frame().size.height != doc_h
                         || doc.frame().size.width != self.geom.get()[ci].w
@@ -1104,7 +1183,7 @@ impl Board {
                             Some((at, k)) if i >= at => i + k,
                             _ => i,
                         };
-                        let y = LIST_TOP + slot as f64 * PITCH;
+                        let y = self.list_top() + slot as f64 * PITCH;
                         self.send_home(card, Space::Doc(ci), (x, y, 0.0));
                         // Rows far out of sight jump to their slot: only what can be
                         // seen animates, however long the list.
@@ -1519,6 +1598,10 @@ impl Board {
         if self.restack_due.replace(false) {
             self.restack(&cards);
         }
+        // While a card is still the capsule growing into a card, it rides
+        // above the capsule; otherwise the capsule and the fade under it stand
+        // over every card (see `OVERLAY_Z`).
+        self.lift_overlay(cards.values().any(|c| c.grow.is_some()));
         drop(cards);
         if land_now {
             *self.landing.borrow_mut() = None;
@@ -1556,8 +1639,8 @@ impl Board {
         let h = self.height.get();
         let speed = if y > h - AUTOSCROLL_EDGE {
             (y - (h - AUTOSCROLL_EDGE)) / AUTOSCROLL_EDGE
-        } else if y < LIST_TOP + AUTOSCROLL_EDGE {
-            -(LIST_TOP + AUTOSCROLL_EDGE - y) / AUTOSCROLL_EDGE
+        } else if y < self.list_top() + AUTOSCROLL_EDGE {
+            -(self.list_top() + AUTOSCROLL_EDGE - y) / AUTOSCROLL_EDGE
         } else {
             return;
         };
@@ -1926,7 +2009,7 @@ impl Board {
                         .filter(|id| !drag.ids.contains(id))
                         .count();
                     let centre = p.y - drag.grab.1 + CARD_H / 2.0 - self.offset(Space::Doc(ci)).1;
-                    physics::insert_index(centre + LIST_GAP / 2.0, LIST_TOP, PITCH, n)
+                    physics::insert_index(centre + LIST_GAP / 2.0, self.list_top(), PITCH, n)
                 }
                 _ => 0,
             };
@@ -2018,6 +2101,8 @@ impl Card {
             self.title.setTextColor(Some(&ink));
             self.time
                 .setTextColor(Some(&ink.colorWithAlphaComponent(0.5)));
+            refresh_title(&self.title);
+            refresh_meta(&self.time);
             self.label.setTextColor(Some(&ink));
             self.count
                 .setTextColor(Some(&ink.colorWithAlphaComponent(0.7)));
@@ -2402,6 +2487,14 @@ pub(crate) fn set_title(label: &NSTextField, text: &str) {
 /// A card's meta line, tracked.
 pub(crate) fn set_meta(label: &NSTextField, text: &str) {
     style::set_tracked(label, text, META_KERN);
+}
+
+pub(crate) fn refresh_title(label: &NSTextField) {
+    style::refresh_tracked(label, TITLE_KERN);
+}
+
+pub(crate) fn refresh_meta(label: &NSTextField) {
+    style::refresh_tracked(label, META_KERN);
 }
 
 /// The card's meta line: tracked time, a dot while it runs, a pencil if it has notes.

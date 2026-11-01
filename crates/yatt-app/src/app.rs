@@ -26,6 +26,10 @@ fn data_path() -> PathBuf {
     if let Some(p) = std::env::var_os("YATT_DB") {
         return PathBuf::from(p);
     }
+    // The demo moves, renames and rewrites cards: never on the real board.
+    if let Some(dir) = std::env::var_os("YATT_DEMO") {
+        return PathBuf::from(dir).join("demo.sqlite");
+    }
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_default();
@@ -34,7 +38,18 @@ fn data_path() -> PathBuf {
 
 pub fn run() -> anyhow::Result<()> {
     let store = Store::open(&data_path())?;
-    let engine = Engine::load(store)?;
+    let mut engine = Engine::load(store)?;
+    engine.on_phase_finished = Some(Box::new(|phase, next| {
+        use yatt_core::Phase;
+        use yatt_platform::Notifier;
+        let (title, body) = match (phase, next) {
+            (Phase::Work, Phase::LongBreak) => ("Помидор готов", "Пора на длинный перерыв"),
+            (Phase::Work, _) => ("Помидор готов", "Пора на перерыв"),
+            (_, Phase::Work) => ("Перерыв закончился", "Пора работать"),
+            _ => ("Фаза закончилась", "Следующая фаза готова"),
+        };
+        yatt_macos::MacNotifier.notify(title, body);
+    }));
 
     Application::new().run(move |cx: &mut App| {
         let mtm = MainThreadMarker::new().expect("GPUI runs the app on the main thread");
@@ -120,7 +135,22 @@ fn install_menus(cx: &mut App, window: &Rc<MainWindow>, sink: &yatt_macos::Sink)
         KeyBinding::new("cmd-a", SelectAll, None),
     ]);
 
-    cx.on_action(|_: &Quit, cx| cx.quit());
+    {
+        // The title and notes being typed are saved first; the quit goes in behind them.
+        let (window, sink) = (window.clone(), sink.clone());
+        cx.on_action(move |_: &Quit, cx| {
+            let sink = sink.clone();
+            window.save_edits_then(move || sink(UiEvent::Quit));
+            // Should the editor never answer, quit anyway.
+            cx.spawn(async |cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(1500))
+                    .await;
+                let _ = cx.update(|cx| cx.quit());
+            })
+            .detach();
+        });
+    }
     {
         let window = window.clone();
         cx.on_action(move |_: &NewTask, _| window.focus_new_task());

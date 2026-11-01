@@ -8,23 +8,30 @@ use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_app_kit::{
-    NSButton, NSFont, NSFontWeightRegular, NSPopover, NSPopoverBehavior, NSStepper, NSTextField,
-    NSView, NSViewController,
+    NSButton, NSButtonType, NSControlStateValueOff, NSControlStateValueOn, NSFont,
+    NSFontWeightRegular, NSPopover, NSPopoverBehavior, NSStepper, NSTextField, NSView,
+    NSViewController,
 };
 use objc2_foundation::{NSPoint, NSRect, NSRectEdge, NSSize, NSString};
 
 use crate::classes::{ActionTarget, FlippedView};
-use crate::model::UiEvent;
+use crate::model::{TimerSnap, UiEvent};
 use crate::window::Sink;
 
 /// Work / break minutes one click away.
 pub const PRESETS: [(u32, u32); 3] = [(25, 5), (40, 10), (50, 15)];
 
+/// All the pomodoro's settings at once: work, break, long break, every N,
+/// auto-start breaks, auto-start work.
+type Prefs = (u32, u32, u32, u32, bool, bool);
+
+type CheckCell = std::cell::RefCell<Option<Retained<NSButton>>>;
+
 pub struct Durations {
     popover: Retained<NSPopover>,
-    work: (Retained<NSStepper>, Retained<NSTextField>),
-    rest: (Retained<NSStepper>, Retained<NSTextField>),
-    now: Rc<Cell<(u32, u32)>>,
+    rows: Vec<(Retained<NSStepper>, Retained<NSTextField>)>,
+    checks: Vec<Retained<NSButton>>,
+    now: Rc<Cell<Prefs>>,
     _retained: Vec<Retained<AnyObject>>,
 }
 
@@ -34,26 +41,37 @@ fn minutes(n: u32) -> Retained<NSString> {
 
 impl Durations {
     pub fn new(mtm: MainThreadMarker, sink: &Sink) -> Self {
-        let (w, h) = (236.0, 128.0);
+        let (w, h) = (236.0, 236.0);
         let view = FlippedView::new(mtm, NSRect::new(NSPoint::ZERO, NSSize::new(w, h)));
-        let now: Rc<Cell<(u32, u32)>> = Rc::new(Cell::new((25, 5)));
+        let now: Rc<Cell<Prefs>> = Rc::new(Cell::new((25, 5, 15, 4, true, false)));
         let mut retained: Vec<Retained<AnyObject>> = Vec::new();
         let send = {
             let sink = sink.clone();
             let now = now.clone();
-            move |(work_min, break_min): (u32, u32)| {
-                now.set((work_min, break_min));
-                sink(UiEvent::SetDurations {
-                    work_min,
-                    break_min,
-                });
+            move |p: Prefs| {
+                let old = now.get();
+                now.set(p);
+                if (p.0, p.1) != (old.0, old.1) {
+                    sink(UiEvent::SetDurations {
+                        work_min: p.0,
+                        break_min: p.1,
+                    });
+                }
+                if (p.2, p.3, p.4, p.5) != (old.2, old.3, old.4, old.5) {
+                    sink(UiEvent::SetCycle {
+                        long_min: p.2,
+                        every: p.3,
+                        auto_breaks: p.4,
+                        auto_work: p.5,
+                    });
+                }
             }
         };
-        let row = |y: f64, title: &str, max: f64| {
+        let row = |y: f64, title: &str, min: f64, max: f64, step: f64| {
             let name = NSTextField::labelWithString(&NSString::from_str(title), mtm);
             name.setFrame(NSRect::new(
                 NSPoint::new(12.0, y + 3.0),
-                NSSize::new(80.0, 18.0),
+                NSSize::new(96.0, 18.0),
             ));
             let value = NSTextField::labelWithString(&NSString::from_str(""), mtm);
             value.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(
@@ -61,13 +79,13 @@ impl Durations {
                 unsafe { NSFontWeightRegular },
             )));
             value.setFrame(NSRect::new(
-                NSPoint::new(100.0, y + 3.0),
-                NSSize::new(80.0, 18.0),
+                NSPoint::new(112.0, y + 3.0),
+                NSSize::new(70.0, 18.0),
             ));
             let stepper = NSStepper::new(mtm);
-            stepper.setMinValue(1.0);
+            stepper.setMinValue(min);
             stepper.setMaxValue(max);
-            stepper.setIncrement(5.0);
+            stepper.setIncrement(step);
             stepper.setFrame(NSRect::new(
                 NSPoint::new(w - 32.0, y),
                 NSSize::new(19.0, 24.0),
@@ -77,15 +95,25 @@ impl Durations {
             view.addSubview(&stepper);
             (stepper, value)
         };
-        let work = row(12.0, "Работа", 240.0);
-        let rest = row(42.0, "Перерыв", 120.0);
-        for (i, (stepper, _)) in [&work, &rest].into_iter().enumerate() {
+        let rows = vec![
+            row(12.0, "Работа", 1.0, 240.0, 5.0),
+            row(42.0, "Перерыв", 1.0, 120.0, 5.0),
+            row(72.0, "Длинный перерыв", 1.0, 120.0, 5.0),
+            row(102.0, "Длинный каждые", 2.0, 12.0, 1.0),
+        ];
+        for (i, (stepper, _)) in rows.iter().enumerate() {
             let (send, field) = (send.clone(), stepper.clone());
             let now = now.clone();
             let t = ActionTarget::new(mtm, move || {
                 let v = field.intValue().max(1) as u32;
-                let (a, b) = now.get();
-                send(if i == 0 { (v, b) } else { (a, v) });
+                let mut p = now.get();
+                match i {
+                    0 => p.0 = v,
+                    1 => p.1 = v,
+                    2 => p.2 = v,
+                    _ => p.3 = v,
+                }
+                send(p);
             });
             unsafe {
                 stepper.setTarget(Some(&t));
@@ -93,10 +121,54 @@ impl Durations {
             }
             retained.push(Retained::into_super(Retained::into_super(t)));
         }
+        let mut checks = Vec::new();
+        for (i, title) in ["Перерыв стартует сам", "Работа стартует сама"]
+            .into_iter()
+            .enumerate()
+        {
+            let (send, now) = (send.clone(), now.clone());
+            let cell: Rc<CheckCell> = Rc::default();
+            let c2 = cell.clone();
+            let t = ActionTarget::new(mtm, move || {
+                let on = c2
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|b| b.state() == NSControlStateValueOn);
+                let mut p = now.get();
+                if i == 0 {
+                    p.4 = on;
+                } else {
+                    p.5 = on;
+                }
+                send(p);
+            });
+            let b = unsafe {
+                NSButton::checkboxWithTitle_target_action(
+                    &NSString::from_str(title),
+                    Some(&t),
+                    Some(ActionTarget::sel()),
+                    mtm,
+                )
+            };
+            b.setButtonType(NSButtonType::Switch);
+            b.setFrame(NSRect::new(
+                NSPoint::new(12.0, 136.0 + i as f64 * 26.0),
+                NSSize::new(w - 24.0, 20.0),
+            ));
+            *cell.borrow_mut() = Some(b.clone());
+            view.addSubview(&b);
+            checks.push(b);
+            retained.push(Retained::into_super(Retained::into_super(t)));
+        }
         let bw = (w - 24.0 - 2.0 * 6.0) / 3.0;
         for (i, preset) in PRESETS.into_iter().enumerate() {
-            let send = send.clone();
-            let t = ActionTarget::new(mtm, move || send(preset));
+            let (send, now) = (send.clone(), now.clone());
+            let t = ActionTarget::new(mtm, move || {
+                let mut p = now.get();
+                p.0 = preset.0;
+                p.1 = preset.1;
+                send(p);
+            });
             let b = unsafe {
                 NSButton::buttonWithTitle_target_action(
                     &NSString::from_str(&format!("{}/{}", preset.0, preset.1)),
@@ -106,7 +178,7 @@ impl Durations {
                 )
             };
             b.setFrame(NSRect::new(
-                NSPoint::new(12.0 + i as f64 * (bw + 6.0), 80.0),
+                NSPoint::new(12.0 + i as f64 * (bw + 6.0), 196.0),
                 NSSize::new(bw, 28.0),
             ));
             view.addSubview(&b);
@@ -120,20 +192,41 @@ impl Durations {
         popover.setContentSize(NSSize::new(w, h));
         Self {
             popover,
-            work,
-            rest,
+            rows,
+            checks,
             now,
             _retained: retained,
         }
     }
 
-    /// The lengths now set (from the snapshot).
-    pub fn show_values(&self, work_min: u32, break_min: u32) {
-        self.now.set((work_min, break_min));
-        self.work.0.setIntValue(work_min as i32);
-        self.work.1.setStringValue(&minutes(work_min));
-        self.rest.0.setIntValue(break_min as i32);
-        self.rest.1.setStringValue(&minutes(break_min));
+    /// The settings now in force (from the snapshot).
+    pub fn show_values(&self, t: &TimerSnap) {
+        self.now.set((
+            t.work_min,
+            t.break_min,
+            t.long_min,
+            t.every,
+            t.auto_breaks,
+            t.auto_work,
+        ));
+        for (i, v) in [t.work_min, t.break_min, t.long_min, t.every]
+            .into_iter()
+            .enumerate()
+        {
+            self.rows[i].0.setIntValue(v as i32);
+            self.rows[i].1.setStringValue(&*if i == 3 {
+                NSString::from_str(&format!("{v}-й"))
+            } else {
+                minutes(v)
+            });
+        }
+        for (b, on) in self.checks.iter().zip([t.auto_breaks, t.auto_work]) {
+            b.setState(if on {
+                NSControlStateValueOn
+            } else {
+                NSControlStateValueOff
+            });
+        }
     }
 
     pub fn open(&self, anchor: &NSView) {

@@ -19,6 +19,7 @@ mod menubar;
 mod modal;
 #[cfg(target_os = "macos")]
 pub mod motion;
+mod notify;
 #[cfg(target_os = "macos")]
 mod picker;
 #[cfg(target_os = "macos")]
@@ -30,6 +31,7 @@ pub use model::{
     CardSnap, ColumnSnap, Snapshot, TimerSnap, UiEvent, format_clock, format_duration, moves_into,
 };
 #[cfg(target_os = "macos")]
+pub use notify::MacNotifier;
 pub use objc2::MainThreadMarker;
 #[cfg(target_os = "macos")]
 pub use window::{DemoMouse, DemoPointer, MainWindow, Sink};

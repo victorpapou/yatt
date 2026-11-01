@@ -181,6 +181,151 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             eprintln!("demo: finished");
             return;
         }
+        if std::env::var_os("YATT_DEMO_SAVE").is_some() {
+            // A task renamed and its notes typed, then quit at once, inside the
+            // notes' debounce: both must be in the database afterwards.
+            sink(UiEvent::NewTask {
+                title: "Задача".into(),
+                status: Status::Backlog,
+            });
+            wait(500).await;
+            let id = ids(cx, 0)[0];
+            sink(UiEvent::ToggleExpand(id));
+            wait(1200).await;
+            window.demo_type("Переименована", "заметка перед выходом");
+            // `YATT_DEMO_SAVE=late`: past the debounce, to check the typing itself.
+            let late = std::env::var("YATT_DEMO_SAVE").as_deref() == Ok("late");
+            wait(if late { 1000 } else { 30 }).await;
+            eprintln!("demo: quitting");
+            let sink = sink.clone();
+            window.save_edits_then(move || sink(UiEvent::Quit));
+            return;
+        }
+        if std::env::var_os("YATT_DEMO_MODAL").is_some() {
+            // A card in a fan opened into the panel and closed again, the panel's
+            // frame and alphas every frame and a layer capture every other.
+            for i in 0..5 {
+                sink(UiEvent::NewTask {
+                    title: format!("Задача {}", i + 1),
+                    status: Status::Backlog,
+                });
+            }
+            wait(500).await;
+            let backlog = ids(cx, 0);
+            sink(UiEvent::SetNotes(backlog[0], notes(0)));
+            // `YATT_DEMO_MODAL=flat`: from a card in the list, upright, so the
+            // corners can be compared pixel by pixel.
+            if std::env::var("YATT_DEMO_MODAL").as_deref() != Ok("flat") {
+                window.demo_toggle_stack();
+                wait(700).await;
+                window.demo_scroll_at(centre(backlog[0]), 60.0);
+            }
+            wait(900).await;
+            let record = |phase: &str, f: usize| {
+                let (r, deg, p, [dim, panel, controls, card]) = window.demo_modal_state();
+                eprintln!(
+                    "modal,{phase},{f},{:.1},{:.1},{:.1},{:.1},{deg:.1},{p:.3},{dim:.2},{panel:.2},{controls:.2},{card:.2}",
+                    r.origin.x, r.origin.y, r.size.width, r.size.height
+                );
+                if f.is_multiple_of(2) {
+                    window.capture_layers_png(&format!("{dir}/modal-{phase}-{f:02}.png"));
+                }
+            };
+            if let Some((x, y, r, s)) = window.demo_card_state(backlog[0]) {
+                eprintln!("card,before,{x:.1},{y:.1},{r:.1},{s:.3}");
+            }
+            sink(UiEvent::ToggleExpand(backlog[0]));
+            for f in 0..40 {
+                record("open", f);
+                wait(16).await;
+            }
+            window.demo_editor_geometry();
+            wait(300).await;
+            shot("modal-open");
+            sink(UiEvent::ToggleExpand(backlog[0]));
+            for f in 0..36 {
+                // Every frame of the close, for the hand-over at the end.
+                window.capture_layers_png(&format!("{dir}/modal-close-{f:02}.png"));
+                record("close", f);
+                if let Some((x, y, r, s)) = window.demo_card_state(backlog[0]) {
+                    eprintln!("card,close,{f},{x:.1},{y:.1},{r:.1},{s:.3}");
+                }
+                wait(16).await;
+            }
+            eprintln!("demo: finished");
+            return;
+        }
+        if std::env::var_os("YATT_DEMO_SPAWN").is_some() {
+            // Tasks typed into the capsule (↩ and ⌘↩): every few ms from the
+            // submit, where the new card's view is. It must stay on the way
+            // from the capsule to its slot, never at the board's corner.
+            sink(UiEvent::NewTask {
+                title: "Старая".into(),
+                status: Status::Backlog,
+            });
+            wait(600).await;
+            for (col, in_progress) in [(0, false), (1, true)] {
+                let before = ids(cx, col);
+                window.demo_new_task("Новая из капсулы", in_progress);
+                let mut path = Vec::new();
+                for _ in 0..60 {
+                    wait(4).await;
+                    if let Some(id) = ids(cx, col).into_iter().find(|id| !before.contains(id))
+                        && let Some(c) = window.demo_view_center(id)
+                    {
+                        path.push(c);
+                    }
+                }
+                // A card-sized view left at the origin has its centre here.
+                let corner = path
+                    .iter()
+                    .filter(|(x, y)| (x - 115.0).abs() < 3.0 && (y - 50.5).abs() < 3.0)
+                    .count();
+                eprintln!(
+                    "demo: new card from the capsule, column {col}: {} samples, first {:?}, last {:?}, {}",
+                    path.len(),
+                    path.first(),
+                    path.last(),
+                    if corner == 0 { "never at the corner".to_string() } else { format!("{corner} AT THE CORNER (wrong)") }
+                );
+            }
+            // Thirty tasks as fast as they can be typed: the fade stays on top.
+            let mut ok = true;
+            for k in 0..30 {
+                window.demo_new_task(&format!("Быстрая {k}"), k % 2 == 1);
+                wait(15).await;
+                ok &= window.demo_fade_on_top();
+            }
+            wait(600).await;
+            ok &= window.demo_fade_on_top();
+            eprintln!(
+                "demo: thirty quick tasks: the bottom fade {}",
+                if ok { "stayed on top" } else { "WENT UNDER (wrong)" }
+            );
+            eprintln!("demo: finished");
+            return;
+        }
+        if std::env::var_os("YATT_DEMO_FLIP").is_some() {
+            // Cards made in the dark appearance, then the system turns light (and
+            // back): every card must be in the light colours, as if made there.
+            window.demo_appearance(true);
+            for i in 0..6 {
+                sink(UiEvent::NewTask {
+                    title: format!("Задача {}", i + 1),
+                    status: [Status::Backlog, Status::InProgress][i % 2],
+                });
+            }
+            wait(900).await;
+            shot("flip-dark");
+            window.demo_appearance(false);
+            wait(600).await;
+            shot("flip-light");
+            window.demo_appearance(true);
+            wait(600).await;
+            shot("flip-dark-again");
+            eprintln!("demo: finished");
+            return;
+        }
         if std::env::var_os("YATT_DEMO_TOOLBAR").is_some() {
             // Just the window as it opens, for a look at the toolbar.
             for i in 0..4 {
@@ -191,6 +336,27 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             }
             wait(900).await;
             shot("toolbar");
+            for (i, (chip, middle)) in window.demo_chips().iter().enumerate() {
+                eprintln!(
+                    "demo: chip {i}: {:.1}x{:.1} at {:.1},{:.1}, centre {:.1}, column middle {middle:.1}",
+                    chip.size.width,
+                    chip.size.height,
+                    chip.origin.x,
+                    chip.origin.y,
+                    chip.origin.x + chip.size.width / 2.0
+                );
+            }
+            // The clock stands in the toolbar's middle at any width.
+            for w in [900.0, 1200.0, 1600.0] {
+                window.demo_resize(w, 700.0);
+                wait(400).await;
+                let (clock, middle, digit, colon) = window.demo_timer_center();
+                eprintln!(
+                    "demo: window {w}: clock centre {clock:.1}, window centre {middle:.1} ({}); digit {digit:.1}, colon {colon:.1}",
+                    if (clock - middle).abs() <= 1.0 { "centred" } else { "OFF CENTRE (wrong)" }
+                );
+                shot(&format!("toolbar-{w}"));
+            }
             eprintln!(
                 "demo: layer capture {}",
                 window.capture_layers_png(&format!("{dir}/toolbar-layers.png"))

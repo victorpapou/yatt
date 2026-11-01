@@ -35,6 +35,8 @@ pub struct NotesEditor {
     pending: Rc<RefCell<Option<(String, String)>>>,
     /// Text colour (CSS) to apply once the page is ready.
     ink: Rc<RefCell<Option<String>>>,
+    /// The page's width (points), to set once the page is ready.
+    page_width: Rc<Cell<f64>>,
     _handler: Retained<ScriptHandler>,
 }
 
@@ -43,6 +45,7 @@ impl NotesEditor {
         let ready = Rc::new(Cell::new(false));
         let pending: Rc<RefCell<Option<(String, String)>>> = Rc::new(RefCell::new(None));
         let ink: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        let page_width = Rc::new(Cell::new(0.0));
         // The key the next notes messages belong to, as posted from the page.
         let key = Rc::new(RefCell::new(String::new()));
         let config = unsafe { WKWebViewConfiguration::new(mtm) };
@@ -51,10 +54,13 @@ impl NotesEditor {
         };
         let handler = {
             let (ready, pending, view) = (ready.clone(), pending.clone(), view.clone());
-            let ink = ink.clone();
+            let (ink, page_width) = (ink.clone(), page_width.clone());
             ScriptHandler::new(mtm, move |msg| {
                 if msg == "ready" {
                     ready.set(true);
+                    if page_width.get() > 0.0 {
+                        eval(&view, &page_width_js(page_width.get()));
+                    }
                     if let Some(css) = ink.borrow().as_ref() {
                         eval(&view, &set_ink_js(css));
                     }
@@ -94,6 +100,7 @@ impl NotesEditor {
             ready,
             pending,
             ink,
+            page_width,
             _handler: handler,
         }
     }
@@ -115,11 +122,43 @@ impl NotesEditor {
         }
     }
 
+    /// Lays the page out `w` points wide whatever the view's width, so the notes
+    /// keep their lines while the panel grows round them.
+    pub fn set_page_width(&self, w: f64) {
+        if self.page_width.replace(w) != w && self.ready.get() {
+            eval(&self.view, &page_width_js(w));
+        }
+    }
+
     /// Sends any edit still waiting for the debounce.
     pub fn flush(&self) {
         if self.ready.get() {
             eval(&self.view, "window.yatt.flush()");
         }
+    }
+
+    /// Sends any edit still waiting for the debounce, then calls `done`. The page
+    /// posts the edit before the script's reply comes back, so whatever `done`
+    /// sends lands behind it.
+    pub fn flush_then(&self, done: impl FnOnce() + 'static) {
+        if !self.ready.get() {
+            done();
+            return;
+        }
+        let done = Cell::new(Some(done));
+        let block = block2::RcBlock::new(
+            move |_: *mut objc2::runtime::AnyObject, _: *mut objc2_foundation::NSError| {
+                if let Some(done) = done.take() {
+                    done();
+                }
+            },
+        );
+        unsafe {
+            self.view.evaluateJavaScript_completionHandler(
+                ns_string!("window.yatt.flush()"),
+                Some(&block),
+            )
+        };
     }
 
     /// The editor's own undo or redo (ProseMirror's history), for ⌘Z and ⌘⇧Z,
@@ -145,19 +184,34 @@ impl NotesEditor {
 impl NotesEditor {
     /// Development aid: prints what the editor currently renders.
     pub fn debug_print_html(&self) {
+        self.debug_eval("document.querySelector('.ProseMirror')?.innerHTML ?? 'no editor'");
+    }
+
+    /// Development aid: types `text` at the end of the notes, as the keyboard
+    /// would (the edit waits for the debounce like any other).
+    pub fn debug_type(&self, text: &str) {
+        eval(
+            &self.view,
+            &format!(
+                "document.querySelector('.ProseMirror').editor.commands.insertContent({})",
+                js_string(text)
+            ),
+        );
+    }
+
+    /// Development aid: evaluates `js` in the page and prints its result.
+    pub fn debug_eval(&self, js: &str) {
         let block = block2::RcBlock::new(
             |result: *mut objc2::runtime::AnyObject, _err: *mut objc2_foundation::NSError| {
                 let text = unsafe { result.as_ref() }
                     .and_then(|r| r.downcast_ref::<NSString>().map(|s| s.to_string()))
                     .unwrap_or_else(|| "<no result>".into());
-                eprintln!("editor html: {text}");
+                eprintln!("editor: {text}");
             },
         );
         unsafe {
-            self.view.evaluateJavaScript_completionHandler(
-                ns_string!("document.querySelector('.ProseMirror')?.innerHTML ?? 'no editor'"),
-                Some(&block),
-            )
+            self.view
+                .evaluateJavaScript_completionHandler(&NSString::from_str(js), Some(&block))
         };
     }
 }
@@ -180,6 +234,10 @@ fn set_ink_js(css: &str) -> String {
          (document.getElementById('ink') || document.head.appendChild(\
          Object.assign(document.createElement('style'), {{ id: 'ink' }}))).textContent = {rule};"
     )
+}
+
+fn page_width_js(w: f64) -> String {
+    format!("document.documentElement.style.setProperty('--page', '{w}px')")
 }
 
 fn eval(view: &WKWebView, js: &str) {
