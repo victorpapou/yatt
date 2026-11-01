@@ -391,6 +391,9 @@ impl Modal {
         title.setFont(Some(&NSFont::systemFontOfSize_weight(20.0, unsafe {
             NSFontWeightMedium
         })));
+        // `textFieldWithString` makes a read-only label; the title must be typed into.
+        title.setEditable(true);
+        title.setSelectable(true);
         title.setBordered(false);
         title.setBezeled(false);
         title.setDrawsBackground(false);
