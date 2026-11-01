@@ -1771,7 +1771,8 @@ impl Board {
         if dragging && let Some(perf) = self.perf.borrow_mut().as_mut() {
             perf.push((dt, CACurrentMediaTime() - started));
         }
-        if !moving && let Some(timer) = self.timer.borrow_mut().take() {
+        let dump_pending = std::env::var_os("YATT_DUMP").is_some() && !self.dumped.get();
+        if !moving && !dump_pending && let Some(timer) = self.timer.borrow_mut().take() {
             timer.invalidate();
         }
     }
