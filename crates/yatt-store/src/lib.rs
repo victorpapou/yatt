@@ -263,7 +263,9 @@ fn backup_daily(conn: &Connection, db: &Path) -> Result<()> {
     let dir = backup_dir(db);
     std::fs::create_dir_all(&dir).map_err(io)?;
     let stem = db.file_stem().and_then(|s| s.to_str()).unwrap_or("yatt");
-    let today = Timestamp::now().to_zoned(jiff::tz::TimeZone::system()).date();
+    let today = Timestamp::now()
+        .to_zoned(jiff::tz::TimeZone::system())
+        .date();
     let target = dir.join(format!("{stem}-{today}.sqlite"));
     if !target.exists() {
         // A consistent copy of a live database, WAL included, written to a

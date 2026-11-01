@@ -107,6 +107,9 @@ pub enum DemoPointer {
     Hover(Option<(f64, f64)>),
 }
 
+/// Told how far a list has scrolled (points).
+pub type ScrollHandler = Box<dyn Fn(f64)>;
+
 /// One column's horizontal extent on the canvas.
 #[derive(Clone, Copy, Default)]
 pub struct ColumnGeom {
@@ -284,7 +287,7 @@ pub struct Board {
     on_target: Box<dyn Fn(Option<usize>)>,
     /// Told how far the furthest-scrolled list has gone up under the toolbar
     /// (points; 0 at the top or rubber-banding past it), on every scroll.
-    pub on_scrolled: RefCell<Option<Box<dyn Fn(f64)>>>,
+    pub on_scrolled: RefCell<Option<ScrollHandler>>,
 }
 
 impl Board {

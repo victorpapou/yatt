@@ -28,6 +28,10 @@ pub struct Engine {
     /// Tracked time per task, refreshed once a second while the timer runs.
     pub times: HashMap<TaskId, TaskTime>,
     store: Store,
+    /// Messages for the user that nobody has shown yet.
+    problems: Vec<String>,
+    /// Saving is failing right now; the user has been told once already.
+    save_failing: bool,
     clock: Clock,
     tz: TimeZone,
     last_refresh: i64,
@@ -48,6 +52,8 @@ impl Engine {
             filter: Filter::default(),
             times: HashMap::new(),
             store,
+            problems: Vec::new(),
+            save_failing: false,
             clock,
             tz,
             last_refresh: 0,
@@ -57,6 +63,35 @@ impl Engine {
         engine.sync_active();
         engine.refresh_times();
         Ok(engine)
+    }
+
+    /// Hands over the oldest message the user has not seen yet (a failed save,
+    /// say), or `None`. The app shows it in an alert.
+    pub fn take_problem(&mut self) -> Option<String> {
+        if self.problems.is_empty() {
+            None
+        } else {
+            Some(self.problems.remove(0))
+        }
+    }
+
+    /// Records a failed save. The user hears about it once, not on every edit
+    /// until it works again.
+    fn save_result(&mut self, what: &str, result: Result<(), impl std::fmt::Display>) {
+        match result {
+            Ok(()) => self.save_failing = false,
+            Err(e) => {
+                eprintln!("{what} failed: {e}");
+                if !self.save_failing {
+                    self.save_failing = true;
+                    self.problems.push(format!(
+                        "Не удалось записать изменения на диск ({what}): {e}\n\n\
+                         Последние правки могут пропасть после перезапуска. \
+                         Проверьте свободное место и не открыта ли база в другой программе."
+                    ));
+                }
+            }
+        }
     }
 
     pub fn now(&self) -> Timestamp {
@@ -209,9 +244,8 @@ impl Engine {
                 eprintln!("phase {phase:?} finished, next {next:?}");
             }
         }
-        if let Err(e) = self.store.apply_timer(&fx, &self.timer) {
-            eprintln!("saving timer failed: {e}");
-        }
+        let saved = self.store.apply_timer(&fx, &self.timer);
+        self.save_result("таймер", saved);
         self.refresh_times();
     }
 
@@ -220,9 +254,8 @@ impl Engine {
             .iter()
             .filter_map(|id| self.board.get(*id))
             .collect();
-        if let Err(e) = self.store.save_tasks(tasks) {
-            eprintln!("saving tasks failed: {e}");
-        }
+        let saved = self.store.save_tasks(tasks);
+        self.save_result("задачи", saved);
     }
 
     fn refresh_times(&mut self) {

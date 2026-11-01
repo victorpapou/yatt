@@ -14,7 +14,7 @@ use objc2_app_kit::{
     NSTextFieldDelegate, NSTextView, NSToolbarDelegate, NSToolbarItem, NSTrackingArea,
     NSTrackingAreaOptions, NSView, NSWindow, NSWindowDelegate,
 };
-use objc2_foundation::{NSArray, NSNotification, NSPoint, NSRect, NSString};
+use objc2_foundation::{NSArray, NSPoint, NSRect, NSString};
 use objc2_web_kit::{WKScriptMessage, WKScriptMessageHandler, WKUserContentController};
 
 pub type KeyHandler = Box<dyn Fn(&NSEvent) -> bool>;
@@ -70,9 +70,12 @@ define_class!(
     unsafe impl NSObjectProtocol for WindowDelegate {}
 
     unsafe impl NSWindowDelegate for WindowDelegate {
-        #[unsafe(method(windowWillClose:))]
-        fn window_will_close(&self, _notification: &NSNotification) {
+        // The red button hides the window instead of closing it: the app, its
+        // timer and the menu-bar clock go on. Nothing here closes the window.
+        #[unsafe(method(windowShouldClose:))]
+        fn window_should_close(&self, _sender: &NSWindow) -> bool {
             (self.ivars().on_close)();
+            false
         }
     }
 );
