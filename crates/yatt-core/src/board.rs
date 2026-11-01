@@ -61,6 +61,15 @@ pub enum Command {
         status: Status,
         placement: Placement,
     },
+    /// Exact restore of a card's place, status and completion date. Only
+    /// produced as the inverse of `Move`, so undo gives back the original
+    /// `completed_at` instead of stamping a new one.
+    Reposition {
+        id: TaskId,
+        status: Status,
+        position: String,
+        completed_at: Option<Timestamp>,
+    },
     Delete {
         id: TaskId,
     },
@@ -232,9 +241,9 @@ impl Board {
                 status,
                 placement,
             } => {
-                let (old_status, old_position) = {
+                let (old_status, old_position, old_completed) = {
                     let t = self.task_mut(id)?;
-                    (t.status, t.position.clone())
+                    (t.status, t.position.clone(), t.completed_at)
                 };
                 let position = self.position_for(status, Some(id), &placement)?;
                 let task = self.task_mut(id)?;
@@ -246,11 +255,34 @@ impl Board {
                 }
                 Ok(Applied {
                     changed: vec![id],
-                    inverse: Command::Move {
+                    inverse: Command::Reposition {
                         id,
                         status: old_status,
-                        placement: Placement::Key(old_position),
+                        position: old_position,
+                        completed_at: old_completed,
                     },
+                })
+            }
+            Command::Reposition {
+                id,
+                status,
+                position,
+                completed_at,
+            } => {
+                let task = self.task_mut(id)?;
+                let inverse = Command::Reposition {
+                    id,
+                    status: task.status,
+                    position: task.position.clone(),
+                    completed_at: task.completed_at,
+                };
+                task.status = status;
+                task.position = position;
+                task.completed_at = completed_at;
+                task.updated_at = now;
+                Ok(Applied {
+                    changed: vec![id],
+                    inverse,
                 })
             }
             Command::Delete { id } => {
@@ -359,7 +391,17 @@ impl History {
         cmd: Command,
         now: Timestamp,
     ) -> Result<Applied, BoardError> {
+        let coalesce = matches!(
+            (&cmd, self.undo.last()),
+            (Command::SetNotes { id, .. }, Some(Command::SetNotes { id: last, .. })) if id == last
+        ) && self.redo.is_empty();
         let applied = board.apply(cmd, now)?;
+        if coalesce {
+            // Typing in the notes is one undo step, not one per debounce:
+            // keep the oldest inverse.
+            self.redo.clear();
+            return Ok(applied);
+        }
         self.undo.push(applied.inverse.clone());
         if self.undo.len() > Self::LIMIT {
             self.undo.remove(0);
@@ -373,10 +415,12 @@ impl History {
         board: &mut Board,
         now: Timestamp,
     ) -> Result<Option<Applied>, BoardError> {
-        let Some(cmd) = self.undo.pop() else {
+        // Pop only after the step applied, so a failure does not lose it.
+        let Some(cmd) = self.undo.last().cloned() else {
             return Ok(None);
         };
         let applied = board.apply(cmd, now)?;
+        self.undo.pop();
         self.redo.push(applied.inverse.clone());
         Ok(Some(applied))
     }
@@ -386,10 +430,11 @@ impl History {
         board: &mut Board,
         now: Timestamp,
     ) -> Result<Option<Applied>, BoardError> {
-        let Some(cmd) = self.redo.pop() else {
+        let Some(cmd) = self.redo.last().cloned() else {
             return Ok(None);
         };
         let applied = board.apply(cmd, now)?;
+        self.redo.pop();
         self.undo.push(applied.inverse.clone());
         Ok(Some(applied))
     }
@@ -494,6 +539,52 @@ mod tests {
 
         h.redo(&mut b, now()).unwrap();
         assert_eq!(titles(&b, Status::Done), ["a"]);
+    }
+
+    #[test]
+    fn undo_keeps_original_completion_date() {
+        let (mut b, mut h) = (Board::default(), History::default());
+        let a = create(&mut b, &mut h, "a");
+        let t0 = now();
+        let t1 = Timestamp::from_second(1_800_100_000).unwrap();
+        let done = Command::Move {
+            id: a,
+            status: Status::Done,
+            placement: Placement::Top,
+        };
+        h.execute(&mut b, done, t0).unwrap();
+        h.execute(
+            &mut b,
+            Command::Move {
+                id: a,
+                status: Status::Backlog,
+                placement: Placement::Top,
+            },
+            t0,
+        )
+        .unwrap();
+        h.undo(&mut b, t1).unwrap();
+        assert_eq!(b.get(a).unwrap().completed_at, Some(t0));
+    }
+
+    #[test]
+    fn notes_edits_are_one_undo_step_and_failed_undo_keeps_step() {
+        let (mut b, mut h) = (Board::default(), History::default());
+        let a = create(&mut b, &mut h, "a");
+        for n in ["x", "xy", "xyz"] {
+            h.execute(&mut b, Command::SetNotes { id: a, notes: n.into() }, now())
+                .unwrap();
+        }
+        h.undo(&mut b, now()).unwrap();
+        assert_eq!(b.get(a).unwrap().notes, "");
+        h.redo(&mut b, now()).unwrap();
+        assert_eq!(b.get(a).unwrap().notes, "xyz");
+
+        // A step that cannot apply stays on the stack.
+        let ghost = TaskId::new();
+        h.undo.push(Command::Rename { id: ghost, title: "z".into() });
+        assert!(h.undo(&mut b, now()).is_err());
+        assert!(h.can_undo());
     }
 
     #[test]
