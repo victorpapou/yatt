@@ -30,7 +30,7 @@ use objc2_web_kit::WKWebView;
 use yatt_core::{Status, TaskId};
 
 use crate::board::{Face, card_face, refresh_meta, refresh_title, set_meta, set_title, time_text};
-use crate::classes::{ActionTarget, Fill, FillView, FlippedView};
+use crate::classes::{ActionTarget, Fill, FillView, FlippedView, OverlayView};
 use crate::editor::{EditorMsg, NotesEditor};
 use crate::model::{CardSnap, UiEvent, format_duration};
 use crate::motion;
@@ -42,7 +42,7 @@ use crate::window::Sink;
 /// The card's parts that change as it opens into the panel.
 struct Parts {
     content: Retained<FlippedView>,
-    card_box: Retained<FlippedView>,
+    card_box: Retained<OverlayView>,
     editor_clip: Retained<FlippedView>,
     editor: Retained<WKWebView>,
     face: Retained<FillView>,
@@ -140,7 +140,7 @@ pub struct Modal {
     /// only the header keeps the card's colour.
     sheet: Retained<FillView>,
     /// The card's own text, shown while the panel is (becoming) the card.
-    card_box: Retained<FlippedView>,
+    card_box: Retained<OverlayView>,
     card: RefCell<Option<Face>>,
     /// The panel's controls, shown once it has settled open.
     content: Retained<FlippedView>,
@@ -386,10 +386,13 @@ impl Modal {
         panel.addSubview(&content);
         // Pinned to the top-left at card size: when the panel is card-sized it
         // lies exactly where the card's own text does.
-        let card_box = FlippedView::new(
-            mtm,
-            NSRect::new(NSPoint::ZERO, NSSize::new(style::CARD_W, style::CARD_H)),
-        );
+        // Never hit-tested: faded out it still covers the header, and would eat the
+        // clicks meant for the title field (the panel swallows them).
+        let card_box = OverlayView::new(mtm);
+        card_box.setFrame(NSRect::new(
+            NSPoint::ZERO,
+            NSSize::new(style::CARD_W, style::CARD_H),
+        ));
         panel.addSubview(&card_box);
 
         let title = NSTextField::textFieldWithString(ns_string!(""), mtm);
