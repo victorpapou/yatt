@@ -146,14 +146,3 @@ stack or fan, natural, with no springs and no bounce. Now:
   stretches at most 8% past its ends: a hard swipe no longer bounces far.
 - The cards past the three a pile shows leave the render tree only once
   fully faded.
-
-### Straight, and only six travel (Тима, 2026-11-01, evening)
-
-"It folds as if from two halves": each card fell onto its place round the
-fan's centre, the short way, so when the fingers moved the openness ahead of
-the cards, those on either side of the centre swung round it in opposite
-directions. Now a card falls straight onto its place (any sideways speed is
-let go), and the places themselves lie on straight lines from pile to fan,
-so the stack opens and folds as one mass. Only the top six cards of a fan
-travel (`FAN_MOVED` in board.rs); deeper ones stay on their fan places and
-only fade, in late in the opening and out early in the fold.

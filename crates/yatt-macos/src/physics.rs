@@ -1,10 +1,9 @@
 //! The card motion engine. Cards of a stack or a fan, and each stack's
 //! openness, move by one law: gravity ([`Fall`]): a fall onto the place with
-//! bounded acceleration and a soft landing, with a little overshoot opening and
-//! none folding. Every card's place lies on the straight way from its pile
-//! place to its fan place at the stack's openness ([`Opening`]), and the card
-//! falls straight onto it ([`Body::fall_to`]), so the fan opens and folds as
-//! one mass. Elsewhere (lists, the
+//! bounded acceleration and a soft, critically damped landing, never past it.
+//! A fanned card falls toward and away from the stack's centre and round it
+//! ([`Body::fall_to`]), so the fan opens and folds as one mass ([`Opening`])
+//! and its cards slide round the spiral to new places. Elsewhere (lists, the
 //! modal) a card chases its target on a critically damped spring and its angle
 //! hangs like a damped pendulum from the point that moves it; a dragged group
 //! is a chain, each follower hanging off the card ahead. One integrator with
@@ -349,10 +348,13 @@ pub struct Body {
     pub ty: f64,
     pub tr: f64,
     pub spring: Spring,
-    /// In a stack or a fan: the body falls onto its place by [`FALL`] instead
-    /// of its spring, straight along the line to it. Its angle falls the same
-    /// way, a degree weighing as much as 2.5 pt, with no swing.
-    pub falls: bool,
+    /// In a stack or a fan: the stack's centre, in the same top-left frame as
+    /// `x, y` (the centre less half a card). The body then falls onto its place
+    /// by [`FALL`] instead of its spring: toward and away from that centre, and
+    /// round it, so a fan's cards slide round the spiral to new places and a
+    /// card dropped in curves in toward the centre. Its angle falls too
+    /// the same way, a degree weighing as much as 2.5 pt, with no swing.
+    pub fall: Option<(f64, f64)>,
     /// Falling calmly ([`FALL_CALM`]: no overshoot), as when its stack folds.
     pub calm: bool,
     /// Whether the angle hangs and swings (cards), or just eases to its target
@@ -373,7 +375,7 @@ impl Body {
             ty: y,
             tr: 0.0,
             spring: PILE,
-            falls: false,
+            fall: None,
             calm: false,
             swings: true,
         }
@@ -384,34 +386,40 @@ impl Body {
         self.tx = x;
         self.ty = y;
         self.tr = r;
-        self.falls = false;
+        self.fall = None;
     }
 
-    /// A place in a stack or a fan: the body falls onto it ([`Body::falls`]).
-    pub fn fall_to(&mut self, (x, y, r): (f64, f64, f64)) {
+    /// A place in a stack or a fan whose centre is `centre` (in the top-left
+    /// frame of `x, y`): the body falls onto it ([`Body::fall`]).
+    pub fn fall_to(&mut self, (x, y, r): (f64, f64, f64), centre: (f64, f64)) {
         self.tx = x;
         self.ty = y;
         self.tr = r;
-        self.falls = true;
+        self.fall = Some(centre);
     }
 
-    /// The fall's acceleration for this body (see [`Body::falls`]).
-    fn fall_accel(&self) -> (f64, f64) {
+    /// The fall's acceleration for this body (see [`Body::fall`]).
+    fn fall_accel(&self, (cx, cy): (f64, f64)) -> (f64, f64) {
         let law = if self.calm { FALL_CALM } else { FALL };
-        let (ex, ey) = (self.x - self.tx, self.y - self.ty);
-        let d = ex.hypot(ey);
-        if d < 1e-3 {
-            return (law.accel(ex, self.vx), law.accel(ey, self.vy));
+        let (px, py) = (self.x - cx, self.y - cy);
+        let (qx, qy) = (self.tx - cx, self.ty - cy);
+        let (rho, reach) = (px.hypot(py), qx.hypot(qy));
+        // On (or at) the centre, round it means nothing: straight onto the place.
+        if rho < 1.0 || reach < 1.0 {
+            return (
+                law.accel(self.x - self.tx, self.vx),
+                law.accel(self.y - self.ty, self.vy),
+            );
         }
-        // Straight onto the place: the fall along the way, any sideways speed
-        // let go of by the same law, so the card never curves off its line.
-        let u = (ex / d, ey / d);
-        let (along, side) = (
-            self.vx * u.0 + self.vy * u.1,
-            self.vx * -u.1 + self.vy * u.0,
-        );
-        let (a, s) = (law.accel(d, along), law.accel(0.0, side));
-        (a * u.0 - s * u.1, a * u.1 + s * u.0)
+        let u = (px / rho, py / rho);
+        let t = (-u.1, u.0);
+        let (v_out, v_round) = (self.vx * u.0 + self.vy * u.1, self.vx * t.0 + self.vy * t.1);
+        let round = wrap(py.atan2(px) - qy.atan2(qx)) * rho;
+        // Going round takes a pull in toward the centre, or the body would
+        // drift outward off the circle.
+        let a_out = law.accel(rho - reach, v_out) - v_round * v_round / rho;
+        let a_round = law.accel(round, v_round);
+        (a_out * u.0 + a_round * t.0, a_out * u.1 + a_round * t.1)
     }
 
     /// Advances by `dt` seconds, in small substeps so stiff springs stay stable.
@@ -421,8 +429,8 @@ impl Body {
         let (k, c) = (self.spring.k, self.spring.damping());
         let w0 = std::f64::consts::TAU / SWING_PERIOD;
         for _ in 0..steps {
-            if self.falls {
-                let (ax, ay) = self.fall_accel();
+            if let Some(c) = self.fall {
+                let (ax, ay) = self.fall_accel(c);
                 self.vx += ax * h;
                 self.vy += ay * h;
             } else {
@@ -438,7 +446,7 @@ impl Body {
             }
             self.x += self.vx * h;
             self.y += self.vy * h;
-            if self.falls {
+            if self.fall.is_some() {
                 let law = if self.calm { FALL_CALM } else { FALL };
                 self.vr += law.per(2.5).accel(self.r - self.tr, self.vr) * h;
                 self.r += self.vr * h;
@@ -594,6 +602,11 @@ pub fn fan_snap(open: f64) -> bool {
 
 /// The fastest any card moves, in points a second.
 pub const MAX_SPEED: f64 = 6000.0;
+
+/// An angle brought into −π..π.
+fn wrap(a: f64) -> f64 {
+    (a + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI
+}
 
 /// How far a fanned card strays from its exact place, so the fan looks laid
 /// down by hand: at 1.0, up to ±4° in its turn, ±4 pt out from the centre and
@@ -895,7 +908,7 @@ mod tests {
     fn a_turned_target_is_reached() {
         // A fan card falls into its angle, a little past, and stays there.
         let mut b = Body::at(0.0, 0.0);
-        b.fall_to((30.0, -20.0, 40.0));
+        b.fall_to((30.0, -20.0, 40.0), (0.0, 60.0));
         let (mut t, mut most) = (0.0, 0.0_f64);
         while !b.at_rest() && t < 3.0 {
             b.step(1.0 / 120.0);
@@ -910,7 +923,7 @@ mod tests {
     fn a_card_folding_calmly_never_goes_past() {
         let mut b = Body::at(120.0, -80.0);
         b.calm = true;
-        b.fall_to((0.0, 0.0, 0.0));
+        b.fall_to((0.0, 0.0, 0.0), (0.0, 0.0));
         b.r = 40.0;
         let (mut t, mut past) = (0.0, 0.0_f64);
         while !b.at_rest() && t < 2.0 {
@@ -923,24 +936,26 @@ mod tests {
     }
 
     #[test]
-    fn a_fanned_card_falls_straight_to_its_new_place() {
-        // Moved one slot round a fan, or out of the pile: it goes along the
-        // straight line to its place, never curving round the centre (cards
-        // on either side curving opposite ways read as two halves meeting).
-        for (from, to) in [((100.0, 0.0), (76.6, 64.3)), ((0.0, 7.0), (-90.0, -40.0))] {
-            let mut b = Body::at(from.0, from.1);
-            b.fall_to((to.0, to.1, 0.0));
-            let (lx, ly) = (to.0 - from.0, to.1 - from.1);
-            let len = lx.hypot(ly);
-            let (mut off, mut t) = (0.0_f64, 0.0);
-            while !b.at_rest() && t < 3.0 {
-                b.step(1.0 / 120.0);
-                t += 1.0 / 120.0;
-                off = off.max(((b.x - from.0) * ly - (b.y - from.1) * lx).abs() / len);
-            }
-            assert!(off < 0.01, "{off} pt off the line");
-            assert!(t < 1.6, "{t}s");
+    fn a_fanned_card_slides_round_its_spiral() {
+        // Moved one slot round (40°) a fan of radius 100: it goes round the
+        // centre, not along the chord (which dips to 94 from it), and lands a
+        // little past its place, then settles.
+        let rad = 100.0_f64;
+        let (a0, a1) = (0.0_f64, 40.0_f64.to_radians());
+        let mut b = Body::at(rad * a0.cos(), rad * a0.sin());
+        b.fall_to((rad * a1.cos(), rad * a1.sin(), 0.0), (0.0, 0.0));
+        let (mut low, mut high, mut past, mut t) = (f64::MAX, 0.0_f64, 0.0_f64, 0.0);
+        while !b.at_rest() && t < 3.0 {
+            b.step(1.0 / 120.0);
+            t += 1.0 / 120.0;
+            let r = b.x.hypot(b.y);
+            low = low.min(r);
+            high = high.max(r);
+            past = past.max(b.y.atan2(b.x) - a1);
         }
+        assert!(low > 98.0 && high < 102.0, "off the circle: {low}..{high}");
+        assert!(past > 0.0 && past < 0.2 * a1, "past by {past}");
+        assert!(t < 1.6, "{t}s");
     }
 
     #[test]
@@ -1037,7 +1052,7 @@ mod tests {
                     let a = rnd() * std::f64::consts::TAU;
                     let r = [0.0, 0.5, 40.0 + rnd() * 120.0][(rnd() * 3.0) as usize % 3];
                     let (dx, dy) = (r * a.cos(), r * a.sin());
-                    cards[i].fall_to((x + dx, y + dy, rnd() * 90.0 - 45.0));
+                    cards[i].fall_to((x + dx, y + dy, rnd() * 90.0 - 45.0), (x, y));
                 }
                 _ => {
                     cards[i].vx += rnd() * 1e5 - 5e4;
@@ -1213,7 +1228,7 @@ mod tests {
             let mut b = Body::at(250.0 * a.cos(), 250.0 * a.sin());
             b.vx = 600.0 * (a * 3.0).sin();
             b.vy = 600.0 * (a * 5.0).cos();
-            b.fall_to((0.0, 0.0, 0.0));
+            b.fall_to((0.0, 0.0, 0.0), (0.0, 0.0));
             let (mut t, mut reached, mut past) = (0.0, false, 0.0_f64);
             while !b.at_rest() && t < 3.0 {
                 b.step(1.0 / 120.0);

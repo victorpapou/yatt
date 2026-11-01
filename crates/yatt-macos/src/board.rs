@@ -63,9 +63,6 @@ const DRAG_THRESHOLD: f64 = 4.0;
 /// out as they fall into the pile, and leave the render tree once in it, until
 /// the stack opens again.
 const STACK_SHOWN: usize = 3;
-/// The cards of a fan that travel out of the pile and back, from the top; the
-/// deeper ones stay on their fan places and only fade.
-const FAN_MOVED: usize = 6;
 /// Over this much of a stack's openness, next to folded, the cards that draw
 /// only when it is open fade in or out, and the cards behind the top one let
 /// their text show or fade: nothing a stack shows appears or goes at once.
@@ -158,13 +155,18 @@ struct Held {
 }
 
 /// A card's place in a stack, both ways: folded on the pile and laid out on
-/// the fan, with the card's size and visibility each way. Where it is headed at any moment lies between them at the stack's
+/// the fan, with the stack's centre and the card's size and visibility each
+/// way. Where it is headed at any moment lies between them at the stack's
 /// openness ([`physics::Opening`]); it falls onto that place ([`Body::fall_to`]).
 #[derive(Clone, Copy, Debug)]
 struct StackPlace {
     col: usize,
     pile: (f64, f64, f64),
     fan: (f64, f64, f64),
+    /// The stack's centre, folded and fanned, less half a card (the frame of
+    /// `Body::x, y`).
+    pile_centre: (f64, f64),
+    fan_centre: (f64, f64),
     pile_scale: f64,
     fan_scale: f64,
     /// Whether it draws on the pile, and on the fan.
@@ -172,37 +174,17 @@ struct StackPlace {
     on_fan: bool,
     /// Its text shows on the pile (only the top card's does).
     pile_text: bool,
-    /// Deep in a big fan ([`FAN_MOVED`] and on): it does not travel out of the
-    /// pile but stays on its fan place, fading in late in the opening and out
-    /// early in the fold.
-    fixed: bool,
 }
 
 impl StackPlace {
-    /// Where it is headed at openness `q`. A fixed card is on the pile while
-    /// it is out of sight and on its fan place once it may show (it is moved
-    /// there unseen, `tick`), so a folded stack carries it along when dragged.
-    fn at(&self, q: f64) -> (f64, f64, f64) {
-        if self.fixed {
-            if self.way((0.0, 0.0), q) > 0.0 {
-                self.fan
-            } else {
-                self.pile
-            }
-        } else {
-            physics::fan_mix(self.pile, self.fan, q)
-        }
-    }
-
-    /// How far out it shows, for its fade and text: a travelling card by its
-    /// own way out of the pile ([`StackPlace::out`]), a fixed one by the
-    /// stack's openness `q`, over its middle stretch.
-    fn way(&self, at: (f64, f64), q: f64) -> f64 {
-        if self.fixed {
-            ((q - 0.4) / 0.6).clamp(0.0, 1.0)
-        } else {
-            self.out(at)
-        }
+    /// Where it is headed at openness `q`, and the stack's centre then.
+    fn at(&self, q: f64) -> ((f64, f64, f64), (f64, f64)) {
+        let (cx, cy, _) = physics::fan_mix(
+            (self.pile_centre.0, self.pile_centre.1, 0.0),
+            (self.fan_centre.0, self.fan_centre.1, 0.0),
+            q,
+        );
+        (physics::fan_mix(self.pile, self.fan, q), (cx, cy))
     }
 
     fn scale(&self, q: f64) -> f64 {
@@ -1195,7 +1177,6 @@ impl Board {
                         let (py, ps) = physics::pile(i);
                         let pile = (a.0, a.1 + py, 0.0);
                         let on_fan = i < shown_n;
-                        let fixed = on_fan && i >= FAN_MOVED;
                         let fan = if on_fan {
                             let (dx, dy, deg) = physics::fan(i, shown_n, w);
                             // Each card strays a little from its place, its own way.
@@ -1209,36 +1190,30 @@ impl Board {
                         } else {
                             pile
                         };
-                        let fan_scale = if on_fan {
-                            scale * if hover == Some(*id) { HOVER_SCALE } else { 1.0 }
-                        } else {
-                            ps
-                        };
                         let place = StackPlace {
                             col: ci,
                             pile,
                             fan,
-                            pile_scale: if fixed { fan_scale } else { ps },
-                            fan_scale,
+                            pile_centre: a,
+                            fan_centre: (centre.0 - w / 2.0, centre.1 - h / 2.0),
+                            pile_scale: ps,
+                            fan_scale: if on_fan {
+                                scale * if hover == Some(*id) { HOVER_SCALE } else { 1.0 }
+                            } else {
+                                ps
+                            },
                             on_pile: i < STACK_SHOWN,
                             on_fan,
                             pile_text: i == 0,
-                            fixed,
                         };
-                        let to = place.at(q);
+                        let (to, c) = place.at(q);
                         self.send_home(card, Space::Canvas, to);
-                        card.body.fall_to(to);
+                        card.body.fall_to(to, c);
                         // Folding: the cards ease into the pile, no overshoot.
                         card.stack = Some(place);
                         // Out of the render tree once it lies hidden in the pile,
                         // faded out on its way there.
-                        // (A travelling card at openness `goal` is that far out.)
-                        let out = if fixed {
-                            place.way((0.0, 0.0), goal)
-                        } else {
-                            goal.clamp(0.0, 1.0)
-                        };
-                        if place.fade(out) == 0.0 {
+                        if place.fade(goal) == 0.0 {
                             parked.insert(*id);
                         }
                         // Newer cards on top, as on the stack.
@@ -1365,8 +1340,7 @@ impl Board {
             card.set_parked(parked.contains(id), at_once.contains(id));
             match card.stack {
                 Some(place) => {
-                    let open = self.opening.get()[place.col].at;
-                    let q = place.way((card.body.x, card.body.y), open);
+                    let q = place.out((card.body.x, card.body.y));
                     if hidden != Some(*id) {
                         card.set_fade(place.fade(q));
                     }
@@ -1614,22 +1588,17 @@ impl Board {
             let Some(place) = card.stack else { continue };
             if opened[place.col] {
                 let q = opening[place.col].at;
-                card.body.fall_to(place.at(q));
+                let (to, c) = place.at(q);
+                card.body.fall_to(to, c);
                 card.target_scale = place.scale(q);
             }
             // Headed in toward the pile (however the stack got there: a fold,
             // a swipe, a let-go), a card eases in with no overshoot; headed out
             // it falls with one.
-            let b = card.body;
+            let b = &card.body;
             let (now_out, to_out) = (place.out((b.x, b.y)), place.out((b.tx, b.ty)));
             if (to_out - now_out).abs() > 1e-3 {
                 card.body.calm = to_out < now_out;
-            }
-            let now_out = place.way((b.x, b.y), opening[place.col].at);
-            // A fixed card all but unseen goes to its place at once.
-            if place.fixed && place.fade(now_out) < 0.1 {
-                card.body.settle();
-                card.scale = card.target_scale;
             }
             // What shows follows the card's own way out, not the openness.
             if hidden != Some(*id) {
