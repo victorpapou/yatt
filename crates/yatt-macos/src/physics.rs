@@ -488,6 +488,71 @@ pub const FAN_FLING: f64 = 40.0;
 /// nearer.
 pub const FAN_SNAP_IDLE: f64 = 0.25;
 
+/// How open a stack is while the fingers hold it, `down` points of travel
+/// from where they took it at openness `start`: one for one with the fingers
+/// ([`FAN_SCRUB`] points to fully open), and past either end on a rubber band
+/// that gives less the further it is pulled, never more than [`FAN_STRETCH`].
+pub fn fan_pull(start: f64, down: f64) -> f64 {
+    let q = start + down / FAN_SCRUB;
+    let band = |over: f64| FAN_STRETCH * (1.0 - (-over / FAN_STRETCH).exp());
+    if q > 1.0 {
+        1.0 + band(q - 1.0)
+    } else if q < 0.0 {
+        -band(-q)
+    } else {
+        q
+    }
+}
+
+/// The most a held fan stretches past fully open or folded.
+pub const FAN_STRETCH: f64 = 0.15;
+/// The fastest a let-go fan keeps moving, in openness per second (about
+/// 350 pt/s of fingers): a hard flick carries it at most about a sixth past
+/// its end, not away.
+pub const FAN_THROW_MAX: f64 = 2.5;
+
+/// The fingers' speed over a stack, in points a second down: each scroll
+/// step's travel over the time since the last, smoothed, and fading once the
+/// fingers rest (so lifting them after a pause throws nothing).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Swipe {
+    pub v: f64,
+    pub t: f64,
+}
+
+impl Swipe {
+    /// The fingers moved `down` points at media time `t`.
+    pub fn feed(&mut self, down: f64, t: f64) {
+        let dt = (t - self.t).clamp(1.0 / 240.0, 0.1);
+        let v = if self.t == 0.0 { 0.0 } else { down / dt };
+        // Steps come every frame or so while the fingers move; only a longer
+        // gap means they rested.
+        let old = if t - self.t > 0.05 {
+            self.speed(t)
+        } else {
+            self.v
+        };
+        self.v = old * 0.4 + v * 0.6;
+        self.t = t;
+    }
+
+    /// Its speed at media time `now`: halving every 30 ms the fingers rest.
+    pub fn speed(&self, now: f64) -> f64 {
+        let rest = (now - self.t).max(0.0);
+        self.v * (-rest / 0.043).exp()
+    }
+}
+
+/// Where a fan let go at openness `at`, moving at `v` (openness a second),
+/// goes: open if it would coast past the middle braking as the fall brakes,
+/// folded if not; and the speed it leaves the fingers with (capped at
+/// [`FAN_THROW_MAX`]), which the fall then carries on.
+pub fn fan_release(at: f64, v: f64) -> (bool, f64) {
+    let v = v.clamp(-FAN_THROW_MAX, FAN_THROW_MAX);
+    let coast = v * v.abs() / (2.0 * FALL_OPEN.brake);
+    (at + coast > 0.5, v)
+}
+
 /// How open a stack is (0 folded, 1 fanned) after a scroll of `down` points.
 pub fn fan_scrub(open: f64, down: f64) -> f64 {
     if down.abs() >= FAN_FLING {
@@ -840,6 +905,50 @@ mod tests {
         assert!((y + 55.0 - 320.0).abs() < 1e-9);
         // No room: kept just under the header.
         assert_eq!(centred_top(40.0, 100.0, 110.0), 50.0);
+    }
+
+    #[test]
+    fn a_held_fan_follows_the_fingers_and_a_flick_decides() {
+        // One for one with the fingers, a rubber band past the ends.
+        assert!((fan_pull(0.0, FAN_SCRUB / 2.0) - 0.5).abs() < 1e-9);
+        assert!((fan_pull(0.2, FAN_SCRUB * 0.3) - 0.5).abs() < 1e-9);
+        let far = fan_pull(0.0, FAN_SCRUB * 10.0);
+        assert!(far > 1.1 && far <= 1.0 + FAN_STRETCH, "{far}");
+        assert!(fan_pull(0.0, -FAN_SCRUB) >= -FAN_STRETCH);
+        // The further pulled past the end, the less it gives.
+        let (a, b) = (
+            fan_pull(1.0, 10.0) - 1.0,
+            fan_pull(1.0, 20.0) - fan_pull(1.0, 10.0),
+        );
+        assert!(b < a);
+        // Let go: a slow drag decides by where it is, a flick by its speed.
+        assert!(fan_release(0.6, 0.0).0);
+        assert!(!fan_release(0.4, 0.0).0);
+        assert!(fan_release(0.2, 3.0).0, "a flick open from near folded");
+        assert!(!fan_release(0.8, -3.0).0, "a flick shut from near open");
+        assert!(!fan_release(0.3, 0.5).0, "a nudge is not a flick");
+        assert_eq!(fan_release(0.5, 40.0).1, FAN_THROW_MAX);
+        // The hardest flick, let go nearly open: past the end by little, and
+        // still within a second and a half.
+        let mut o = Opening {
+            at: 0.9,
+            v: FAN_THROW_MAX,
+        };
+        let (mut most, mut t) = (0.0_f64, 0.0);
+        while o.step(1.0, 1.0 / 120.0) && t < 2.0 {
+            most = most.max(o.at);
+            t += 1.0 / 120.0;
+        }
+        assert!(most < 1.25 && t < 1.5, "to {most}, {t}s");
+        // The fingers' speed: steady steps read as their speed; a pause
+        // before lifting them throws nothing.
+        let mut s = Swipe::default();
+        for k in 0..20 {
+            s.feed(5.0, 1.0 + k as f64 / 120.0);
+        }
+        let t = 1.0 + 19.0 / 120.0;
+        assert!((s.speed(t) - 600.0).abs() < 10.0, "{}", s.speed(t));
+        assert!(s.speed(t + 0.3) < 1.0);
     }
 
     #[test]
