@@ -191,27 +191,15 @@ impl StackPlace {
         self.pile_scale + (self.fan_scale - self.pile_scale) * q.clamp(0.0, 1.0)
     }
 
-    /// How far out of the pile a card at `(x, y)` is, toward its fan place
-    /// (0 on the pile, 1 on the fan): its own way, not the stack's openness,
-    /// which a quick swipe can move well ahead of the cards.
-    fn out(&self, (x, y): (f64, f64)) -> f64 {
-        let way = (self.fan.0 - self.pile.0).hypot(self.fan.1 - self.pile.1);
-        if way < 1.0 {
-            return 0.0;
-        }
-        (x - self.pile.0).hypot(y - self.pile.1) / way
-    }
-
-    /// How opaque it is `q` of its way out of the pile ([`StackPlace::out`]):
-    /// what draws only open fades in over the first stretch out, what draws
-    /// only folded fades out over the last stretch in.
+    /// How opaque it is at openness `q`: what draws only open fades in over the
+    /// first stretch of the opening, what draws only folded fades out over it.
     fn fade(&self, q: f64) -> f64 {
         let f = |on: bool| if on { 1.0 } else { 0.0 };
         let t = (q / STACK_FADE).clamp(0.0, 1.0);
         f(self.on_pile) + (f(self.on_fan) - f(self.on_pile)) * t
     }
 
-    /// How much of its text shows `q` of its way out of the pile.
+    /// How much of its text shows at openness `q`.
     fn text(&self, q: f64) -> f64 {
         if self.pile_text {
             1.0
@@ -1210,6 +1198,7 @@ impl Board {
                         self.send_home(card, Space::Canvas, to);
                         card.body.fall_to(to, c);
                         // Folding: the cards ease into the pile, no overshoot.
+                        card.body.calm = goal < q;
                         card.stack = Some(place);
                         // Out of the render tree once it lies hidden in the pile,
                         // faded out on its way there.
@@ -1340,7 +1329,7 @@ impl Board {
             card.set_parked(parked.contains(id), at_once.contains(id));
             match card.stack {
                 Some(place) => {
-                    let q = place.out((card.body.x, card.body.y));
+                    let q = self.opening.get()[place.col].at;
                     if hidden != Some(*id) {
                         card.set_fade(place.fade(q));
                     }
@@ -1586,25 +1575,18 @@ impl Board {
         let hidden = self.hidden.get();
         for (id, card) in cards.iter_mut() {
             let Some(place) = card.stack else { continue };
-            if opened[place.col] {
-                let q = opening[place.col].at;
-                let (to, c) = place.at(q);
-                card.body.fall_to(to, c);
-                card.target_scale = place.scale(q);
+            if !opened[place.col] {
+                continue;
             }
-            // Headed in toward the pile (however the stack got there: a fold,
-            // a swipe, a let-go), a card eases in with no overshoot; headed out
-            // it falls with one.
-            let b = &card.body;
-            let (now_out, to_out) = (place.out((b.x, b.y)), place.out((b.tx, b.ty)));
-            if (to_out - now_out).abs() > 1e-3 {
-                card.body.calm = to_out < now_out;
-            }
-            // What shows follows the card's own way out, not the openness.
+            let q = opening[place.col].at;
+            let (to, c) = place.at(q);
+            card.body.fall_to(to, c);
+            card.body.calm = self.open_goal(place.col) < q;
+            card.target_scale = place.scale(q);
             if hidden != Some(*id) {
-                card.set_fade(place.fade(now_out));
+                card.set_fade(place.fade(q));
             }
-            card.set_text(place.text(now_out));
+            card.set_text(place.text(q));
         }
 
         let mut moving = dragging || part || opened.contains(&true);

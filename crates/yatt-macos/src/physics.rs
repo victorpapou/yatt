@@ -145,11 +145,8 @@ impl Opening {
 }
 
 /// A card's place at openness `q`: on the straight way from `pile` to `fan`
-/// (x, y, turn), and on past the fan while the opening overshoots; never past
-/// the pile (folding has no overshoot, and a pile turned the other way reads
-/// as a glitch).
+/// (x, y, turn), and on past either end while the openness overshoots.
 pub fn fan_mix(pile: (f64, f64, f64), fan: (f64, f64, f64), q: f64) -> (f64, f64, f64) {
-    let q = q.max(0.0);
     let mix = |a: f64, b: f64| a + (b - a) * q;
     (mix(pile.0, fan.0), mix(pile.1, fan.1), mix(pile.2, fan.2))
 }
@@ -515,16 +512,14 @@ pub const FAN_SNAP_IDLE: f64 = 0.25;
 /// How open a stack is while the fingers hold it, `down` points of travel
 /// from where they took it at openness `start`: one for one with the fingers
 /// ([`FAN_SCRUB`] points to fully open), and past either end on a rubber band
-/// that gives less the further it is pulled, never more than [`FAN_STRETCH`]
-/// past fully open; never past folded.
+/// that gives less the further it is pulled, never more than [`FAN_STRETCH`].
 pub fn fan_pull(start: f64, down: f64) -> f64 {
     let q = start + down / FAN_SCRUB;
     let band = |over: f64| FAN_STRETCH * (1.0 - (-over / FAN_STRETCH).exp());
     if q > 1.0 {
         1.0 + band(q - 1.0)
     } else if q < 0.0 {
-        // Folded is as far as it goes: no stretch past the pile.
-        0.0
+        -band(-q)
     } else {
         q
     }
@@ -830,11 +825,6 @@ mod tests {
             fan_mix((0.0, 0.0, 0.0), (10.0, 20.0, 30.0), 1.1),
             (11.0, 22.0, 33.0)
         );
-        // Never past the pile: no turn the other way.
-        assert_eq!(
-            fan_mix((0.0, 0.0, 0.0), (10.0, 20.0, 30.0), -0.1),
-            (0.0, 0.0, 0.0)
-        );
     }
 
     #[test]
@@ -974,7 +964,7 @@ mod tests {
         assert!((fan_pull(0.2, FAN_SCRUB * 0.3) - 0.5).abs() < 1e-9);
         let far = fan_pull(0.0, FAN_SCRUB * 10.0);
         assert!(far > 1.05 && far <= 1.0 + FAN_STRETCH, "{far}");
-        assert_eq!(fan_pull(0.3, -FAN_SCRUB), 0.0);
+        assert!(fan_pull(0.0, -FAN_SCRUB) >= -FAN_STRETCH);
         // The further pulled past the end, the less it gives.
         let (a, b) = (
             fan_pull(1.0, 10.0) - 1.0,
