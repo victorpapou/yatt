@@ -142,6 +142,8 @@ pub struct Modal {
     /// The panel's controls, shown once it has settled open.
     content: Retained<FlippedView>,
     title: Retained<NSTextField>,
+    /// Covers the header; a click on it starts editing the title.
+    rename: Retained<NSButton>,
     stats: Retained<NSTextField>,
     rules: [Retained<FillView>; 2],
     editor: NotesEditor,
@@ -516,12 +518,40 @@ impl Modal {
             b
         };
 
+        // The whole header is a way into the title: a click anywhere on it puts
+        // the caret there with the text selected, ready to be typed over.
+        let rename = {
+            let field = ObjcWeak::from_retained(&title);
+            let target = ActionTarget::new(mtm, move || {
+                if let Some(field) = field.load() {
+                    if let Some(window) = field.window() {
+                        window.makeFirstResponder(Some(&field));
+                    }
+                    unsafe { field.selectText(None) };
+                }
+            });
+            let b = unsafe {
+                NSButton::buttonWithTitle_target_action(
+                    ns_string!(""),
+                    Some(&target),
+                    Some(ActionTarget::sel()),
+                    mtm,
+                )
+            };
+            b.setBordered(false);
+            b.setTransparent(true);
+            b.setToolTip(Some(ns_string!("Переименовать")));
+            retained.push(Retained::into_super(Retained::into_super(target)));
+            b
+        };
+
         let rules = [
             FillView::new(mtm, Fill::Separator),
             FillView::new(mtm, Fill::Separator),
         ];
         let look_icon = style::glyph_view(mtm, LOOK_SYMBOL, 0);
-        let views: [&NSView; 8] = [
+        let views: [&NSView; 9] = [
+            &rename,
             &title,
             &stats,
             &look_icon,
@@ -574,6 +604,7 @@ impl Modal {
             edges,
             open,
             title_known,
+            rename,
             notes_known,
             _retained: retained,
         }
@@ -689,6 +720,8 @@ impl Modal {
         let (w, h) = (frame.size.width, frame.size.height);
         let pad = PANEL_PAD;
         let iw = w - 2.0 * pad;
+        self.rename
+            .setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(w - pad - 36.0, HEADER_H)));
         self.title.setFrame(NSRect::new(
             NSPoint::new(pad, 20.0),
             NSSize::new(iw - 40.0, 28.0),
