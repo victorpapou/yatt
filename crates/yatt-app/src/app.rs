@@ -36,11 +36,63 @@ fn data_path() -> PathBuf {
     home.join("Library/Application Support/yatt/yatt.sqlite")
 }
 
-pub fn run() -> anyhow::Result<()> {
-    let store = Store::open(&data_path())?;
-    let engine = Engine::load(store)?;
+/// Takes the single-instance lock next to the database. A second copy writing to
+/// the same board would double every task's time, so it must not start. The lock
+/// is released by the system when the process ends, however it ends.
+fn lock_instance(db: &std::path::Path) -> anyhow::Result<std::fs::File> {
+    use std::fs::{File, TryLockError};
+    if let Some(dir) = db.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let file = File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(db.with_extension("lock"))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(TryLockError::WouldBlock) => anyhow::bail!(
+            "yatt уже запущен. Две копии, пишущие в одну базу, удвоили бы время задач. \
+             Найдите открытую копию в Dock или в строке меню."
+        ),
+        Err(TryLockError::Error(e)) => Err(e.into()),
+    }
+}
 
-    Application::new().run(move |cx: &mut App| {
+/// Everything that can stop the app before its window exists. A bundled .app has
+/// no terminal, so the reason goes into an alert instead of stderr.
+fn open_board() -> anyhow::Result<(std::fs::File, Engine)> {
+    let path = data_path();
+    let lock = lock_instance(&path)?;
+    let store = Store::open(&path)?;
+    let engine = Engine::load(store)?;
+    Ok((lock, engine))
+}
+
+pub fn run() -> anyhow::Result<()> {
+    let (_lock, engine) = match open_board() {
+        Ok(opened) => opened,
+        Err(e) => {
+            if let Some(mtm) = MainThreadMarker::new() {
+                yatt_macos::alert(mtm, "yatt не может открыть доску", &format!("{e:#}"));
+            }
+            return Err(e);
+        }
+    };
+
+    // The window, once it exists, for the Dock icon to bring back.
+    let shown: Rc<std::cell::RefCell<Option<Rc<MainWindow>>>> = Rc::default();
+    let app = Application::new();
+    {
+        let shown = shown.clone();
+        app.on_reopen(move |cx| {
+            if let Some(window) = shown.borrow().as_ref() {
+                window.show();
+            }
+            cx.activate(true);
+        });
+    }
+    app.run(move |cx: &mut App| {
         let mtm = MainThreadMarker::new().expect("GPUI runs the app on the main thread");
         let workspace = cx.new(|_| Workspace::new(engine));
 
@@ -50,6 +102,7 @@ pub fn run() -> anyhow::Result<()> {
         });
         let window = Rc::new(MainWindow::new(mtm, sink.clone()));
         window.render(&workspace.read(cx).snapshot());
+        *shown.borrow_mut() = Some(window.clone());
 
         // UI events -> engine.
         let ws = workspace.clone();
@@ -62,6 +115,7 @@ pub fn run() -> anyhow::Result<()> {
                         keep
                     })
                     .unwrap_or(false);
+                report_problems(&ws, cx, mtm);
                 if !keep_going {
                     let _ = cx.update(|cx| cx.quit());
                     break;
@@ -91,6 +145,7 @@ pub fn run() -> anyhow::Result<()> {
                         cx.notify();
                     }
                 });
+                report_problems(&ws, cx, mtm);
                 if alive.is_err() {
                     break;
                 }
@@ -106,6 +161,18 @@ pub fn run() -> anyhow::Result<()> {
         cx.activate(true);
     });
     Ok(())
+}
+
+/// Tells the user about a failed save. The board is in memory and looks fine, so
+/// without this a full disk would only show after the next launch.
+fn report_problems(ws: &gpui::Entity<Workspace>, cx: &mut gpui::AsyncApp, mtm: MainThreadMarker) {
+    let problem = ws
+        .update(cx, |ws, _| ws.engine.take_problem())
+        .ok()
+        .flatten();
+    if let Some(text) = problem {
+        yatt_macos::alert(mtm, "yatt не сохранил изменения", &text);
+    }
 }
 
 fn install_menus(cx: &mut App, window: &Rc<MainWindow>, sink: &yatt_macos::Sink) {

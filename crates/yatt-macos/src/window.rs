@@ -461,13 +461,13 @@ impl MainWindow {
         *tint_target.borrow_mut() = Some(Rc::downgrade(&ui));
         Ui::wire(&ui);
 
-        // Closing the window quits, once the edits still in the fields are saved.
+        // The red button hides the window (the app and its timer keep running; the
+        // Dock icon brings it back), once the edits still in the fields are saved.
         let weak = Rc::downgrade(&ui);
         let delegate = WindowDelegate::new(mtm, move || {
-            let sink = sink.clone();
-            match weak.upgrade() {
-                Some(ui) => ui.save_edits_then(move || sink(UiEvent::Quit)),
-                None => sink(UiEvent::Quit),
+            if let Some(ui) = weak.upgrade() {
+                let target = ui.clone();
+                ui.save_edits_then(move || target.window.orderOut(None));
             }
         });
         ui.window
@@ -491,6 +491,11 @@ impl MainWindow {
     /// calls `done`, which sends its events behind those edits. For quitting.
     pub fn save_edits_then(&self, done: impl FnOnce() + 'static) {
         self.ui.save_edits_then(done);
+    }
+
+    /// Brings the window back after the red button hid it.
+    pub fn show(&self) {
+        self.ui.window.makeKeyAndOrderFront(None);
     }
 
     /// cmd-N: put the cursor into the new-task field.

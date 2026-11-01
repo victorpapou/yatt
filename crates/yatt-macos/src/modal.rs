@@ -723,8 +723,10 @@ impl Modal {
         let (w, h) = (frame.size.width, frame.size.height);
         let pad = PANEL_PAD;
         let iw = w - 2.0 * pad;
-        self.rename
-            .setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(w - pad - 36.0, HEADER_H)));
+        self.rename.setFrame(NSRect::new(
+            NSPoint::ZERO,
+            NSSize::new(w - pad - 36.0, HEADER_H),
+        ));
         self.title.setFrame(NSRect::new(
             NSPoint::new(pad, 20.0),
             NSSize::new(iw - 40.0, 28.0),
