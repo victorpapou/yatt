@@ -181,6 +181,26 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             eprintln!("demo: finished");
             return;
         }
+        if std::env::var_os("YATT_DEMO_SAVE").is_some() {
+            // A task renamed and its notes typed, then quit at once, inside the
+            // notes' debounce: both must be in the database afterwards.
+            sink(UiEvent::NewTask {
+                title: "Задача".into(),
+                status: Status::Backlog,
+            });
+            wait(500).await;
+            let id = ids(cx, 0)[0];
+            sink(UiEvent::ToggleExpand(id));
+            wait(1200).await;
+            window.demo_type("Переименована", "заметка перед выходом");
+            // `YATT_DEMO_SAVE=late`: past the debounce, to check the typing itself.
+            let late = std::env::var("YATT_DEMO_SAVE").as_deref() == Ok("late");
+            wait(if late { 1000 } else { 30 }).await;
+            eprintln!("demo: quitting");
+            let sink = sink.clone();
+            window.save_edits_then(move || sink(UiEvent::Quit));
+            return;
+        }
         if std::env::var_os("YATT_DEMO_MODAL").is_some() {
             // A card in a fan opened into the panel and closed again, the panel's
             // frame and alphas every frame and a layer capture every other.

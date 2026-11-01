@@ -137,6 +137,30 @@ impl NotesEditor {
         }
     }
 
+    /// Sends any edit still waiting for the debounce, then calls `done`. The page
+    /// posts the edit before the script's reply comes back, so whatever `done`
+    /// sends lands behind it.
+    pub fn flush_then(&self, done: impl FnOnce() + 'static) {
+        if !self.ready.get() {
+            done();
+            return;
+        }
+        let done = Cell::new(Some(done));
+        let block = block2::RcBlock::new(
+            move |_: *mut objc2::runtime::AnyObject, _: *mut objc2_foundation::NSError| {
+                if let Some(done) = done.take() {
+                    done();
+                }
+            },
+        );
+        unsafe {
+            self.view.evaluateJavaScript_completionHandler(
+                ns_string!("window.yatt.flush()"),
+                Some(&block),
+            )
+        };
+    }
+
     /// The editor's own undo or redo (ProseMirror's history), for ⌘Z and ⌘⇧Z,
     /// which the app's menu takes before the page can see them.
     pub fn undo(&self, redo: bool) {
@@ -161,6 +185,18 @@ impl NotesEditor {
     /// Development aid: prints what the editor currently renders.
     pub fn debug_print_html(&self) {
         self.debug_eval("document.querySelector('.ProseMirror')?.innerHTML ?? 'no editor'");
+    }
+
+    /// Development aid: types `text` at the end of the notes, as the keyboard
+    /// would (the edit waits for the debounce like any other).
+    pub fn debug_type(&self, text: &str) {
+        eval(
+            &self.view,
+            &format!(
+                "document.querySelector('.ProseMirror').editor.commands.insertContent({})",
+                js_string(text)
+            ),
+        );
     }
 
     /// Development aid: evaluates `js` in the page and prints its result.

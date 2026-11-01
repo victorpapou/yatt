@@ -590,9 +590,26 @@ impl Modal {
         }
     }
 
+    /// Sends the notes still waiting to be saved, then calls `done`.
+    pub fn flush_then(&self, done: impl FnOnce() + 'static) {
+        self.editor.flush_then(done);
+    }
+
     /// Undo or redo in the notes editor.
     pub fn editor_undo(&self, redo: bool) {
         self.editor.undo(redo);
+    }
+
+    /// Development aid: types `title` over the open task's title and `notes` into
+    /// its notes, leaving both still being edited.
+    pub fn debug_type(&self, title: &str, notes: &str) {
+        if let Some(window) = self.panel.window() {
+            window.makeFirstResponder(Some(&self.title));
+        }
+        if let Some(field) = self.title.currentEditor() {
+            field.setString(&NSString::from_str(title));
+        }
+        self.editor.debug_type(notes);
     }
 
     pub fn debug_print_editor(&self) {

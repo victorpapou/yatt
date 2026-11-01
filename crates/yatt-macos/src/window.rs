@@ -434,7 +434,15 @@ impl MainWindow {
         *tint_target.borrow_mut() = Some(Rc::downgrade(&ui));
         Ui::wire(&ui);
 
-        let delegate = WindowDelegate::new(mtm, move || sink(UiEvent::Quit));
+        // Closing the window quits, once the edits still in the fields are saved.
+        let weak = Rc::downgrade(&ui);
+        let delegate = WindowDelegate::new(mtm, move || {
+            let sink = sink.clone();
+            match weak.upgrade() {
+                Some(ui) => ui.save_edits_then(move || sink(UiEvent::Quit)),
+                None => sink(UiEvent::Quit),
+            }
+        });
         ui.window
             .setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
         ui._retained
@@ -450,6 +458,12 @@ impl MainWindow {
 
     pub fn render(&self, snap: &Snapshot) {
         self.ui.render(snap);
+    }
+
+    /// Saves what is still being typed (the open task's title and notes), then
+    /// calls `done`, which sends its events behind those edits. For quitting.
+    pub fn save_edits_then(&self, done: impl FnOnce() + 'static) {
+        self.ui.save_edits_then(done);
     }
 
     /// cmd-N: put the cursor into the new-task field.
@@ -632,6 +646,12 @@ impl MainWindow {
         self.ui.modal.debug_state()
     }
 
+    /// Development aid: types into the open task's title and notes, as a user
+    /// still in the middle of both.
+    pub fn demo_type(&self, title: &str, notes: &str) {
+        self.ui.modal.debug_type(title, notes);
+    }
+
     /// Development aid: the notes editor's place and its text's, on stderr.
     pub fn demo_editor_geometry(&self) {
         self.ui.modal.debug_editor_geometry();
@@ -807,6 +827,12 @@ impl MainWindow {
 }
 
 impl Ui {
+    fn save_edits_then(&self, done: impl FnOnce() + 'static) {
+        // Ending the title's editing sends its rename.
+        self.window.makeFirstResponder(None);
+        self.modal.flush_then(done);
+    }
+
     /// Hooks AppKit callbacks (resize, keys, drops) up to this object.
     fn wire(this: &Rc<Self>) {
         let weak = Rc::downgrade(this);
