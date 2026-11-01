@@ -34,7 +34,7 @@ use std::rc::Rc;
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{NSObjectProtocol, ProtocolObject};
-use objc2::{DefinedClass, MainThreadMarker};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSAnimatablePropertyContainer, NSAutoresizingMaskOptions, NSCursor, NSEvent, NSFont,
     NSFontWeightMedium, NSLineBreakMode, NSScrollElasticity, NSScrollView, NSScrollerStyle,
