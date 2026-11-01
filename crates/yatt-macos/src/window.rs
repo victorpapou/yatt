@@ -284,6 +284,11 @@ impl MainWindow {
         search_item.setSearchField(&search);
         search_item.setPreferredWidthForSearchField(220.0);
         search_item.setResignsFirstResponderWithCancel(true);
+        // AppKit's own switch (no header, found on the class at run time): the
+        // item shows as a magnifier and expands on click / beginSearchInteraction.
+        unsafe {
+            let _: () = objc2::msg_send![&*search_item, setPrefersCompactRepresentation: true];
+        }
         retained.push(Retained::into_super(Retained::into_super(search_target)));
         let toolbar =
             NSToolbar::initWithIdentifier(NSToolbar::alloc(mtm), ns_string!("yatt.toolbar"));
@@ -337,8 +342,6 @@ impl MainWindow {
         toolbar.setAllowsUserCustomization(false);
         window.setToolbar(Some(&toolbar));
         window.setToolbarStyle(NSWindowToolbarStyle::Unified);
-        // Starts folded to the magnifier; click or cmd-F expands it.
-        search_item.endSearchInteraction();
         retained.push(Retained::into_super(Retained::into_super(toolbar_delegate)));
 
         let board = FlippedView::new(mtm, NSRect::ZERO);
