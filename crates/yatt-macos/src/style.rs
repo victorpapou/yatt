@@ -385,6 +385,52 @@ pub fn dump_tree(view: &NSView, depth: usize) {
     }
 }
 
+/// Gives every rounded layer under `layer` (the system glass draws its shape,
+/// rim and highlight in layers of its own, made lazily on first display) the
+/// continuous corner curve of system controls instead of a circular arc.
+/// Returns how many rounded layers it found.
+pub fn continuous_layers(layer: &CALayer) -> usize {
+    let mut n = 0;
+    if layer.cornerRadius() > 0.0 {
+        layer.setCornerCurve(unsafe { kCACornerCurveContinuous });
+        n += 1;
+    }
+    if let Some(mask) = layer.mask() {
+        n += continuous_layers(&mask);
+    }
+    if let Some(subs) = unsafe { layer.sublayers() } {
+        for sub in subs.iter() {
+            n += continuous_layers(&sub);
+        }
+    }
+    n
+}
+
+/// Debug: prints a layer tree with each layer's corners (`YATT_DUMP=1`).
+pub fn dump_layers(layer: &CALayer, depth: usize) {
+    let pad = "  ".repeat(depth);
+    let b = layer.bounds();
+    eprintln!(
+        "{pad}{} {:.0}x{:.0} radius={:.1} curve={} mask={} filters={}",
+        layer.class().name().to_string_lossy(),
+        b.size.width,
+        b.size.height,
+        layer.cornerRadius(),
+        layer.cornerCurve(),
+        layer.mask().is_some(),
+        layer.filters().map_or(0, |f| f.count()),
+    );
+    if let Some(mask) = layer.mask() {
+        eprintln!("{pad} mask:");
+        dump_layers(&mask, depth + 1);
+    }
+    if let Some(subs) = unsafe { layer.sublayers() } {
+        for sub in subs.iter() {
+            dump_layers(&sub, depth + 1);
+        }
+    }
+}
+
 /// `NSGlassEffectView` has no public blur radius. What it exposes beyond `style`
 /// and `tintColor` are private integer properties (`_variant`, `_subvariant`,
 /// `_scrimState`, `_subduedState`, `_contentLensing`, `_adaptiveAppearance`;
@@ -821,6 +867,9 @@ pub fn set_blur_corners(view: &NSView, scale: f64) {
     let r = CARD_RADIUS * scale;
     if let Some(glass) = view.downcast_ref::<NSGlassEffectView>() {
         glass.setCornerRadius(r);
+        if let Some(layer) = glass.layer() {
+            continuous_layers(&layer);
+        }
     } else if let Some(layer) = view.layer() {
         layer.setCornerRadius(r);
     }
