@@ -10,7 +10,9 @@ use yatt_platform::MenuBarTimer;
 
 /// How many time entries the expanded card lists.
 /// Every entry of the open task, for copying.
-const ENTRIES_SHOWN: usize = usize::MAX;
+const ENTRIES_SHOWN: usize = 50;
+/// A paste creates at most this many cards at once.
+const MAX_PASTED: usize = 50;
 
 pub struct Workspace {
     pub engine: Engine,
@@ -236,7 +238,7 @@ fn board_commands(event: UiEvent, out: &mut Vec<Command>) {
         }),
         UiEvent::Delete(id) => out.push(Command::Delete { id }),
         UiEvent::Paste { items, status } => {
-            for (title, notes) in items.into_iter().rev() {
+            for (title, notes) in items.into_iter().take(MAX_PASTED).rev() {
                 let id = TaskId::new();
                 out.push(Command::Create {
                     id,
