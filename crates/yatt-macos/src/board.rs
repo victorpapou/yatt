@@ -66,7 +66,7 @@ const STACK_SHOWN: usize = 3;
 /// Over this much of a stack's openness, next to folded, the cards that draw
 /// only when it is open fade in or out, and the cards behind the top one let
 /// their text show or fade: nothing a stack shows appears or goes at once.
-const STACK_FADE: f64 = 0.3;
+const STACK_FADE: f64 = 0.5;
 /// How far beyond a column's visible area list rows stay drawn, in screens:
 /// enough that a fast scroll never shows an empty slot, few enough glass views.
 const ROW_OVERSCAN: f64 = 0.5;
@@ -1192,6 +1192,8 @@ impl Board {
                         let (to, c) = place.at(q);
                         self.send_home(card, Space::Canvas, to);
                         card.body.fall_to(to, c);
+                        // Folding: the cards ease into the pile, no overshoot.
+                        card.body.calm = goal < q;
                         card.stack = Some(place);
                         // Out of the render tree once it lies hidden in the pile,
                         // faded out on its way there.
@@ -1556,6 +1558,7 @@ impl Board {
             let q = opening[place.col].at;
             let (to, c) = place.at(q);
             card.body.fall_to(to, c);
+            card.body.calm = self.open_goal(place.col) < q;
             card.target_scale = place.scale(q);
             if hidden != Some(*id) {
                 card.set_fade(place.fade(q));
@@ -1569,7 +1572,11 @@ impl Board {
         for card in cards.values_mut() {
             // Parked and arrived under the stack (faded out on its way in): now
             // it can leave the tree.
-            if card.parked.get() && !card.view.isHidden() && card.body.at_rest() {
+            if card.parked.get()
+                && !card.view.isHidden()
+                && card.body.at_rest()
+                && (card.stack.is_none() || card.fade < 0.01)
+            {
                 card.view.setHidden(true);
             }
             // Out of sight (a culled row, or a card hidden in a stack or under a
