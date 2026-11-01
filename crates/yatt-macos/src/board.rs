@@ -325,6 +325,9 @@ pub struct Board {
     height: Cell<f64>,
     order: RefCell<[Vec<TaskId>; 3]>,
     cards: RefCell<HashMap<TaskId, Card>>,
+    /// `YATT_DUMP`: the glass's layer tree has been printed once.
+    dumped: Cell<bool>,
+    started: Cell<f64>,
     layouts: Cell<[Layout; 3]>,
     /// How open each column's stack should be (0 folded, 1 fanned; between
     /// while a scroll drives it), and when that scroll last moved it (media
@@ -413,6 +416,8 @@ impl Board {
             height: Cell::new(0.0),
             order: RefCell::new(Default::default()),
             cards: RefCell::new(HashMap::new()),
+            dumped: Cell::new(false),
+            started: Cell::new(CACurrentMediaTime()),
             layouts: Cell::new([Layout::List; 3]),
             open_p: Cell::new([0.0; 3]),
             opening: Cell::new(Default::default()),
@@ -1488,6 +1493,24 @@ impl Board {
         let overlay_dy = self.overlay_dy.get();
         let mut cards = self.cards.borrow_mut();
 
+        // The system glass makes and remakes its rounded layers as it
+        // displays, with circular corners: keep them continuous. A few layers
+        // per card, and a property set to the value it has costs nothing.
+        for card in cards.values() {
+            if let Some(layer) = card.parts[0].layer() {
+                style::continuous_layers(&layer);
+            }
+        }
+        if std::env::var_os("YATT_DUMP").is_some()
+            && now - self.started.get() > 2.0
+            && !self.dumped.replace(true)
+        {
+            if let Some(layer) = cards.values().next().and_then(|c| c.parts[0].layer()) {
+                eprintln!("glass layers after first display:");
+                style::dump_layers(&layer, 0);
+            }
+        }
+
         if let Some(drag) = self.drag.borrow_mut().as_mut() {
             // The lead chases the pointer; every other card of the group chases the
             // lead itself on a very stiff spring, so it stays exactly under it.
@@ -1699,7 +1722,8 @@ impl Board {
         if dragging && let Some(perf) = self.perf.borrow_mut().as_mut() {
             perf.push((dt, CACurrentMediaTime() - started));
         }
-        if !moving && let Some(timer) = self.timer.borrow_mut().take() {
+        let dump_pending = std::env::var_os("YATT_DUMP").is_some() && !self.dumped.get();
+        if !moving && !dump_pending && let Some(timer) = self.timer.borrow_mut().take() {
             timer.invalidate();
         }
     }
