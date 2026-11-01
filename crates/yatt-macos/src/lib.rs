@@ -6,6 +6,8 @@ pub mod model;
 pub mod physics;
 
 #[cfg(target_os = "macos")]
+mod alert;
+#[cfg(target_os = "macos")]
 mod board;
 #[cfg(target_os = "macos")]
 mod classes;
@@ -31,5 +33,7 @@ pub use model::{
 };
 #[cfg(target_os = "macos")]
 pub use objc2::MainThreadMarker;
+#[cfg(target_os = "macos")]
+pub use alert::alert;
 #[cfg(target_os = "macos")]
 pub use window::{DemoMouse, DemoPointer, MainWindow, Sink};
