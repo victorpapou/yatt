@@ -86,11 +86,26 @@ pub const FALL: Fall = Fall {
     tau: 0.075,
     zeta: 0.52,
 };
+/// The same fall for a card's turn, a degree weighing as much as 2.5 pt.
+pub const FALL_TURN: Fall = FALL.per(2.5);
+/// A card's turn as its stack folds: level on the pile quickly and calmly,
+/// no swing past it (about 0.25 s from a fan's steepest card).
+pub const FALL_TURN_FOLD: Fall = Fall {
+    g: 9000.0,
+    brake: 4500.0,
+    tau: 0.05,
+    zeta: 1.0,
+};
+/// Within this distance of its stack's centre a card falls straight onto its
+/// place; past it, blended over the next [`ROUND_BLEND`] points, round the
+/// centre.
+pub const ROUND_FROM: f64 = 25.0;
+pub const ROUND_BLEND: f64 = 25.0;
 /// How far a stack's cards travel between folded and fanned, taken as one
 /// point of travel for the openness ([`Opening`]).
 pub const FAN_TRAVEL: f64 = 160.0;
-/// The fall of a stack's openness as it opens (0 folded, 1 fanned): softer
-/// than a card's, a gentler start, about 6% past fully open and back.
+/// The fall of a stack's openness (0 folded, 1 fanned): softer than a card's,
+/// a gentler start, about 6% past fully open (or folded) and back.
 pub const FALL_OPEN: Fall = Fall {
     g: 3000.0 / FAN_TRAVEL,
     brake: 1000.0 / FAN_TRAVEL,
@@ -98,24 +113,7 @@ pub const FALL_OPEN: Fall = Fall {
     zeta: 0.5,
 };
 
-/// A stack folding, and its cards on the way: no physics to see, a smooth
-/// ease into the pile in about 0.4 s, never past it.
-pub const FALL_FOLD: Fall = Fall {
-    g: 2400.0 / FAN_TRAVEL,
-    brake: 900.0 / FAN_TRAVEL,
-    tau: 0.09,
-    zeta: 1.0,
-};
-/// A card's own fall while its stack folds ([`FALL_FOLD`] in points).
-pub const FALL_CALM: Fall = Fall {
-    g: 2400.0,
-    brake: 900.0,
-    tau: 0.09,
-    zeta: 1.0,
-};
-
-/// How open a stack is, falling toward how open it should be: opening by
-/// [`FALL_OPEN`], with its overshoot; folding by [`FALL_FOLD`], none.
+/// How open a stack is, falling toward how open it should be ([`FALL_OPEN`]).
 /// Every card of the stack sits at its place for this openness, on the straight
 /// way from its pile place to its fan place, so the stack opens and folds as
 /// one mass; a card off its place falls back onto it ([`Body::fall`]).
@@ -131,8 +129,7 @@ impl Opening {
         let steps = (dt / (1.0 / 480.0)).ceil().max(1.0) as usize;
         let h = dt / steps as f64;
         for _ in 0..steps {
-            let law = if to < self.at { FALL_FOLD } else { FALL_OPEN };
-            self.v += law.accel(self.at - to, self.v) * h;
+            self.v += FALL_OPEN.accel(self.at - to, self.v) * h;
             self.at += self.v * h;
         }
         if (self.at - to).abs() < 1e-3 && self.v.abs() < 1e-2 {
@@ -145,11 +142,8 @@ impl Opening {
 }
 
 /// A card's place at openness `q`: on the straight way from `pile` to `fan`
-/// (x, y, turn), and on past the fan while the opening overshoots; never past
-/// the pile (folding has no overshoot, and a pile turned the other way reads
-/// as a glitch).
+/// (x, y, turn), and on past either end while the openness overshoots.
 pub fn fan_mix(pile: (f64, f64, f64), fan: (f64, f64, f64), q: f64) -> (f64, f64, f64) {
-    let q = q.max(0.0);
     let mix = |a: f64, b: f64| a + (b - a) * q;
     (mix(pile.0, fan.0), mix(pile.1, fan.1), mix(pile.2, fan.2))
 }
@@ -353,10 +347,10 @@ pub struct Body {
     /// by [`FALL`] instead of its spring: toward and away from that centre, and
     /// round it, so a fan's cards slide round the spiral to new places and a
     /// card dropped in curves in toward the centre. Its angle falls too
-    /// the same way, a degree weighing as much as 2.5 pt, with no swing.
+    /// ([`FALL_TURN`]), with no swing.
     pub fall: Option<(f64, f64)>,
-    /// Falling calmly ([`FALL_CALM`]: no overshoot), as when its stack folds.
-    pub calm: bool,
+    /// Its stack is folding: the turn levels calmly ([`FALL_TURN_FOLD`]).
+    pub folding: bool,
     /// Whether the angle hangs and swings (cards), or just eases to its target
     /// (the task panel).
     pub swings: bool,
@@ -376,7 +370,7 @@ impl Body {
             tr: 0.0,
             spring: PILE,
             fall: None,
-            calm: false,
+            folding: false,
             swings: true,
         }
     }
@@ -400,16 +394,20 @@ impl Body {
 
     /// The fall's acceleration for this body (see [`Body::fall`]).
     fn fall_accel(&self, (cx, cy): (f64, f64)) -> (f64, f64) {
-        let law = if self.calm { FALL_CALM } else { FALL };
         let (px, py) = (self.x - cx, self.y - cy);
         let (qx, qy) = (self.tx - cx, self.ty - cy);
         let (rho, reach) = (px.hypot(py), qx.hypot(qy));
-        // On (or at) the centre, round it means nothing: straight onto the place.
-        if rho < 1.0 || reach < 1.0 {
-            return (
-                law.accel(self.x - self.tx, self.vx),
-                law.accel(self.y - self.ty, self.vy),
-            );
+        let straight = (
+            FALL.accel(self.x - self.tx, self.vx),
+            FALL.accel(self.y - self.ty, self.vy),
+        );
+        // Near the centre (a pile place, or a card on its way to one), round
+        // it means a whirl on the spot: a card a few points off the centre
+        // swung most of a turn round it. There it goes straight; out on the fan
+        // round the centre, with a smooth blend between.
+        let w = ((reach.min(rho) - ROUND_FROM) / ROUND_BLEND).clamp(0.0, 1.0);
+        if w == 0.0 {
+            return straight;
         }
         let u = (px / rho, py / rho);
         let t = (-u.1, u.0);
@@ -417,9 +415,13 @@ impl Body {
         let round = wrap(py.atan2(px) - qy.atan2(qx)) * rho;
         // Going round takes a pull in toward the centre, or the body would
         // drift outward off the circle.
-        let a_out = law.accel(rho - reach, v_out) - v_round * v_round / rho;
-        let a_round = law.accel(round, v_round);
-        (a_out * u.0 + a_round * t.0, a_out * u.1 + a_round * t.1)
+        let a_out = FALL.accel(rho - reach, v_out) - v_round * v_round / rho;
+        let a_round = FALL.accel(round, v_round);
+        let polar = (a_out * u.0 + a_round * t.0, a_out * u.1 + a_round * t.1);
+        (
+            straight.0 + (polar.0 - straight.0) * w,
+            straight.1 + (polar.1 - straight.1) * w,
+        )
     }
 
     /// Advances by `dt` seconds, in small substeps so stiff springs stay stable.
@@ -447,8 +449,12 @@ impl Body {
             self.x += self.vx * h;
             self.y += self.vy * h;
             if self.fall.is_some() {
-                let law = if self.calm { FALL_CALM } else { FALL };
-                self.vr += law.per(2.5).accel(self.r - self.tr, self.vr) * h;
+                let turn = if self.folding {
+                    FALL_TURN_FOLD
+                } else {
+                    FALL_TURN
+                };
+                self.vr += turn.accel(self.r - self.tr, self.vr) * h;
                 self.r += self.vr * h;
                 continue;
             }
@@ -512,80 +518,18 @@ pub const FAN_FLING: f64 = 40.0;
 /// nearer.
 pub const FAN_SNAP_IDLE: f64 = 0.25;
 
-/// How open a stack is while the fingers hold it, `down` points of travel
-/// from where they took it at openness `start`: one for one with the fingers
-/// ([`FAN_SCRUB`] points to fully open), and past either end on a rubber band
-/// that gives less the further it is pulled, never more than [`FAN_STRETCH`]
-/// past fully open; never past folded.
-pub fn fan_pull(start: f64, down: f64) -> f64 {
-    let q = start + down / FAN_SCRUB;
-    let band = |over: f64| FAN_STRETCH * (1.0 - (-over / FAN_STRETCH).exp());
-    if q > 1.0 {
-        1.0 + band(q - 1.0)
-    } else if q < 0.0 {
-        // Folded is as far as it goes: no stretch past the pile.
-        0.0
-    } else {
-        q
-    }
+/// The opening speed (openness a second) a fan yanked open by fingers moving
+/// `speed` points a second down keeps: nothing for an ordinary scroll, then
+/// growing with the yank, never past [`FAN_YANK_MAX`], so a hard yank
+/// recoils past fully open a little and settles back.
+pub fn fan_yank(speed: f64) -> f64 {
+    ((speed - FAN_YANK_FROM) / FAN_SCRUB).clamp(0.0, FAN_YANK_MAX)
 }
 
-/// The most a held fan stretches past fully open or folded.
-pub const FAN_STRETCH: f64 = 0.08;
-/// The fastest a let-go fan keeps opening, in openness per second (about
-/// 200 pt/s of fingers): however hard the flick, it goes only a little past
-/// fully open.
-pub const FAN_THROW_MAX: f64 = 1.5;
-
-/// The fingers' speed over a stack, in points a second down: each scroll
-/// step's travel over the time since the last, smoothed, and fading once the
-/// fingers rest (so lifting them after a pause throws nothing).
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Swipe {
-    pub v: f64,
-    pub t: f64,
-}
-
-impl Swipe {
-    /// The fingers moved `down` points at media time `t`.
-    pub fn feed(&mut self, down: f64, t: f64) {
-        let dt = (t - self.t).clamp(1.0 / 240.0, 0.1);
-        let v = if self.t == 0.0 { 0.0 } else { down / dt };
-        // Steps come every frame or so while the fingers move; only a longer
-        // gap means they rested.
-        let old = if t - self.t > 0.05 {
-            self.speed(t)
-        } else {
-            self.v
-        };
-        self.v = old * 0.4 + v * 0.6;
-        self.t = t;
-    }
-
-    /// Its speed at media time `now`: halving every 30 ms the fingers rest.
-    pub fn speed(&self, now: f64) -> f64 {
-        let rest = (now - self.t).max(0.0);
-        self.v * (-rest / 0.043).exp()
-    }
-}
-
-/// Where a fan let go at openness `at`, moving at `v` (openness a second),
-/// goes: open if it would coast past the middle braking as the fall brakes,
-/// folded if not; and the speed it carries on with: opening, the fingers'
-/// own (capped at [`FAN_THROW_MAX`]), for the fall's overshoot; folding,
-/// none, as a fold has no physics to see.
-pub fn fan_release(at: f64, v: f64) -> (bool, f64) {
-    let coast = v * v.abs() / (2.0 * FALL_OPEN.brake);
-    let open = at + coast > 0.5;
-    (
-        open,
-        if open {
-            v.clamp(0.0, FAN_THROW_MAX)
-        } else {
-            0.0
-        },
-    )
-}
+/// Finger speed (pt/s) under which opening a fan gives no extra recoil.
+pub const FAN_YANK_FROM: f64 = 600.0;
+/// The most extra opening speed a yank gives: about 6% more past fully open.
+pub const FAN_YANK_MAX: f64 = 1.2;
 
 /// How open a stack is (0 folded, 1 fanned) after a scroll of `down` points.
 pub fn fan_scrub(open: f64, down: f64) -> f64 {
@@ -802,12 +746,7 @@ mod tests {
                 prev = o.at;
                 assert!(t < 1.5, "{from}→{to} still moving");
             }
-            if to > from {
-                assert!(past > 0.02 && past < 0.1, "{from}→{to}: past by {past}");
-            } else {
-                assert!(past < 1e-6, "folding went past the pile by {past}");
-                assert!(t > 0.25 && t < 0.8, "folded in {t}s");
-            }
+            assert!(past > 0.02 && past < 0.1, "{from}→{to}: past by {past}");
         }
         // Its start is gentle: after one frame it has barely moved.
         let mut o = Opening::default();
@@ -829,11 +768,6 @@ mod tests {
         assert_eq!(
             fan_mix((0.0, 0.0, 0.0), (10.0, 20.0, 30.0), 1.1),
             (11.0, 22.0, 33.0)
-        );
-        // Never past the pile: no turn the other way.
-        assert_eq!(
-            fan_mix((0.0, 0.0, 0.0), (10.0, 20.0, 30.0), -0.1),
-            (0.0, 0.0, 0.0)
         );
     }
 
@@ -920,22 +854,6 @@ mod tests {
     }
 
     #[test]
-    fn a_card_folding_calmly_never_goes_past() {
-        let mut b = Body::at(120.0, -80.0);
-        b.calm = true;
-        b.fall_to((0.0, 0.0, 0.0), (0.0, 0.0));
-        b.r = 40.0;
-        let (mut t, mut past) = (0.0, 0.0_f64);
-        while !b.at_rest() && t < 2.0 {
-            b.step(1.0 / 120.0);
-            past = past.max(-b.x).max(b.y).max(-b.r);
-            t += 1.0 / 120.0;
-        }
-        assert!(past < 1e-6, "past by {past}");
-        assert!(t < 1.0, "{t}s");
-    }
-
-    #[test]
     fn a_fanned_card_slides_round_its_spiral() {
         // Moved one slot round (40°) a fan of radius 100: it goes round the
         // centre, not along the chord (which dips to 94 from it), and lands a
@@ -968,49 +886,52 @@ mod tests {
     }
 
     #[test]
-    fn a_held_fan_follows_the_fingers_and_a_flick_decides() {
-        // One for one with the fingers, a rubber band past the ends.
-        assert!((fan_pull(0.0, FAN_SCRUB / 2.0) - 0.5).abs() < 1e-9);
-        assert!((fan_pull(0.2, FAN_SCRUB * 0.3) - 0.5).abs() < 1e-9);
-        let far = fan_pull(0.0, FAN_SCRUB * 10.0);
-        assert!(far > 1.05 && far <= 1.0 + FAN_STRETCH, "{far}");
-        assert_eq!(fan_pull(0.3, -FAN_SCRUB), 0.0);
-        // The further pulled past the end, the less it gives.
-        let (a, b) = (
-            fan_pull(1.0, 10.0) - 1.0,
-            fan_pull(1.0, 20.0) - fan_pull(1.0, 10.0),
-        );
-        assert!(b < a);
-        // Let go: a slow drag decides by where it is, a flick by its speed.
-        assert!(fan_release(0.6, 0.0).0);
-        assert!(!fan_release(0.4, 0.0).0);
-        assert!(fan_release(0.2, 3.0).0, "a flick open from near folded");
-        assert!(!fan_release(0.8, -3.0).0, "a flick shut from near open");
-        assert!(!fan_release(0.3, 0.5).0, "a nudge is not a flick");
-        assert_eq!(fan_release(0.5, 40.0).1, FAN_THROW_MAX);
-        // The hardest flick, let go nearly open: past the end by little, and
-        // still within a second and a half.
+    fn a_hard_yank_recoils_a_little_and_a_scroll_not_at_all() {
+        assert_eq!(fan_yank(300.0), 0.0);
+        assert!(fan_yank(1200.0) > 0.0);
+        assert_eq!(fan_yank(1e6), FAN_YANK_MAX);
+        let mut most = 0.0_f64;
         let mut o = Opening {
-            at: 0.9,
-            v: FAN_THROW_MAX,
+            at: 0.8,
+            v: FAN_YANK_MAX,
         };
-        let (mut most, mut t) = (0.0_f64, 0.0);
+        let mut t = 0.0;
         while o.step(1.0, 1.0 / 120.0) && t < 2.0 {
             most = most.max(o.at);
             t += 1.0 / 120.0;
         }
-        assert!(most < 1.12 && t < 1.5, "to {most}, {t}s");
-        // Let go folding, it brings no speed along.
-        assert_eq!(fan_release(0.3, -4.0), (false, 0.0));
-        // The fingers' speed: steady steps read as their speed; a pause
-        // before lifting them throws nothing.
-        let mut s = Swipe::default();
-        for k in 0..20 {
-            s.feed(5.0, 1.0 + k as f64 / 120.0);
+        assert!(most > 1.02 && most < 1.15 && t < 1.6, "to {most} in {t}s");
+    }
+
+    #[test]
+    fn the_second_card_falls_into_the_pile_without_a_whirl() {
+        // From its fan place 50 pt up-right of the centre to its pile place
+        // 11 pt below it: no swing round the centre, near the straight line.
+        let a = (-46.0_f64).to_radians();
+        let (fx, fy) = (50.0 * a.cos(), 50.0 * a.sin());
+        let mut b = Body::at(fx, fy);
+        b.fall_to((0.0, 11.0, 0.0), (0.0, 0.0));
+        let (lx, ly) = (0.0 - fx, 11.0 - fy);
+        let len = lx.hypot(ly);
+        let (mut off, mut t) = (0.0_f64, 0.0);
+        while !b.at_rest() && t < 3.0 {
+            b.step(1.0 / 120.0);
+            off = off.max(((b.x - fx) * ly - (b.y - fy) * lx).abs() / len);
+            t += 1.0 / 120.0;
         }
-        let t = 1.0 + 19.0 / 120.0;
-        assert!((s.speed(t) - 600.0).abs() < 10.0, "{}", s.speed(t));
-        assert!(s.speed(t + 0.3) < 1.0);
+        assert!(off < 8.0, "{off} pt off the line");
+        // And its turn levels calmly as the stack folds: never past level.
+        let mut b = Body::at(0.0, 11.0);
+        b.r = -60.0;
+        b.folding = true;
+        b.fall_to((0.0, 11.0, 0.0), (0.0, 0.0));
+        let (mut past, mut t) = (0.0_f64, 0.0);
+        while !b.at_rest() && t < 2.0 {
+            b.step(1.0 / 120.0);
+            past = past.max(b.r);
+            t += 1.0 / 120.0;
+        }
+        assert!(past < 1e-6 && t < 0.45, "past by {past}, level after {t}s");
     }
 
     #[test]

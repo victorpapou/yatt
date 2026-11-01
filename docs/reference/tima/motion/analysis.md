@@ -128,21 +128,11 @@ stack or fan, natural, with no springs and no bounce. Now:
 - A card off its place (a re-layout, a card dropped in, the fan moving under
   it) falls onto it by `physics::FALL`, decomposed toward the stack's centre
   and round it: a re-layout slides the cards round the spiral, a dropped card
-  curves in. Its turn falls the same way. No swing in a stack.
+  curves in. Its turn falls the same way (`FALL_TURN`). No swing in a stack.
 - The fall: at most 8000 pt/s² toward the place, no faster than it can brake
   at 3000 pt/s², a critically damped landing (τ 75 ms). Long moves take
   longer than short ones, as a fall does.
 - Nothing a stack shows appears or goes at once: the cards that draw only
-  when open fade in over the first half of the opening and out over the last
-  half of the fold, before they leave the render tree; the text of the cards
+  when open fade in over the first 30% of the opening and out over the last
+  30% of the fold, before they leave the render tree; the text of the cards
   behind the top one fades the same way.
-
-### Opening with physics, folding without (Тима, 2026-11-01)
-
-- Opening falls with an overshoot (`FALL_OPEN`, ζ 0.5); folding eases into
-  the pile with none (`FALL_FOLD` for the openness, `FALL_CALM` for the
-  cards, ζ 1), in about 0.4 s, and a fold never keeps the fingers' speed.
-- A flick opens with at most 1.5 openness/s of throw, and a held fan
-  stretches at most 8% past its ends: a hard swipe no longer bounces far.
-- The cards past the three a pile shows leave the render tree only once
-  fully faded.
