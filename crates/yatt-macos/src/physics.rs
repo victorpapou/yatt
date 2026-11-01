@@ -36,18 +36,19 @@ pub const SETTLE: Spring = Spring::new(380.0, 1.0);
 pub const PILE: Spring = SETTLE;
 
 /// The one law every card of a stack or a fan moves by, and each stack's
-/// openness itself: gravity, not a spring. A body falls toward its place with
-/// at most `g` of acceleration, may go no faster than it can still brake at
-/// `brake` before the place, and lands on it over the last stretch with time
-/// constant `tau`, critically: it never passes its place and never comes back.
-/// Far moves take longer than short ones, as a fall does (time grows with the
-/// root of the distance), instead of every move taking the same time as on a
-/// spring.
+/// openness itself: gravity. A body falls toward its place with at most `g` of
+/// acceleration, may go no faster than it can still brake at `brake` before
+/// the place, and lands on it over the last stretch with time constant `tau`
+/// and damping `zeta`: under 1 it carries a little past its place and settles
+/// back (the action's overshoot), at 1 it never passes. Far moves take longer
+/// than short ones, as a fall does (time grows with the root of the distance),
+/// instead of every move taking the same time as on a spring.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Fall {
     pub g: f64,
     pub brake: f64,
     pub tau: f64,
+    pub zeta: f64,
 }
 
 impl Fall {
@@ -57,6 +58,7 @@ impl Fall {
             g: self.g / unit,
             brake: self.brake / unit,
             tau: self.tau,
+            zeta: self.zeta,
         }
     }
 
@@ -68,28 +70,35 @@ impl Fall {
         // far off, an exponential approach near.
         let reach = (2.0 * self.brake * d).sqrt().min(d / self.tau);
         let want = -reach.copysign(e);
-        // Chasing that speed four times as fast as the landing: exactly the
-        // critical damping of the final approach.
-        ((want - v) * 4.0 / self.tau).clamp(-self.g, self.g)
+        // Chasing that speed at 4ζ² over the landing's time constant: the final
+        // approach is a damped oscillator of damping ratio ζ.
+        ((want - v) * 4.0 * self.zeta * self.zeta / self.tau).clamp(-self.g, self.g)
     }
 }
 
-/// A card of a stack or a fan, in points: a fan's re-layout of about 100 pt is
-/// within 1% of its place after about 0.33 s and at rest after 0.45 s (the
-/// reference: 0.35–0.65 s), a 10 pt nudge after 0.26 s.
+/// A card of a stack or a fan, in points: a re-layout of about 100 pt goes
+/// about 11% past its place (the reference: 6–19%) and is back within 5% of it
+/// after about 0.44 s; a long move goes less far past, a short nudge a little
+/// further.
 pub const FALL: Fall = Fall {
     g: 8000.0,
     brake: 3000.0,
     tau: 0.075,
+    zeta: 0.52,
 };
 /// The same fall for a card's turn, a degree weighing as much as 2.5 pt.
 pub const FALL_TURN: Fall = FALL.per(2.5);
 /// How far a stack's cards travel between folded and fanned, taken as one
 /// point of travel for the openness ([`Opening`]).
 pub const FAN_TRAVEL: f64 = 160.0;
-/// The fall of a stack's openness (0 folded, 1 fanned): within 1% after about
-/// 0.38 s, at rest after 0.5 s (the reference opens in about 0.47 s).
-pub const FALL_OPEN: Fall = FALL.per(FAN_TRAVEL);
+/// The fall of a stack's openness (0 folded, 1 fanned): softer than a card's,
+/// a gentler start, about 6% past fully open (or folded) and back.
+pub const FALL_OPEN: Fall = Fall {
+    g: 3000.0 / FAN_TRAVEL,
+    brake: 1000.0 / FAN_TRAVEL,
+    tau: 0.1,
+    zeta: 0.5,
+};
 
 /// How open a stack is, falling toward how open it should be ([`FALL_OPEN`]).
 /// Every card of the stack sits at its place for this openness, on the straight
@@ -120,9 +129,8 @@ impl Opening {
 }
 
 /// A card's place at openness `q`: on the straight way from `pile` to `fan`
-/// (x, y, turn).
+/// (x, y, turn), and on past either end while the openness overshoots.
 pub fn fan_mix(pile: (f64, f64, f64), fan: (f64, f64, f64), q: f64) -> (f64, f64, f64) {
-    let q = q.clamp(0.0, 1.0);
     let mix = |a: f64, b: f64| a + (b - a) * q;
     (mix(pile.0, fan.0), mix(pile.1, fan.1), mix(pile.2, fan.2))
 }
@@ -634,56 +642,73 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_fall_never_passes_its_place() {
-        // From 1 pt to 600 pt, from rest or thrown away from the place: it
-        // never goes past, and longer falls take longer, but not in proportion.
+    fn a_fall_carries_a_little_past_and_settles() {
+        // From 1 pt to 600 pt, from rest or thrown away from the place: past it
+        // by a little (never a fifth), back and still within a second and a
+        // half; longer falls take longer, but not in proportion.
         let mut last = 0.0;
         for d in [1.0, 10.0, 50.0, 100.0, 200.0, 600.0] {
             for v0 in [0.0, 800.0] {
                 let (mut e, mut v, mut t, h) = (d, v0, 0.0, 1.0 / 480.0);
-                let mut done = None;
+                let (mut past, mut arrived, mut still) = (0.0_f64, None, 0.0);
                 while t < 3.0 {
                     v += FALL.accel(e, v) * h;
                     e += v * h;
                     t += h;
-                    assert!(e > -1e-6 * d, "{d} pt, thrown {v0}: past by {}", -e);
-                    if done.is_none() && e < 0.01 * d {
-                        done = Some(t);
+                    past = past.max(-e);
+                    if arrived.is_none() && e < 0.05 * d {
+                        arrived = Some(t);
+                    }
+                    if e.abs() > 0.05 * d {
+                        still = t;
                     }
                 }
-                let done = done.unwrap();
+                // Thrown, a short fall carries on by what the throw gives it.
+                let room = if v0 == 0.0 {
+                    0.2 * d
+                } else {
+                    0.2 * d.max(60.0)
+                };
+                assert!(past < room, "{d} pt, thrown {v0}: past by {past}");
+                assert!(still < 1.5, "{d} pt, thrown {v0}: settled after {still}s");
                 if v0 == 0.0 {
-                    assert!(done >= last, "{d} pt in {done}s");
-                    last = done;
+                    let arrived = arrived.unwrap();
+                    assert!(arrived >= last, "{d} pt in {arrived}s");
+                    last = arrived;
                 }
             }
         }
-        // A re-layout of 100 pt within the reference's 0.35–0.65 s.
-        let (mut e, mut v, mut t) = (100.0, 0.0, 0.0);
-        while e > 1.0 {
+        // A re-layout of 100 pt: a visible overshoot, as in the reference (6–19%).
+        let (mut e, mut v, mut past) = (100.0, 0.0, 0.0_f64);
+        for _ in 0..960 {
             v += FALL.accel(e, v) / 480.0;
             e += v / 480.0;
-            t += 1.0 / 480.0;
+            past = past.max(-e);
         }
-        assert!(t > 0.25 && t < 0.45, "{t}s");
+        assert!(past > 5.0 && past < 19.0, "past by {past}");
     }
 
     #[test]
     fn a_stack_opens_and_folds_as_one_fall() {
-        // Opening from folded: no overshoot, at rest in about half a second;
-        // folding back the same way.
+        // Opening from folded, and back: a little past the end (the action's
+        // overshoot), back, and at rest within a second and a half; never a
+        // jump between frames.
         for (from, to) in [(0.0, 1.0), (1.0, 0.0), (0.3, 1.0)] {
             let mut o = Opening { at: from, v: 0.0 };
-            let (mut t, mut prev) = (0.0, from);
+            let (mut t, mut prev, mut past) = (0.0, from, 0.0_f64);
             while o.step(to, 1.0 / 120.0) {
                 t += 1.0 / 120.0;
-                assert!((o.at - prev) * (to - from) >= -1e-12, "turned back at {t}s");
-                assert!((o.at - to) * (from - to) >= -1e-9, "past {to} at {t}s");
+                past = past.max((o.at - to) * (to - from).signum());
+                assert!((o.at - prev).abs() < 0.06, "jumped at {t}s");
                 prev = o.at;
-                assert!(t < 1.0);
+                assert!(t < 1.5, "{from}→{to} still moving");
             }
-            assert!(t > 0.25 && t < 0.65, "{from}→{to} in {t}s");
+            assert!(past > 0.02 && past < 0.1, "{from}→{to}: past by {past}");
         }
+        // Its start is gentle: after one frame it has barely moved.
+        let mut o = Opening::default();
+        o.step(1.0, 1.0 / 60.0);
+        assert!(o.at < 0.01, "{}", o.at);
         // A scroll moving the goal along is followed without a jump.
         let mut o = Opening::default();
         let mut prev = 0.0;
@@ -696,6 +721,10 @@ mod tests {
         assert_eq!(
             fan_mix((0.0, 0.0, 0.0), (10.0, 20.0, 30.0), 0.5),
             (5.0, 10.0, 15.0)
+        );
+        assert_eq!(
+            fan_mix((0.0, 0.0, 0.0), (10.0, 20.0, 30.0), 1.1),
+            (11.0, 22.0, 33.0)
         );
     }
 
@@ -768,7 +797,7 @@ mod tests {
 
     #[test]
     fn a_turned_target_is_reached() {
-        // A fan card falls into its angle and stays there, never past it.
+        // A fan card falls into its angle, a little past, and stays there.
         let mut b = Body::at(0.0, 0.0);
         b.fall_to((30.0, -20.0, 40.0), (0.0, 60.0));
         let (mut t, mut most) = (0.0, 0.0_f64);
@@ -777,15 +806,15 @@ mod tests {
             most = most.max(b.r);
             t += 1.0 / 120.0;
         }
-        assert!((b.r - 40.0).abs() < 0.05 && t < 1.0, "{} after {t}s", b.r);
-        assert!(most <= 40.0 + 1e-6, "turned past to {most}");
+        assert!((b.r - 40.0).abs() < 0.05 && t < 1.6, "{} after {t}s", b.r);
+        assert!(most <= 40.0 * 1.2, "turned past to {most}");
     }
 
     #[test]
     fn a_fanned_card_slides_round_its_spiral() {
         // Moved one slot round (40°) a fan of radius 100: it goes round the
-        // centre, not along the chord (which dips to 94 from it), and lands
-        // without passing its place.
+        // centre, not along the chord (which dips to 94 from it), and lands a
+        // little past its place, then settles.
         let rad = 100.0_f64;
         let (a0, a1) = (0.0_f64, 40.0_f64.to_radians());
         let mut b = Body::at(rad * a0.cos(), rad * a0.sin());
@@ -800,8 +829,8 @@ mod tests {
             past = past.max(b.y.atan2(b.x) - a1);
         }
         assert!(low > 98.0 && high < 102.0, "off the circle: {low}..{high}");
-        assert!(past < 1e-3, "past by {past}");
-        assert!(t < 0.8, "{t}s");
+        assert!(past > 0.0 && past < 0.2 * a1, "past by {past}");
+        assert!(t < 1.6, "{t}s");
     }
 
     #[test]
@@ -1019,30 +1048,29 @@ mod tests {
     }
 
     #[test]
-    fn a_card_dropped_into_a_stack_falls_in_without_bouncing() {
-        // From anywhere round a pile, at any speed: it never passes the pile
-        // and lies still on it within a second.
+    fn a_card_dropped_into_a_stack_falls_in_and_settles() {
+        // From anywhere round a pile, at any speed: once it has got there it
+        // carries on past by little (never a fifth of its way), and lies still
+        // within a second and a half.
         for k in 0..64 {
             let a = k as f64 / 64.0 * std::f64::consts::TAU;
             let mut b = Body::at(250.0 * a.cos(), 250.0 * a.sin());
             b.vx = 600.0 * (a * 3.0).sin();
             b.vy = 600.0 * (a * 5.0).cos();
             b.fall_to((0.0, 0.0, 0.0), (0.0, 0.0));
-            let (mut t, mut moved_off) = (0.0, false);
-            let mut near = f64::MAX;
-            while !b.at_rest() && t < 2.0 {
+            let (mut t, mut reached, mut past) = (0.0, false, 0.0_f64);
+            while !b.at_rest() && t < 3.0 {
                 b.step(1.0 / 120.0);
                 let d = b.x.hypot(b.y);
-                // Once close, it never goes off again.
                 if d < 5.0 {
-                    near = near.min(d);
-                } else if near < 5.0 {
-                    moved_off = true;
+                    reached = true;
+                } else if reached {
+                    past = past.max(d);
                 }
                 t += 1.0 / 120.0;
             }
-            assert!(!moved_off, "bounced off the pile from {a}");
-            assert!(t < 1.0, "settled after {t}s from {a}");
+            assert!(past < 0.2 * 250.0, "past the pile by {past} from {a}");
+            assert!(t < 1.5, "settled after {t}s from {a}");
         }
     }
 
