@@ -111,3 +111,28 @@ spring k 110, ζ 0.55) and only then lies loose on the spiral. Ours: angle
 settled in 0.2 s (4% past), position 14–20% past, at rest in 0.52–0.67 s.
 Test: `a_fan_opens_as_one_blob` (eight cards, all moving from the first
 frame, none off its straight line by more than 5% of its way).
+
+## One law: gravity (2026-11-01)
+
+Everything above (the spill spring, launches, delays and wave, the loose
+radial and along springs, the neighbours' shove, the drop's rake, the fold
+spring) is gone. Тима asked for one mechanic, gravity toward the centre of the
+stack or fan, natural, with no springs and no bounce. Now:
+
+- Each stack has an openness (0 folded, 1 fanned) that falls toward the
+  openness asked for (click, scroll, fling, Esc) by `physics::FALL_OPEN`:
+  within 1% after about 0.38 s, at rest after 0.5 s, never past.
+- Every card has a pile place and a fan place; its place at any moment is on
+  the straight way between them at the openness, so the stack opens out of
+  the pile and folds back into it as one mass.
+- A card off its place (a re-layout, a card dropped in, the fan moving under
+  it) falls onto it by `physics::FALL`, decomposed toward the stack's centre
+  and round it: a re-layout slides the cards round the spiral, a dropped card
+  curves in. Its turn falls the same way (`FALL_TURN`). No swing in a stack.
+- The fall: at most 8000 pt/s² toward the place, no faster than it can brake
+  at 3000 pt/s², a critically damped landing (τ 75 ms). Long moves take
+  longer than short ones, as a fall does.
+- Nothing a stack shows appears or goes at once: the cards that draw only
+  when open fade in over the first 30% of the opening and out over the last
+  30% of the fold, before they leave the render tree; the text of the cards
+  behind the top one fades the same way.

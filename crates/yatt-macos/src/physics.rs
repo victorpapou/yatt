@@ -1,12 +1,16 @@
-//! The card motion engine. A card's position chases its target on a critically
-//! damped spring (no overshoot, no jitter); its angle hangs like a damped
-//! pendulum from the point that moves it, so it tilts against a sudden move,
-//! swings back past level once or twice and settles, as if on a string. One
-//! integrator with fixed substeps for both ([`Body::step`]). A dragged group is
-//! a chain: each follower hangs off the card ahead. Plain math with no AppKit,
-//! so it is tested on any OS. The constants are measured from the reference clip
-//! (docs/reference/tima/motion/notes.md); the fan shape is fitted to the swatch
-//! frames (docs/reference/tima/swatch).
+//! The card motion engine. Cards of a stack or a fan, and each stack's
+//! openness, move by one law: gravity ([`Fall`]): a fall onto the place with
+//! bounded acceleration and a soft, critically damped landing, never past it.
+//! A fanned card falls toward and away from the stack's centre and round it
+//! ([`Body::fall_to`]), so the fan opens and folds as one mass ([`Opening`])
+//! and its cards slide round the spiral to new places. Elsewhere (lists, the
+//! modal) a card chases its target on a critically damped spring and its angle
+//! hangs like a damped pendulum from the point that moves it; a dragged group
+//! is a chain, each follower hanging off the card ahead. One integrator with
+//! fixed substeps for all of it ([`Body::step`]). Plain math with no AppKit,
+//! so it is tested on any OS. The timings are measured from the reference clip
+//! (docs/reference/tima/motion/analysis.md); the fan shape is fitted to the
+//! swatch frames (docs/reference/tima/swatch).
 
 /// A spring with unit mass: `k` is stiffness, `zeta` the damping ratio (1 = critical).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -28,38 +32,100 @@ impl Spring {
 /// Where a card goes when it is put somewhere: critically damped, settled in
 /// about 0.35 s. The swing of its angle is the hanging part ([`SWING_PERIOD`]).
 pub const SETTLE: Spring = Spring::new(380.0, 1.0);
-/// Settling into a stack or a list slot.
+/// Settling into a list slot (and the default for a new body).
 pub const PILE: Spring = SETTLE;
-/// A fanned card is not tied to a slot by one spring; it is a loose body lying on
-/// the fan's spiral (docs/reference/tima/motion/analysis.md):
-///
-/// - across the spiral, toward or away from the fan's centre, a firm pull back
-///   onto it, like gravity onto a floor: about 10% past, within 5% of rest in
-///   about 0.5 s;
-/// - along the spiral, round the centre, a looser pull toward its place, so the
-///   cards slide round it (one slot per new card, as measured: 6–19% past, at
-///   rest after 0.5–0.65 s), turning as they go round ([`FAN_PHASE_TURN`]);
-/// - neighbours that slide closer than [`FAN_CONTACT`] of their gap shove each
-///   other apart ([`FAN_CONTACT_K`]);
-/// - a card dropped into an open fan rakes the others in toward the centre
-///   ([`FAN_KICK`], fading by slot from the drop, [`FAN_KICK_FALL`]); they
-///   spring back out onto the spiral.
-pub const FAN_RADIAL: Spring = Spring::new(110.0, 0.55);
-pub const FAN_ALONG: Spring = Spring::new(70.0, 0.6);
-/// How far a card turns per degree it goes round the fan (the fan's own turn
-/// over its sweep).
-pub const FAN_PHASE_TURN: f64 = FAN_TURN / FAN_SWEEP;
-/// Neighbours closer round the centre than this share of their gap at rest push
-/// apart, with this stiffness (per second², on the arc).
-pub const FAN_CONTACT: f64 = 0.5;
-pub const FAN_CONTACT_K: f64 = 400.0;
-/// The inward speed (pt/s) a card dropped into an open fan gives the card next
-/// to it, falling off by e every this many slots further away.
-pub const FAN_KICK: f64 = 120.0;
-pub const FAN_KICK_FALL: f64 = 3.0;
-/// A fan folding back into its stack: about 0.3 s (measured), with only a hint
-/// of settle; each card a little off it ([`gather_spring`]).
-pub const FAN_FOLD: Spring = Spring::new(250.0, 0.9);
+
+/// The one law every card of a stack or a fan moves by, and each stack's
+/// openness itself: gravity, not a spring. A body falls toward its place with
+/// at most `g` of acceleration, may go no faster than it can still brake at
+/// `brake` before the place, and lands on it over the last stretch with time
+/// constant `tau`, critically: it never passes its place and never comes back.
+/// Far moves take longer than short ones, as a fall does (time grows with the
+/// root of the distance), instead of every move taking the same time as on a
+/// spring.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Fall {
+    pub g: f64,
+    pub brake: f64,
+    pub tau: f64,
+}
+
+impl Fall {
+    /// The same fall measured in another unit, `unit` points to one of it.
+    pub const fn per(self, unit: f64) -> Self {
+        Self {
+            g: self.g / unit,
+            brake: self.brake / unit,
+            tau: self.tau,
+        }
+    }
+
+    /// The acceleration of a body `e` from its place, moving at `v` (both
+    /// along one axis; positive `e` is past the place).
+    pub fn accel(self, e: f64, v: f64) -> f64 {
+        let d = e.abs();
+        // The fastest it may go here and still land softly: braking at `brake`
+        // far off, an exponential approach near.
+        let reach = (2.0 * self.brake * d).sqrt().min(d / self.tau);
+        let want = -reach.copysign(e);
+        // Chasing that speed four times as fast as the landing: exactly the
+        // critical damping of the final approach.
+        ((want - v) * 4.0 / self.tau).clamp(-self.g, self.g)
+    }
+}
+
+/// A card of a stack or a fan, in points: a fan's re-layout of about 100 pt is
+/// within 1% of its place after about 0.33 s and at rest after 0.45 s (the
+/// reference: 0.35–0.65 s), a 10 pt nudge after 0.26 s.
+pub const FALL: Fall = Fall {
+    g: 8000.0,
+    brake: 3000.0,
+    tau: 0.075,
+};
+/// The same fall for a card's turn, a degree weighing as much as 2.5 pt.
+pub const FALL_TURN: Fall = FALL.per(2.5);
+/// How far a stack's cards travel between folded and fanned, taken as one
+/// point of travel for the openness ([`Opening`]).
+pub const FAN_TRAVEL: f64 = 160.0;
+/// The fall of a stack's openness (0 folded, 1 fanned): within 1% after about
+/// 0.38 s, at rest after 0.5 s (the reference opens in about 0.47 s).
+pub const FALL_OPEN: Fall = FALL.per(FAN_TRAVEL);
+
+/// How open a stack is, falling toward how open it should be ([`FALL_OPEN`]).
+/// Every card of the stack sits at its place for this openness, on the straight
+/// way from its pile place to its fan place, so the stack opens and folds as
+/// one mass; a card off its place falls back onto it ([`Body::fall`]).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Opening {
+    pub at: f64,
+    pub v: f64,
+}
+
+impl Opening {
+    /// Falls toward `to` for `dt` seconds; returns whether it is still moving.
+    pub fn step(&mut self, to: f64, dt: f64) -> bool {
+        let steps = (dt / (1.0 / 480.0)).ceil().max(1.0) as usize;
+        let h = dt / steps as f64;
+        for _ in 0..steps {
+            self.v += FALL_OPEN.accel(self.at - to, self.v) * h;
+            self.at += self.v * h;
+        }
+        if (self.at - to).abs() < 1e-3 && self.v.abs() < 1e-2 {
+            self.at = to;
+            self.v = 0.0;
+            return false;
+        }
+        true
+    }
+}
+
+/// A card's place at openness `q`: on the straight way from `pile` to `fan`
+/// (x, y, turn).
+pub fn fan_mix(pile: (f64, f64, f64), fan: (f64, f64, f64), q: f64) -> (f64, f64, f64) {
+    let q = q.clamp(0.0, 1.0);
+    let mix = |a: f64, b: f64| a + (b - a) * q;
+    (mix(pile.0, fan.0), mix(pile.1, fan.1), mix(pile.2, fan.2))
+}
 
 /// The weighted tilt of a moving card: it leans into its sideways motion, about
 /// 3° per 1000 pt/s and at most 7°, following through a damped response
@@ -70,13 +136,6 @@ pub const SWING_ZETA: f64 = 0.7;
 pub const SWING_PER_SPEED: f64 = 0.003;
 pub const SWING_MAX: f64 = 7.0;
 
-/// When the `i`-th card of a fan of `n` starts to move as the fan opens, in
-/// seconds: in the reference every card reacts at once (0–17 ms), so only a
-/// trace of a wave, at most 5 ms apart and 30 ms in all.
-pub fn fan_wave(i: usize, n: usize) -> f64 {
-    let step = (0.03 / n.max(1) as f64).min(0.005);
-    i as f64 * step
-}
 /// The lead of a dragged group: nearly attached, a touch of lag.
 pub const LEAD: Spring = Spring::new(1200.0, 1.0);
 /// A single dragged card: with the pointer (about 10 ms behind), so its swing
@@ -262,19 +321,13 @@ pub struct Body {
     pub ty: f64,
     pub tr: f64,
     pub spring: Spring,
-    /// On a fan: the target's offset from the fan's centre. The body then moves
-    /// round that centre ([`FAN_RADIAL`], [`FAN_ALONG`]) instead of by `spring`.
-    pub orbit: Option<(f64, f64)>,
-    /// On a fan: how far round the centre the body is from its target, in
-    /// radians (the short way, −π..π), and the angle it was last seen at.
-    /// Never counted up over time: a path through the centre would add whole
-    /// turns, and the card would whirl round the board.
-    pub lap: f64,
-    pub lap_at: f64,
-    /// Just out of the stack: the card goes straight to its place (with
-    /// `spring`), so the fan opens as one blob swelling out from the pile; only
-    /// once there does it lie loose on the spiral.
-    pub spill: bool,
+    /// In a stack or a fan: the stack's centre, in the same top-left frame as
+    /// `x, y` (the centre less half a card). The body then falls onto its place
+    /// by [`FALL`] instead of its spring: toward and away from that centre, and
+    /// round it, so a fan's cards slide round the spiral to new places and a
+    /// card dropped in curves in toward the centre. Its angle falls too
+    /// ([`FALL_TURN`]), with no swing.
+    pub fall: Option<(f64, f64)>,
     /// Whether the angle hangs and swings (cards), or just eases to its target
     /// (the task panel).
     pub swings: bool,
@@ -293,77 +346,49 @@ impl Body {
             ty: y,
             tr: 0.0,
             spring: PILE,
-            orbit: None,
-            lap: 0.0,
-            lap_at: 0.0,
-            spill: false,
+            fall: None,
             swings: true,
         }
     }
 
-    /// A new place; any fan orbit is dropped ([`Body::round`] sets it again).
+    /// A new place, by its spring (no longer in a stack).
     pub fn target(&mut self, x: f64, y: f64, r: f64) {
         self.tx = x;
         self.ty = y;
         self.tr = r;
-        self.orbit = None;
+        self.fall = None;
     }
 
-    /// Moves round a fan's centre: the target sits `(dx, dy)` from it. A card
-    /// coming out of the stack first goes straight to its place ([`Body::spill`]),
-    /// all of them at once, so the fan swells out of the pile as one blob; a
-    /// card already on the fan slides round to its new place.
-    pub fn round(&mut self, dx: f64, dy: f64) {
-        let at = dy.atan2(dx);
-        match self.orbit {
-            Some(o) if o == (dx, dy) => return,
-            Some(_) => {}
-            None => self.spill = true,
-        }
-        self.orbit = Some((dx, dy));
-        let (_, ang, _) = self.polar((dx, dy));
-        self.lap = wrap(ang - at);
-        self.lap_at = ang;
+    /// A place in a stack or a fan whose centre is `centre` (in the top-left
+    /// frame of `x, y`): the body falls onto it ([`Body::fall`]).
+    pub fn fall_to(&mut self, (x, y, r): (f64, f64, f64), centre: (f64, f64)) {
+        self.tx = x;
+        self.ty = y;
+        self.tr = r;
+        self.fall = Some(centre);
     }
 
-    /// Where the body sits round its fan: (unit vector out from the centre, its
-    /// angle round the centre, distance out).
-    fn polar(&self, (ox, oy): (f64, f64)) -> ((f64, f64), f64, f64) {
-        let (px, py) = (self.x - self.tx + ox, self.y - self.ty + oy);
-        let rho = px.hypot(py);
-        if rho < 1e-3 {
-            ((self.lap_at.cos(), self.lap_at.sin()), self.lap_at, rho)
-        } else {
-            ((px / rho, py / rho), py.atan2(px), rho)
+    /// The fall's acceleration for this body (see [`Body::fall`]).
+    fn fall_accel(&self, (cx, cy): (f64, f64)) -> (f64, f64) {
+        let (px, py) = (self.x - cx, self.y - cy);
+        let (qx, qy) = (self.tx - cx, self.ty - cy);
+        let (rho, reach) = (px.hypot(py), qx.hypot(qy));
+        // On (or at) the centre, round it means nothing: straight onto the place.
+        if rho < 1.0 || reach < 1.0 {
+            return (
+                FALL.accel(self.x - self.tx, self.vx),
+                FALL.accel(self.y - self.ty, self.vy),
+            );
         }
-    }
-
-    /// How far round its fan the body is from its target, in radians (0 off a
-    /// fan; negative: it has that far still to go clockwise).
-    pub fn phase_off(&self) -> f64 {
-        if self.orbit.is_some() && !self.spill {
-            self.lap
-        } else {
-            0.0
-        }
-    }
-
-    /// Adds `dv` (pt/s) along the fan, clockwise (y down).
-    pub fn push_along(&mut self, dv: f64) {
-        if let Some(o) = self.orbit {
-            let (u, _, _) = self.polar(o);
-            self.vx += -u.1 * dv;
-            self.vy += u.0 * dv;
-        }
-    }
-
-    /// Adds `dv` (pt/s) in toward the fan's centre.
-    pub fn push_in(&mut self, dv: f64) {
-        if let Some(o) = self.orbit {
-            let (u, _, _) = self.polar(o);
-            self.vx -= u.0 * dv;
-            self.vy -= u.1 * dv;
-        }
+        let u = (px / rho, py / rho);
+        let t = (-u.1, u.0);
+        let (v_out, v_round) = (self.vx * u.0 + self.vy * u.1, self.vx * t.0 + self.vy * t.1);
+        let round = wrap(py.atan2(px) - qy.atan2(qx)) * rho;
+        // Going round takes a pull in toward the centre, or the body would
+        // drift outward off the circle.
+        let a_out = FALL.accel(rho - reach, v_out) - v_round * v_round / rho;
+        let a_round = FALL.accel(round, v_round);
+        (a_out * u.0 + a_round * t.0, a_out * u.1 + a_round * t.1)
     }
 
     /// Advances by `dt` seconds, in small substeps so stiff springs stay stable.
@@ -373,32 +398,10 @@ impl Body {
         let (k, c) = (self.spring.k, self.spring.damping());
         let w0 = std::f64::consts::TAU / SWING_PERIOD;
         for _ in 0..steps {
-            let mut tr = self.tr;
-            if let Some(o) = self.orbit {
-                // Across the spiral, firm; along it, loose.
-                let (u, ang, rho) = self.polar(o);
-                if rho >= 1e-3 {
-                    self.lap = wrap(ang - o.1.atan2(o.0));
-                    self.lap_at = ang;
-                }
-                if self.spill && (self.x - self.tx).hypot(self.y - self.ty) < 0.5 {
-                    self.spill = false;
-                }
-                let off = if self.spill { 0.0 } else { self.lap };
-                let t = (-u.1, u.0);
-                let v_out = self.vx * u.0 + self.vy * u.1;
-                let v_along = self.vx * t.0 + self.vy * t.1;
-                let reach = o.0.hypot(o.1);
-                let a_out = -FAN_RADIAL.k * (rho - reach) - FAN_RADIAL.damping() * v_out;
-                let a_along = -FAN_ALONG.k * reach * off - FAN_ALONG.damping() * v_along;
-                if self.spill {
-                    self.vx += (-k * (self.x - self.tx) - c * self.vx) * h;
-                    self.vy += (-k * (self.y - self.ty) - c * self.vy) * h;
-                } else {
-                    self.vx += (a_out * u.0 + a_along * t.0) * h;
-                    self.vy += (a_out * u.1 + a_along * t.1) * h;
-                }
-                tr += FAN_PHASE_TURN * off.to_degrees();
+            if let Some(c) = self.fall {
+                let (ax, ay) = self.fall_accel(c);
+                self.vx += ax * h;
+                self.vy += ay * h;
             } else {
                 self.vx += (-k * (self.x - self.tx) - c * self.vx) * h;
                 self.vy += (-k * (self.y - self.ty) - c * self.vy) * h;
@@ -412,6 +415,11 @@ impl Body {
             }
             self.x += self.vx * h;
             self.y += self.vy * h;
+            if self.fall.is_some() {
+                self.vr += FALL_TURN.accel(self.r - self.tr, self.vr) * h;
+                self.r += self.vr * h;
+                continue;
+            }
             // The angle leans into the sideways motion (clockwise moving right,
             // as the bottom lags), through a damped response.
             let lean = if self.swings {
@@ -419,7 +427,7 @@ impl Body {
             } else {
                 0.0
             };
-            let swing = self.r - tr - lean;
+            let swing = self.r - self.tr - lean;
             if self.swings {
                 self.vr += (-w0 * w0 * swing - 2.0 * SWING_ZETA * w0 * self.vr) * h;
             } else {
@@ -428,10 +436,8 @@ impl Body {
                 self.vr += (-k * swing - c * self.vr) * h;
             }
             self.r += self.vr * h;
-            // On a fan the card turns with its way round, freely.
-            let limit = SWING_MAX;
-            if self.swings && self.orbit.is_none() && (self.r - tr).abs() > limit {
-                self.r = tr + limit.copysign(self.r - tr);
+            if self.swings && (self.r - self.tr).abs() > SWING_MAX {
+                self.r = self.tr + SWING_MAX.copysign(self.r - self.tr);
                 self.vr = 0.0;
             }
         }
@@ -517,107 +523,6 @@ pub fn fan_jitter(seed: u64) -> (f64, f64, f64) {
     };
     let a = JITTER_MAX * FAN_JITTER;
     (next() * a, next() * a, next() * a)
-}
-
-/// How unevenly the cards spill out of a stack, at [`FAN_SPILL_VARY`] 1.0:
-/// each card starts up to `SPILL_DELAY` late, its spring stiffer or softer and
-/// more or less damped by up to `SPILL_SPRING`, launched up to `SPILL_TURN`
-/// degrees off its straight way and faster or slower by up to `SPILL_SPEED`;
-/// and the whole blob leans to one side of the stack (its top card's way) at
-/// up to `SPILL_LEAN` pt/s.
-pub const FAN_SPILL_VARY: f64 = 1.0;
-const SPILL_DELAY: f64 = 0.06;
-const SPILL_SPRING: f64 = 0.28;
-const SPILL_TURN: f64 = 9.0;
-const SPILL_SPEED: f64 = 0.2;
-const SPILL_LEAN: f64 = 90.0;
-
-/// `n` numbers in −1..1 fixed by `seed` (a different stream from [`fan_jitter`]).
-fn spread(seed: u64, n: usize) -> Vec<f64> {
-    let (a, b, c) = fan_jitter(seed ^ 0x5EED_F00D_CAFE_D00D);
-    let (d, e, f) = fan_jitter(seed.rotate_left(17) ^ 0xA5A5_5A5A_1234_5678);
-    [a, b, c, d, e, f][..n]
-        .iter()
-        .map(|x| x / JITTER_MAX / FAN_JITTER.max(1e-9))
-        .collect()
-}
-
-/// How late a card starts out of the stack (seconds).
-pub fn spill_delay(seed: u64) -> f64 {
-    SPILL_DELAY / 2.0 * (1.0 + spread(seed, 1)[0]) * FAN_SPILL_VARY
-}
-
-/// A card's own spring out of the stack: [`FAN_RADIAL`], a little off.
-pub fn spill_spring(seed: u64) -> Spring {
-    let v = spread(seed, 3);
-    Spring::new(
-        FAN_RADIAL.k * (1.0 + SPILL_SPRING * FAN_SPILL_VARY * v[1]),
-        FAN_RADIAL.zeta * (1.0 + SPILL_SPRING * FAN_SPILL_VARY * v[2]),
-    )
-}
-
-/// A card's own spring back into the stack: [`FAN_FOLD`], a little off, the
-/// way [`spill_spring`] varies the spill, but never under-damped enough to
-/// bounce on the pile.
-pub fn gather_spring(seed: u64) -> Spring {
-    let v = spread(seed, 3);
-    Spring::new(
-        FAN_FOLD.k * (1.0 + SPILL_SPRING * FAN_SPILL_VARY * v[1]),
-        (FAN_FOLD.zeta * (1.0 + 0.1 * FAN_SPILL_VARY * v[2])).min(1.0),
-    )
-}
-
-/// The push a card gets as it leaves a fan for the pile: [`spill_launch`]'s,
-/// at a quarter of the strength, so the cards come in a little unevenly.
-pub fn gather_launch(seed: u64, stack: u64, way: (f64, f64)) -> (f64, f64) {
-    let v = spill_launch(seed, stack, way);
-    (v.0 * 0.25, v.1 * 0.25)
-}
-
-/// The push a card gets as it leaves the stack, toward `way` (from where it
-/// is to its place): its own angle and strength, plus the blob's lean, set by
-/// `stack` (the top card's seed).
-pub fn spill_launch(seed: u64, stack: u64, way: (f64, f64)) -> (f64, f64) {
-    let v = spread(seed, 5);
-    let len = way.0.hypot(way.1);
-    if len < 1e-6 {
-        return (0.0, 0.0);
-    }
-    let turn = (SPILL_TURN * FAN_SPILL_VARY * v[3]).to_radians();
-    let speed = len * 2.0 * (1.0 + SPILL_SPEED * FAN_SPILL_VARY * v[4]);
-    let (c, s) = (turn.cos(), turn.sin());
-    let (ux, uy) = (way.0 / len, way.1 / len);
-    let lean = spread(stack, 1)[0] * std::f64::consts::PI;
-    let bias = SPILL_LEAN * FAN_SPILL_VARY;
-    (
-        speed * (ux * c - uy * s) + bias * lean.cos(),
-        speed * (ux * s + uy * c) + bias * lean.sin(),
-    )
-}
-
-/// Neighbours on one fan, in slot order (newest first), shove each other apart
-/// round the centre when they slide closer than [`FAN_CONTACT`] of their gap at
-/// rest.
-pub fn fan_contact(ring: &mut [&mut Body], dt: f64) {
-    for j in 1..ring.len() {
-        let (Some(a), Some(b)) = (ring[j - 1].orbit, ring[j].orbit) else {
-            continue;
-        };
-        let gap = (b.1.atan2(b.0) - a.1.atan2(a.0)).rem_euclid(std::f64::consts::TAU);
-        let now = gap + ring[j].phase_off() - ring[j - 1].phase_off();
-        let short = FAN_CONTACT * gap - now;
-        if short > 0.0 {
-            let dv = FAN_CONTACT_K * short * b.0.hypot(b.1) * dt / 2.0;
-            ring[j - 1].push_along(-dv);
-            ring[j].push_along(dv);
-        }
-    }
-}
-
-/// The inward speed a card `i` slots from where a card was dropped into its fan
-/// gets ([`FAN_KICK`]).
-pub fn fan_kick(i: usize) -> f64 {
-    FAN_KICK * (-(i.max(1) as f64 - 1.0) / FAN_KICK_FALL).exp()
 }
 
 /// The top of something `tall` high centred between `top` and `bottom`, but
@@ -729,11 +634,69 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_fan_opens_as_a_short_wave() {
-        assert_eq!(fan_wave(0, 8), 0.0);
-        assert!(fan_wave(1, 3) <= 0.005 + 1e-12);
-        assert!(fan_wave(19, 20) <= 0.03 + 1e-12);
-        assert!(fan_wave(5, 8) > fan_wave(4, 8));
+    fn a_fall_never_passes_its_place() {
+        // From 1 pt to 600 pt, from rest or thrown away from the place: it
+        // never goes past, and longer falls take longer, but not in proportion.
+        let mut last = 0.0;
+        for d in [1.0, 10.0, 50.0, 100.0, 200.0, 600.0] {
+            for v0 in [0.0, 800.0] {
+                let (mut e, mut v, mut t, h) = (d, v0, 0.0, 1.0 / 480.0);
+                let mut done = None;
+                while t < 3.0 {
+                    v += FALL.accel(e, v) * h;
+                    e += v * h;
+                    t += h;
+                    assert!(e > -1e-6 * d, "{d} pt, thrown {v0}: past by {}", -e);
+                    if done.is_none() && e < 0.01 * d {
+                        done = Some(t);
+                    }
+                }
+                let done = done.unwrap();
+                if v0 == 0.0 {
+                    assert!(done >= last, "{d} pt in {done}s");
+                    last = done;
+                }
+            }
+        }
+        // A re-layout of 100 pt within the reference's 0.35–0.65 s.
+        let (mut e, mut v, mut t) = (100.0, 0.0, 0.0);
+        while e > 1.0 {
+            v += FALL.accel(e, v) / 480.0;
+            e += v / 480.0;
+            t += 1.0 / 480.0;
+        }
+        assert!(t > 0.25 && t < 0.45, "{t}s");
+    }
+
+    #[test]
+    fn a_stack_opens_and_folds_as_one_fall() {
+        // Opening from folded: no overshoot, at rest in about half a second;
+        // folding back the same way.
+        for (from, to) in [(0.0, 1.0), (1.0, 0.0), (0.3, 1.0)] {
+            let mut o = Opening { at: from, v: 0.0 };
+            let (mut t, mut prev) = (0.0, from);
+            while o.step(to, 1.0 / 120.0) {
+                t += 1.0 / 120.0;
+                assert!((o.at - prev) * (to - from) >= -1e-12, "turned back at {t}s");
+                assert!((o.at - to) * (from - to) >= -1e-9, "past {to} at {t}s");
+                prev = o.at;
+                assert!(t < 1.0);
+            }
+            assert!(t > 0.25 && t < 0.65, "{from}→{to} in {t}s");
+        }
+        // A scroll moving the goal along is followed without a jump.
+        let mut o = Opening::default();
+        let mut prev = 0.0;
+        for f in 0..120 {
+            let goal = (f as f64 * 0.02).min(1.0);
+            o.step(goal, 1.0 / 60.0);
+            assert!((o.at - prev).abs() < 0.1, "jumped at frame {f}");
+            prev = o.at;
+        }
+        assert_eq!(
+            fan_mix((0.0, 0.0, 0.0), (10.0, 20.0, 30.0), 0.5),
+            (5.0, 10.0, 15.0)
+        );
     }
 
     #[test]
@@ -805,83 +768,40 @@ mod tests {
 
     #[test]
     fn a_turned_target_is_reached() {
-        // A fan card swings into its angle and stays there.
+        // A fan card falls into its angle and stays there, never past it.
         let mut b = Body::at(0.0, 0.0);
-        b.target(30.0, -20.0, 40.0);
-        b.round(30.0, -20.0);
-        let mut t = 0.0;
+        b.fall_to((30.0, -20.0, 40.0), (0.0, 60.0));
+        let (mut t, mut most) = (0.0, 0.0_f64);
         while !b.at_rest() && t < 3.0 {
             b.step(1.0 / 120.0);
+            most = most.max(b.r);
             t += 1.0 / 120.0;
         }
-        assert!((b.r - 40.0).abs() < 0.05 && t < 2.0, "{} after {t}s", b.r);
+        assert!((b.r - 40.0).abs() < 0.05 && t < 1.0, "{} after {t}s", b.r);
+        assert!(most <= 40.0 + 1e-6, "turned past to {most}");
     }
 
     #[test]
     fn a_fanned_card_slides_round_its_spiral() {
         // Moved one slot round (40°) a fan of radius 100: it goes round the
-        // centre, not along the chord (which dips to 94 from it), overshoots a
-        // little and settles.
+        // centre, not along the chord (which dips to 94 from it), and lands
+        // without passing its place.
         let rad = 100.0_f64;
         let (a0, a1) = (0.0_f64, 40.0_f64.to_radians());
         let mut b = Body::at(rad * a0.cos(), rad * a0.sin());
-        b.target(rad * a1.cos(), rad * a1.sin(), 0.0);
-        b.round(rad * a1.cos(), rad * a1.sin());
-        b.spill = false;
-        let (mut low, mut past, mut t) = (f64::MAX, 0.0_f64, 0.0);
+        b.fall_to((rad * a1.cos(), rad * a1.sin(), 0.0), (0.0, 0.0));
+        let (mut low, mut high, mut past, mut t) = (f64::MAX, 0.0_f64, 0.0_f64, 0.0);
         while !b.at_rest() && t < 3.0 {
             b.step(1.0 / 120.0);
             t += 1.0 / 120.0;
-            low = low.min(b.x.hypot(b.y));
-            past = past.max(b.phase_off());
+            let r = b.x.hypot(b.y);
+            low = low.min(r);
+            high = high.max(r);
+            past = past.max(b.y.atan2(b.x) - a1);
         }
-        assert!(low > 96.0, "dipped to {low}");
-        assert!(past > 0.01 && past < 0.25 * a1, "past by {past}");
-        assert!(t < 1.5, "{t}s");
-    }
-
-    #[test]
-    fn a_fan_opens_as_one_blob() {
-        // Eight cards on a pile open together: each goes straight out from the
-        // pile to its place (no sweep round the fan's centre), all moving from
-        // the first frame, so the fan swells out of the pile as one mass.
-        let (n, w) = (8, 240.0);
-        let pile = fan(0, n, w);
-        let mut cards: Vec<Body> = (0..n)
-            .map(|i| {
-                let (dx, dy, deg) = fan(i, n, w);
-                let mut b = Body::at(pile.0, pile.1);
-                b.spring = FAN_RADIAL;
-                b.target(dx, dy, deg);
-                b.round(dx, dy);
-                b
-            })
-            .collect();
-        let mut off_line = vec![0.0_f64; n];
-        for f in 0..180 {
-            {
-                let mut ring: Vec<&mut Body> = cards.iter_mut().collect();
-                fan_contact(&mut ring, 1.0 / 60.0);
-            }
-            for (i, b) in cards.iter_mut().enumerate() {
-                b.step(1.0 / 60.0);
-                let (lx, ly) = (b.tx - pile.0, b.ty - pile.1);
-                let len = lx.hypot(ly);
-                if len > 1.0 {
-                    let side = ((b.x - pile.0) * ly - (b.y - pile.1) * lx).abs() / len;
-                    off_line[i] = off_line[i].max(side / len);
-                    if f == 1 {
-                        assert!((b.x - pile.0).hypot(b.y - pile.1) > 0.5, "card {i} waits");
-                    }
-                }
-            }
-        }
-        for (i, d) in off_line.iter().enumerate() {
-            assert!(*d < 0.05, "card {i} strays {d} of its way off the line");
-        }
-        for b in &cards {
-            assert!(b.at_rest(), "{b:?}");
-        }
+        assert!(low > 98.0 && high < 102.0, "off the circle: {low}..{high}");
+        assert!(past < 1e-3, "past by {past}");
+        assert!(t < 0.8, "{t}s");
     }
 
     #[test]
@@ -911,24 +831,8 @@ mod tests {
     }
 
     #[test]
-    fn cards_spill_out_each_their_own_way() {
-        let (a, b) = (spill_spring(1), spill_spring(2));
-        assert_ne!(a, b);
-        for s in 0..100 {
-            let k = spill_spring(s);
-            assert!((k.k / FAN_RADIAL.k - 1.0).abs() <= SPILL_SPRING + 1e-9);
-            assert!((0.0..=SPILL_DELAY + 1e-9).contains(&spill_delay(s)));
-            let v = spill_launch(s, 7, (100.0, 0.0));
-            // About 200 pt/s along the way, a few degrees off, plus the lean.
-            assert!(v.0 > 60.0 && v.0 < 340.0 && v.1.abs() < 140.0, "{v:?}");
-        }
-        assert_eq!(spill_launch(5, 7, (0.0, 0.0)), (0.0, 0.0));
-        assert_eq!(spill_spring(9), spill_spring(9));
-    }
-
-    #[test]
     fn no_card_runs_wild_under_random_handling() {
-        // Random targets, fans, spills, kicks and shoves, with frames from
+        // Random targets, places on fans, and throws, with frames from
         // 1/120 s to 2 s: every card stays a number, within reach of the board
         // and under the speed limit, and comes to rest on its place.
         let mut z = 0x1234_5678_9ABC_DEF0_u64;
@@ -944,25 +848,18 @@ mod tests {
             let (x, y) = (rnd() * 1500.0, rnd() * 1000.0);
             match (rnd() * 5.0) as u32 {
                 0 => cards[i].target(x, y, rnd() * 60.0 - 30.0),
-                1 => {
+                1 | 2 | 3 => {
                     let a = rnd() * std::f64::consts::TAU;
-                    let r = 40.0 + rnd() * 120.0;
+                    let r = [0.0, 0.5, 40.0 + rnd() * 120.0][(rnd() * 3.0) as usize % 3];
                     let (dx, dy) = (r * a.cos(), r * a.sin());
-                    cards[i].target(x + dx, y + dy, rnd() * 90.0 - 45.0);
-                    cards[i].round(dx, dy);
+                    cards[i].fall_to((x + dx, y + dy, rnd() * 90.0 - 45.0), (x, y));
                 }
-                2 => cards[i].push_in(rnd() * 2000.0),
-                3 => cards[i].push_along(rnd() * 4000.0 - 2000.0),
                 _ => {
                     cards[i].vx += rnd() * 1e5 - 5e4;
                     cards[i].vy += rnd() * 1e5 - 5e4;
                 }
             }
             let dt = [1.0 / 120.0, 1.0 / 60.0, 1.0 / 30.0, 0.5, 2.0][round_ % 5];
-            {
-                let mut ring: Vec<&mut Body> = cards.iter_mut().collect();
-                fan_contact(&mut ring, dt);
-            }
             for b in &mut cards {
                 b.step(dt);
                 assert!(
@@ -994,39 +891,6 @@ mod tests {
             let (a, b, c) = fan_jitter(s);
             assert!(a.abs() <= JITTER_MAX && b.abs() <= JITTER_MAX && c.abs() <= JITTER_MAX);
         }
-    }
-
-    #[test]
-    fn a_drop_rakes_the_fan_in_and_it_springs_back() {
-        let mut b = Body::at(100.0, 0.0);
-        b.target(100.0, 0.0, 0.0);
-        b.round(100.0, 0.0);
-        b.push_in(fan_kick(1));
-        let (mut low, mut high, mut t) = (f64::MAX, 0.0_f64, 0.0);
-        while !b.at_rest() && t < 3.0 {
-            b.step(1.0 / 120.0);
-            t += 1.0 / 120.0;
-            low = low.min(b.x);
-            high = high.max(b.x);
-        }
-        assert!(low < 96.0 && high > 100.0 && high < 102.0, "{low} {high}");
-        assert!(fan_kick(6) < fan_kick(1) / 4.0);
-    }
-
-    #[test]
-    fn fan_neighbours_shove_apart() {
-        // Two neighbours 40° apart at rest, pressed together: they push apart.
-        let mut a = Body::at(100.0, 0.0);
-        a.target(100.0, 0.0, 0.0);
-        a.round(100.0, 0.0);
-        a.spill = false;
-        let at = 40.0_f64.to_radians();
-        let mut b = Body::at(100.0, 0.0);
-        b.target(100.0 * at.cos(), 100.0 * at.sin(), 0.0);
-        b.round(100.0 * at.cos(), 100.0 * at.sin());
-        b.spill = false;
-        fan_contact(&mut [&mut a, &mut b], 1.0 / 60.0);
-        assert!(a.vy < 0.0 && b.vy > 0.0, "{} {}", a.vy, b.vy);
     }
 
     #[test]
@@ -1155,27 +1019,30 @@ mod tests {
     }
 
     #[test]
-    fn a_folding_card_lands_on_the_pile_without_bouncing() {
-        // Every card's own gather, from a fan place 250 pt off, with its push:
-        // at most a hint past the pile, settled within the measured fold time
-        // and a little more.
-        for seed in 0..64_u64 {
-            let seed = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
-            let mut b = Body::at(250.0, 0.0);
-            b.swings = false;
-            b.spring = gather_spring(seed);
-            b.target(0.0, 0.0, 0.0);
-            let v = gather_launch(seed, 7, (-250.0, 0.0));
-            b.vx += v.0;
-            b.vy += v.1;
-            let (dt, mut t, mut past) = (1.0 / 120.0, 0.0, 0.0_f64);
+    fn a_card_dropped_into_a_stack_falls_in_without_bouncing() {
+        // From anywhere round a pile, at any speed: it never passes the pile
+        // and lies still on it within a second.
+        for k in 0..64 {
+            let a = k as f64 / 64.0 * std::f64::consts::TAU;
+            let mut b = Body::at(250.0 * a.cos(), 250.0 * a.sin());
+            b.vx = 600.0 * (a * 3.0).sin();
+            b.vy = 600.0 * (a * 5.0).cos();
+            b.fall_to((0.0, 0.0, 0.0), (0.0, 0.0));
+            let (mut t, mut moved_off) = (0.0, false);
+            let mut near = f64::MAX;
             while !b.at_rest() && t < 2.0 {
-                b.step(dt);
-                past = past.max(-b.x);
-                t += dt;
+                b.step(1.0 / 120.0);
+                let d = b.x.hypot(b.y);
+                // Once close, it never goes off again.
+                if d < 5.0 {
+                    near = near.min(d);
+                } else if near < 5.0 {
+                    moved_off = true;
+                }
+                t += 1.0 / 120.0;
             }
-            assert!(past < 0.04 * 250.0, "seed {seed}: {past} pt past the pile");
-            assert!(t < 0.75, "seed {seed}: settled after {t}s");
+            assert!(!moved_off, "bounced off the pile from {a}");
+            assert!(t < 1.0, "settled after {t}s from {a}");
         }
     }
 
