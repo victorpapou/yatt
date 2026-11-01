@@ -27,7 +27,7 @@ use objc2_app_kit::{
     NSBackingStoreType, NSBezelStyle, NSButton, NSColor, NSControlSize, NSEvent,
     NSEventModifierFlags, NSEventType, NSFloatingWindowLevel, NSFocusRingType, NSFont,
     NSFontWeightMedium, NSFontWeightRegular, NSImage, NSLineBreakMode, NSNormalWindowLevel,
-    NSPasteboard, NSPasteboardTypeString, NSTextAlignment, NSTextField, NSToolbar,
+    NSPasteboard, NSPasteboardTypeString, NSSearchField, NSTextAlignment, NSTextField, NSToolbar,
     NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem,
     NSToolbarSpaceItemIdentifier, NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
     NSVisualEffectState, NSVisualEffectView, NSWindow, NSWindowOrderingMode, NSWindowStyleMask,
@@ -260,6 +260,29 @@ impl MainWindow {
             timer_item.setMinSize(NSSize::new(TIMER_ITEM_W, TOOLBAR_H));
             timer_item.setMaxSize(NSSize::new(TIMER_ITEM_W, TOOLBAR_H));
         }
+        // Search: a native field in the toolbar; every keystroke narrows the board.
+        let search = NSSearchField::new(mtm);
+        search.setPlaceholderString(Some(ns_string!("Поиск")));
+        search.setSendsSearchStringImmediately(true);
+        let search_target = {
+            let (field, sink) = (search.clone(), sink.clone());
+            ActionTarget::new(mtm, move || {
+                sink(UiEvent::SetFilter(field.stringValue().to_string()))
+            })
+        };
+        unsafe {
+            search.setTarget(Some(&search_target));
+            search.setAction(Some(ActionTarget::sel()));
+        }
+        let search_item = PlainToolbarItem::item(mtm, ns_string!("yatt.search"));
+        search_item.setView(Some(&search));
+        search_item.setBordered(false);
+        #[allow(deprecated)]
+        {
+            search_item.setMinSize(NSSize::new(120.0, 24.0));
+            search_item.setMaxSize(NSSize::new(200.0, 24.0));
+        }
+        retained.push(Retained::into_super(Retained::into_super(search_target)));
         let toolbar =
             NSToolbar::initWithIdentifier(NSToolbar::alloc(mtm), ns_string!("yatt.toolbar"));
         // … [digits] … [Старт] [Секундомер] [Пропустить] [Стоп] [▤ ⤡]
@@ -272,6 +295,7 @@ impl MainWindow {
             bar.stop.clone(),
             bar.stack.clone(),
             bar.mini.clone(),
+            search_item,
         ];
         // The toolbar gives neighbouring items one shared bubble; a fixed space
         // between two items gives each its own.
@@ -280,6 +304,7 @@ impl MainWindow {
         let space = unsafe { NSToolbarSpaceItemIdentifier }.copy();
         // The timer in the middle of the toolbar (a centred item, so it stays
         // there as the window resizes), the controls on the right.
+        let space2 = space.clone();
         let order: Vec<Retained<NSString>> = vec![
             flexible.clone(),
             id(&items[0]),
@@ -293,6 +318,8 @@ impl MainWindow {
             id(&items[4]),
             space,
             id(&items[5]),
+            space2,
+            id(&items[7]),
         ];
         let order = if crate::model::MINIMAL_MODE {
             [order, vec![id(&items[6])]].concat()

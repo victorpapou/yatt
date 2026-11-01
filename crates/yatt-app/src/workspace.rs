@@ -74,6 +74,10 @@ impl Workspace {
                     self.expanded = None;
                 }
             }
+            UiEvent::SetFilter(text) => {
+                let text = text.trim();
+                e.filter.text = (!text.is_empty()).then(|| text.to_string());
+            }
             UiEvent::StartPause => e.start_or_pause(Mode::Pomodoro),
             UiEvent::SetDurations {
                 work_min,

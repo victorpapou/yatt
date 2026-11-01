@@ -101,6 +101,8 @@ pub enum UiEvent {
         items: Vec<(String, String)>,
         status: Status,
     },
+    /// The search text; empty clears the filter.
+    SetFilter(String),
     StartPause,
     /// The pomodoro's work and break lengths, in minutes.
     SetDurations {
