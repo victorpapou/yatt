@@ -212,7 +212,7 @@ impl Durations {
             .enumerate()
         {
             self.rows[i].0.setIntValue(v as i32);
-            self.rows[i].1.setStringValue(&if i == 3 {
+            self.rows[i].1.setStringValue(&*if i == 3 {
                 NSString::from_str(&format!("{v}-й"))
             } else {
                 minutes(v)

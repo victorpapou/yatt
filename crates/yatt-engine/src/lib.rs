@@ -217,10 +217,10 @@ impl Engine {
 
     fn apply_timer(&mut self, fx: Vec<Effect>) {
         for e in &fx {
-            if let Effect::PhaseFinished { phase, next } = e {
-                if let Some(f) = self.on_phase_finished.as_mut() {
-                    f(*phase, *next);
-                }
+            if let Effect::PhaseFinished { phase, next } = e
+                && let Some(f) = self.on_phase_finished.as_mut()
+            {
+                f(*phase, *next);
             }
         }
         if let Err(e) = self.store.apply_timer(&fx, &self.timer) {
