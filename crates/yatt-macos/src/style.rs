@@ -263,7 +263,11 @@ pub fn tint_glass(view: &NSView, hue: usize) {
         if hue % HUES.len() == NEUTRAL_HUE {
             glass.setTintColor(None);
         } else {
-            glass.setTintColor(Some(&swatch(hue)));
+            // The colour softened toward white, so it reads calm, not loud.
+            let soft = swatch(hue)
+                .blendedColorWithFraction_ofColor(0.45, &NSColor::whiteColor())
+                .unwrap_or_else(|| swatch(hue));
+            glass.setTintColor(Some(&soft));
         }
     }
 }
