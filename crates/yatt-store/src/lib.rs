@@ -203,11 +203,14 @@ impl Store {
             params![id, now, day],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
+        // A pomodoro counts for a task only if it was in work for at least a minute of it.
         let pomodoros: u32 = self.conn.query_row(
-            "SELECT COUNT(DISTINCT s.id) FROM focus_sessions s
+            "SELECT COUNT(*) FROM (SELECT s.id FROM focus_sessions s
              JOIN time_entries e ON e.session_id = s.id
-             WHERE e.task_id = ?1 AND s.kind = 'work' AND s.outcome = 'completed'",
-            [&id],
+             WHERE e.task_id = ?1 AND s.kind = 'work' AND s.outcome = 'completed'
+             GROUP BY s.id
+             HAVING SUM(COALESCE(e.ended_at, ?2) - e.started_at) >= 60000)",
+            params![id, now],
             |r| r.get(0),
         )?;
         Ok(TaskTime {

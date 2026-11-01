@@ -34,6 +34,7 @@ pub struct Engine {
     last_saved: i64,
     /// A clock jump longer than this while running means sleep or a closed app.
     pub max_gap_ms: i64,
+    day: Option<jiff::civil::Date>,
 }
 
 impl Engine {
@@ -56,6 +57,7 @@ impl Engine {
             last_refresh: 0,
             last_saved: 0,
             max_gap_ms: 15_000,
+            day: None,
         };
         // Catch up on phases that ended while the app was closed.
         engine.tick();
@@ -168,6 +170,12 @@ impl Engine {
         if changed {
             self.apply_timer(fx);
         }
+        let day = now.to_zoned(self.tz.clone()).date();
+        if self.day != Some(day) {
+            // Midnight passed: "today" restarts for every task, running or not.
+            self.day = Some(day);
+            self.refresh_times();
+        }
         let sec = now.as_second();
         // Keep the last-seen moment on disk so a crash or quit loses at most a few seconds.
         if !changed && self.timer.is_running() && sec - self.last_saved >= 5 {
@@ -196,6 +204,8 @@ impl Engine {
     fn after_change(&mut self, changed: &[TaskId]) {
         self.persist(changed);
         self.sync_active();
+        // A deleted task drops out of bulk refreshes; take its final numbers once.
+        self.refresh_times_of(changed.to_vec());
     }
 
     /// Makes the timer's active set equal the live tasks in "In progress".
@@ -245,7 +255,12 @@ impl Engine {
     }
 
     fn refresh_times(&mut self) {
-        let ids: Vec<TaskId> = self.board.tasks().map(|t| t.id).collect();
+        let ids: Vec<TaskId> = self
+            .board
+            .tasks()
+            .filter(|t| t.deleted_at.is_none())
+            .map(|t| t.id)
+            .collect();
         self.refresh_times_of(ids);
     }
 
