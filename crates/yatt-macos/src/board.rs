@@ -1182,6 +1182,7 @@ impl Board {
                         let (to, c) = place.at(q);
                         self.send_home(card, Space::Canvas, to);
                         card.body.fall_to(to, c);
+                        card.body.folding = goal < q;
                         card.stack = Some(place);
                         // Out of the render tree once it lies hidden in the pile,
                         // faded out on its way there.
@@ -1558,6 +1559,7 @@ impl Board {
             let q = opening[place.col].at;
             let (to, c) = place.at(q);
             card.body.fall_to(to, c);
+            card.body.folding = self.open_goal(place.col) < q;
             card.target_scale = place.scale(q);
             if hidden != Some(*id) {
                 card.set_fade(place.fade(q));
@@ -1695,7 +1697,10 @@ impl Board {
             perf.push((dt, CACurrentMediaTime() - started));
         }
         let dump_pending = std::env::var_os("YATT_DUMP").is_some() && !self.dumped.get();
-        if !moving && !dump_pending && let Some(timer) = self.timer.borrow_mut().take() {
+        if !moving
+            && !dump_pending
+            && let Some(timer) = self.timer.borrow_mut().take()
+        {
             timer.invalidate();
         }
     }
@@ -2060,6 +2065,14 @@ impl Board {
             let from = if fanned { 1.0 } else { self.open_p.get()[ci] };
             let p = physics::fan_scrub(from, s.down);
             if p >= 1.0 {
+                // Yanked open: the fan carries the yank on past fully open by
+                // a little and settles back, the harder the yank, the further.
+                let now = CACurrentMediaTime();
+                let dt = (now - self.scrubbed.get()[ci]).clamp(1.0 / 120.0, 0.05);
+                let kick = physics::fan_yank(s.down / dt);
+                let mut o = self.opening.get();
+                o[ci].v = o[ci].v.max(kick);
+                self.opening.set(o);
                 self.set_fanned(ci, true);
             } else if p <= 0.0 {
                 self.set_fanned(ci, false);
