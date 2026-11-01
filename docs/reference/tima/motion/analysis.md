@@ -128,7 +128,7 @@ stack or fan, natural, with no springs and no bounce. Now:
 - A card off its place (a re-layout, a card dropped in, the fan moving under
   it) falls onto it by `physics::FALL`, decomposed toward the stack's centre
   and round it: a re-layout slides the cards round the spiral, a dropped card
-  curves in. Its turn falls the same way. No swing in a stack.
+  curves in. Its turn falls the same way (`FALL_TURN`). No swing in a stack.
 - The fall: at most 8000 pt/s² toward the place, no faster than it can brake
   at 3000 pt/s², a critically damped landing (τ 75 ms). Long moves take
   longer than short ones, as a fall does.
