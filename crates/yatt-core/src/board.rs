@@ -572,8 +572,15 @@ mod tests {
         let (mut b, mut h) = (Board::default(), History::default());
         let a = create(&mut b, &mut h, "a");
         for n in ["x", "xy", "xyz"] {
-            h.execute(&mut b, Command::SetNotes { id: a, notes: n.into() }, now())
-                .unwrap();
+            h.execute(
+                &mut b,
+                Command::SetNotes {
+                    id: a,
+                    notes: n.into(),
+                },
+                now(),
+            )
+            .unwrap();
         }
         h.undo(&mut b, now()).unwrap();
         assert_eq!(b.get(a).unwrap().notes, "");
@@ -582,7 +589,10 @@ mod tests {
 
         // A step that cannot apply stays on the stack.
         let ghost = TaskId::new();
-        h.undo.push(Command::Rename { id: ghost, title: "z".into() });
+        h.undo.push(Command::Rename {
+            id: ghost,
+            title: "z".into(),
+        });
         assert!(h.undo(&mut b, now()).is_err());
         assert!(h.can_undo());
     }
