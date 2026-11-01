@@ -477,7 +477,15 @@ impl MainWindow {
             .push(Retained::into_super(Retained::into_super(delegate)));
 
         ui.layout();
-        ui.window.center();
+        // Size and place come back from the last run; the first run centres.
+        let frame_name = ns_string!("yatt.main");
+        if !ui.window.setFrameUsingName(frame_name) {
+            ui.window.center();
+        }
+        ui.window.setFrameAutosaveName(frame_name);
+        if stacks_saved() {
+            ui.toggle_stack();
+        }
         ui.window.makeKeyAndOrderFront(None);
         ui.window.makeFirstResponder(Some(&ui.root));
         Self { ui }
@@ -1013,6 +1021,7 @@ impl Ui {
     fn toggle_stack(&self) {
         self.cards.toggle_stack();
         self.header.update_stack_icon(self.cards.is_stacked());
+        save_stacks(self.cards.is_stacked());
     }
 
     fn key_down(&self, event: &NSEvent) -> bool {
@@ -1693,7 +1702,7 @@ impl Header {
         self.bar.start.setToolTip(Some(&NSString::from_str(&hint)));
         self.hold.setImage(icon.as_deref());
         self.hold.setToolTip(Some(&NSString::from_str(&hint)));
-        self.durations.show_values(t.work_min, t.break_min);
+        self.durations.show_values(t);
         self.bar.stopwatch.setHidden(!t.can_start_stopwatch);
         self.bar.skip.setHidden(!t.can_skip);
         self.bar.stop.setHidden(!t.can_stop);
@@ -2209,4 +2218,17 @@ mod tests {
         assert_eq!(f.origin.y, 44.0);
         const { assert!(CHIP_H <= 16.0 && CHIP_PAD <= 6.0 && CHIP_GAP <= 3.0) };
     }
+}
+
+const STACKS_KEY: &str = "yatt.stacked";
+
+/// Whether the board was in stack mode when the app last ran.
+fn stacks_saved() -> bool {
+    objc2_foundation::NSUserDefaults::standardUserDefaults()
+        .boolForKey(&NSString::from_str(STACKS_KEY))
+}
+
+fn save_stacks(on: bool) {
+    objc2_foundation::NSUserDefaults::standardUserDefaults()
+        .setBool_forKey(on, &NSString::from_str(STACKS_KEY));
 }

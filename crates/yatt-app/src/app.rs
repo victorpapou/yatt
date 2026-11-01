@@ -65,7 +65,18 @@ fn open_board() -> anyhow::Result<(std::fs::File, Engine)> {
     let path = data_path();
     let lock = lock_instance(&path)?;
     let store = Store::open(&path)?;
-    let engine = Engine::load(store)?;
+    let mut engine = Engine::load(store)?;
+    engine.on_phase_finished = Some(Box::new(|phase, next| {
+        use yatt_core::Phase;
+        use yatt_platform::Notifier;
+        let (title, body) = match (phase, next) {
+            (Phase::Work, Phase::LongBreak) => ("Помидор готов", "Пора на длинный перерыв"),
+            (Phase::Work, _) => ("Помидор готов", "Пора на перерыв"),
+            (_, Phase::Work) => ("Перерыв закончился", "Пора работать"),
+            _ => ("Фаза закончилась", "Следующая фаза готова"),
+        };
+        yatt_macos::MacNotifier.notify(title, body);
+    }));
     Ok((lock, engine))
 }
 
