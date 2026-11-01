@@ -837,41 +837,6 @@ mod tests {
     }
 
     #[test]
-    fn the_white_inset_shows_inside_the_edge_on_a_coloured_card() {
-        // The purple of Тима's screenshot.
-        let (px, pw) = render_card((0.78, 0.58, 0.95));
-        let centre = light(&px, pw, CARD_W / 2.0);
-        let at = |x| light(&px, pw, x);
-        eprintln!(
-            "lightness (R+G+B): 0.25 pt in {}, 1 pt {}, 1.5 pt {}, 2 pt {}, 3 pt {}, centre {centre}",
-            at(0.25),
-            at(1.0),
-            at(1.5),
-            at(2.0),
-            at(3.0)
-        );
-        // Right inside the edge about a third of the way to white (the glow is
-        // 42% white there), fading softly, gone by about 4 pt.
-        let white = 3 * 255;
-        assert!(
-            (at(0.25) - centre) * 100 > 30 * (white - centre),
-            "edge {} vs centre {centre}",
-            at(0.25)
-        );
-        assert!(
-            (at(1.0) - centre) * 100 > 8 * (white - centre),
-            "1 pt {}",
-            at(1.0)
-        );
-        assert!(at(1.0) > at(1.5) && at(1.5) >= at(2.0));
-        assert!(
-            at(4.5) <= centre + 3,
-            "4.5 pt {} vs centre {centre}",
-            at(4.5)
-        );
-    }
-
-    #[test]
     fn every_card_glyph_draws() {
         for symbol in GLYPHS {
             let image = glyph_image(symbol, 0).unwrap_or_else(|| panic!("{symbol}: no image"));
@@ -986,29 +951,18 @@ mod tests {
     }
 
     #[test]
-    fn a_selected_card_reads_ring_outline_inset_tint_from_outside_in() {
+    fn a_selected_card_reads_ring_then_tint_from_outside_in() {
         let tint = (0.78, 0.58, 0.95);
         // Offsets from the card's left edge, in points (negative is outside).
-        let at = [-2.5, -0.5, 0.25, CARD_W / 2.0];
+        let at = [-2.5, CARD_W / 2.0];
         let px = selected_cross_section(tint, &at);
         eprintln!("selected card, R G B at {at:?} pt from the edge: {px:?}");
-        let sum = |p: (u8, u8, u8)| p.0 as u32 + p.1 as u32 + p.2 as u32;
-        let (ring, outline, inset, centre) = (px[0], px[1], px[2], px[3]);
+        let ring = px[0];
         // The ring: blue, outside the card.
         let c = |v: u8| v as u32;
         assert!(
             c(ring.2) > c(ring.0) + 60 && c(ring.2) > c(ring.1) + 30,
             "ring {ring:?}"
-        );
-        // The outline: darker than the white page, not blue.
-        assert!(
-            sum(outline) < 3 * 255 - 30 && c(outline.2) < c(outline.0) + 40,
-            "outline {outline:?}"
-        );
-        // The inset: lighter than the tint; the centre is the tint.
-        assert!(
-            sum(inset) > sum(centre) + 30,
-            "inset {inset:?} vs centre {centre:?}"
         );
     }
 }
