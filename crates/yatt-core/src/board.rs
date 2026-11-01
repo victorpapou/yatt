@@ -574,7 +574,8 @@ mod tests {
     fn archive_hides_from_board_and_undoes() {
         let (mut b, mut h) = (Board::default(), History::default());
         let a = create(&mut b, &mut h, "a");
-        h.execute(&mut b, Command::Archive { id: a }, now()).unwrap();
+        h.execute(&mut b, Command::Archive { id: a }, now())
+            .unwrap();
         assert!(titles(&b, Status::Backlog).is_empty());
         assert_eq!(b.archived().len(), 1);
         h.undo(&mut b, now()).unwrap();

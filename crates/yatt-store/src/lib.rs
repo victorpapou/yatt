@@ -97,7 +97,10 @@ impl Store {
         let tx = self.conn.transaction()?;
         for id in ids {
             let id = id.0.to_string();
-            tx.execute("UPDATE time_entries SET task_id = NULL WHERE task_id = ?1", [&id])?;
+            tx.execute(
+                "UPDATE time_entries SET task_id = NULL WHERE task_id = ?1",
+                [&id],
+            )?;
             tx.execute("DELETE FROM subtasks WHERE task_id = ?1", [&id])?;
             tx.execute("DELETE FROM task_tags WHERE task_id = ?1", [&id])?;
             tx.execute("DELETE FROM tasks WHERE id = ?1", [&id])?;
