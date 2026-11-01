@@ -362,11 +362,30 @@ pub fn real_glass() -> bool {
 }
 
 /// Debug: prints a view's subview and layer classes (`YATT_DUMP=1`).
-fn dump_tree(view: &NSView, depth: usize) {
+pub fn dump_tree(view: &NSView, depth: usize) {
     let pad = "  ".repeat(depth);
-    eprintln!("{pad}view {}", view.class().name().to_string_lossy());
+    eprintln!(
+        "{pad}view {} hidden={} alpha={:.2}",
+        view.class().name().to_string_lossy(),
+        view.isHidden(),
+        view.alphaValue()
+    );
     if let Some(layer) = view.layer() {
-        eprintln!("{pad}  layer {}", layer.class().name().to_string_lossy());
+        let bg = layer
+            .backgroundColor()
+            .map(|c| objc2_core_graphics::CGColor::alpha(Some(&c)))
+            .unwrap_or(0.0);
+        eprintln!(
+            "{pad}  layer {} opacity={:.2} bg_alpha={:.2} contents={} filters={} sublayers={}",
+            layer.class().name().to_string_lossy(),
+            layer.opacity(),
+            bg,
+            #[allow(unused_unsafe)]
+            unsafe { layer.contents() }.is_some(),
+            #[allow(unused_unsafe)]
+            unsafe { layer.filters() }.map_or(0, |f| f.count()),
+            layer.sublayers().map_or(0, |l| l.count()),
+        );
     }
     for sub in view.subviews().iter() {
         dump_tree(&sub, depth + 1);

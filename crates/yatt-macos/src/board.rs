@@ -937,6 +937,10 @@ impl Board {
             v.setLayerContentsRedrawPolicy(policy);
         }
 
+        if std::env::var_os("YATT_DUMP").is_some() {
+            eprintln!("card view tree (bottom to top):");
+            style::dump_tree(&view, 0);
+        }
         let parts = [glass.clone(), Retained::into_super(face.clone())];
         let mut card = Card {
             view,
