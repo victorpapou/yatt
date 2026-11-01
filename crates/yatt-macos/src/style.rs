@@ -781,12 +781,8 @@ pub fn glass(mtm: MainThreadMarker, radius: f64) -> (Retained<NSView>, Retained<
 mod tests {
     use super::*;
 
-    /// Renders a card's plain layers (tint, then the inner edge; no backdrop) into
-    /// a bitmap at 2 px per point and returns its BGRA pixels and row length.
-    fn render_card(tint: (f64, f64, f64)) -> (Vec<u8>, usize) {
-        render_card_at(tint, 1.0)
-    }
-
+    /// Renders a card's plain layers (tint, no backdrop) into a bitmap at 2 px
+    /// per point and returns its BGRA pixels and row length, at `scale`.
     /// The same for a card shown at `scale`, set up the way `Edges` and the tint
     /// scale theirs.
     fn render_card_at(tint: (f64, f64, f64), scale: f64) -> (Vec<u8>, usize) {
@@ -823,17 +819,6 @@ mod tests {
         root.renderInContext(&cx);
         drop(cx);
         (px, pw)
-    }
-
-    /// Lightness (sum of R, G, B) at a point `x` points in from the left edge, on
-    /// the card's middle row.
-    fn light(px: &[u8], pw: usize, x: f64) -> u32 {
-        let (col, row) = (
-            (x * EDGE_SCALE) as usize,
-            (CARD_H * EDGE_SCALE / 2.0) as usize,
-        );
-        let i = (row * pw + col) * 4;
-        px[i] as u32 + px[i + 1] as u32 + px[i + 2] as u32
     }
 
     #[test]
