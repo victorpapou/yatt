@@ -11,7 +11,7 @@ yet another task tracker: a native macOS task manager in Rust + [GPUI](https://w
 | Crate | What |
 | --- | --- |
 | `yatt-core` | Domain model: tasks, board ordering, commands + undo, timer state machine. No IO. |
-| `yatt-store` | SQLite persistence (WAL file in `~/Library/Application Support/yatt`). |
+| `yatt-store` | SQLite persistence: `~/Library/Application Support/yatt/yatt.sqlite` (WAL, synchronous FULL), with a daily copy in `backups/` beside it (last 14 kept). |
 | `yatt-engine` | Live app state: board + timer + store, and the rules between them. No UI, testable anywhere. |
 | `yatt-platform` | OS integration traits (app/site blocking, Focus). macOS and Windows implement them. |
 | `yatt-macos` | Native AppKit window (objc2): renders `Snapshot`s, reports `UiEvent`s. Knows nothing about storage. Notes use Tiptap in a WKWebView, bundled from `crates/yatt-macos/editor` (`npm install && npm run build` there; the built `dist/editor.js` is committed). |
@@ -20,10 +20,11 @@ yet another task tracker: a native macOS task manager in Rust + [GPUI](https://w
 ## Run
 
 ```sh
+scripts/bundle-macos.sh --install   # yatt.app in /Applications, signed ad hoc
 cargo run -p yatt-app            # macOS 14+
 YATT_DB=/tmp/yatt.sqlite cargo run -p yatt-app   # throwaway database
 cargo test --workspace
-YATT_DEMO=/tmp/yatt-demo cargo run -p yatt-app   # scripted session, saves window PNGs there
+YATT_DEMO=/tmp/yatt-demo cargo run -p yatt-app   # scripted session, saves window PNGs there (and its own demo.sqlite)
 ```
 
 Shortcuts: `space` start/pause (outside text fields), `cmd-.` stop, `cmd-]` skip phase, `cmd-n` new task, `cmd-z` / `cmd-shift-z` undo/redo, `cmd-shift-m` timer-only mode, `esc` closes the task. Each column is a stack of glass cards that fans out on hover; click a card to open it (title, markdown notes, time entries), drag it to another column, or shift-drag to carry the whole stack. Motion follows the reference in `docs/reference/card-motion.md`. Time goes to every task in "In progress" while a work phase runs (two tasks there get the full time each). Drag a card out of the column, or delete it, and its time stops.

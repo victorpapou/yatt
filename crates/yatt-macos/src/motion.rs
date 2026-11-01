@@ -11,9 +11,6 @@ pub const GLASS_SECS: f64 = 0.15;
 pub const SOFTEN_SECS: f64 = 0.15;
 /// The column under a dragged card tinting in or out.
 pub const COLUMN_TINT_SECS: f64 = 0.15;
-/// A card morphing into the task modal, and back.
-pub const MODAL_OPEN_SECS: f64 = 0.42;
-pub const MODAL_CLOSE_SECS: f64 = 0.34;
 /// The task modal's size when the window has room for it.
 pub const MODAL_SIZE: (f64, f64) = (600.0, 480.0);
 /// A timer digit rolling to its next value.
