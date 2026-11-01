@@ -40,22 +40,22 @@ type Rgb = (u8, u8, u8);
 
 /// (fill, text) as sRGB. The original six indices stay stable for saved tasks.
 const HUES: [(Rgb, Rgb); 15] = [
-    ((0x62, 0x86, 0xF5), (0x22, 0x31, 0x6B)),
-    ((0xF2, 0x71, 0x85), (0x6B, 0x1E, 0x2A)),
-    ((0xA5, 0x3A, 0xF0), (0x3E, 0x11, 0x60)),
-    ((0xEC, 0xF5, 0x72), (0x4F, 0x54, 0x1A)),
-    ((0x7F, 0xD0, 0x96), (0x22, 0x54, 0x3A)),
+    ((0x6E, 0xA4, 0xFF), (0x1C, 0x33, 0x70)),
+    ((0xFF, 0x7E, 0x9E), (0x6E, 0x1A, 0x30)),
+    ((0xC0, 0x84, 0xFF), (0x42, 0x16, 0x6E)),
+    ((0xE2, 0xF2, 0x5C), (0x4A, 0x52, 0x10)),
+    ((0x6C, 0xCF, 0xB2), (0x14, 0x52, 0x42)),
     // The "white" card: a light neutral grey, so it reads as a card of its own.
-    ((0xE4, 0xE4, 0xE8), (0x2E, 0x2E, 0x34)),
-    ((0xFF, 0x7A, 0x66), (0x72, 0x25, 0x1C)),
-    ((0xFF, 0xA8, 0x52), (0x6E, 0x3B, 0x0D)),
+    ((0xF2, 0xF2, 0xF5), (0x2E, 0x2E, 0x34)),
+    ((0xFF, 0x86, 0x6A), (0x72, 0x25, 0x1C)),
+    ((0xFF, 0xB2, 0x66), (0x6E, 0x3B, 0x0D)),
     ((0xFF, 0xC2, 0x28), (0x65, 0x49, 0x08)),
     ((0x96, 0xB5, 0xA0), (0x25, 0x3F, 0x2E)),
-    ((0x00, 0xC8, 0xA0), (0x05, 0x55, 0x47)),
+    ((0x4D, 0xC2, 0xA6), (0x05, 0x55, 0x47)),
     ((0x00, 0xB8, 0xE8), (0x05, 0x4E, 0x68)),
     ((0xB8, 0x99, 0x75), (0x4F, 0x38, 0x23)),
-    ((0x4B, 0x63, 0xC8), (0x24, 0x32, 0x70)),
-    ((0xB5, 0x74, 0xDE), (0x52, 0x24, 0x72)),
+    ((0x6C, 0x7B, 0xFF), (0x22, 0x2A, 0x78)),
+    ((0xC8, 0x5C, 0xF2), (0x50, 0x16, 0x6E)),
 ];
 
 /// The same colours for the dark appearance: deep tints of each hue, the text a
@@ -253,6 +253,25 @@ pub fn fill(hue: usize) -> Retained<NSColor> {
     rgb(palette()[hue % HUES.len()].0, alpha)
 }
 
+/// Tints a card's backdrop (as made by [`card_blur`]) with the card's colour,
+/// when it is the system glass. The colour goes in solid: how strongly it shows
+/// is the glass's own call, so it follows the system's Liquid Glass setting
+/// (Clear or Tinted) and Reduce Transparency like the system's own glass. The
+/// neutral card has no tint at all: plain system glass.
+pub fn tint_glass(view: &NSView, hue: usize) {
+    if let Some(glass) = view.downcast_ref::<NSGlassEffectView>() {
+        if hue % HUES.len() == NEUTRAL_HUE {
+            glass.setTintColor(None);
+        } else {
+            // The reference palette, a touch softened toward white.
+            let soft = swatch(hue)
+                .blendedColorWithFraction_ofColor(0.15, &NSColor::whiteColor())
+                .unwrap_or_else(|| swatch(hue));
+            glass.setTintColor(Some(&soft));
+        }
+    }
+}
+
 /// A card colour, solid: for the colour picker.
 pub fn swatch(hue: usize) -> Retained<NSColor> {
     rgb(palette()[hue % HUES.len()].0, 1.0)
@@ -285,32 +304,21 @@ pub fn text_css(hue: usize) -> String {
 /// a system within-window blur where those are missing.
 pub fn card_blur(mtm: MainThreadMarker) -> Retained<NSView> {
     if real_glass() {
+        // The system's Liquid Glass as it is: its own edge, highlight and
+        // shadow, coloured only through its tint. Nothing of ours over or under it.
         let glass = NSGlassEffectView::new(mtm);
         glass.setCornerRadius(CARD_RADIUS);
-        // The public style with the least frost.
-        glass.setStyle(NSGlassEffectViewStyle::Clear);
+        let style = match std::env::var("YATT_GLASS_STYLE").as_deref() {
+            Ok("clear") => NSGlassEffectViewStyle::Clear,
+            _ => NSGlassEffectViewStyle::Regular,
+        };
+        glass.setStyle(style);
         tune_glass(&glass);
-        // The glass has no saturation of its own: under it, a backdrop that only
-        // saturates (no blur), so it shows the same 1.2 boost as the plain path.
-        let holder = FlippedView::new(mtm, NSRect::ZERO);
-        let fill = NSAutoresizingMaskOptions::ViewWidthSizable
-            | NSAutoresizingMaskOptions::ViewHeightSizable;
-        if let Some(layer) = backdrop_layer(0.0) {
-            round(&layer, CARD_RADIUS);
-            layer.setMasksToBounds(true);
-            let saturate = FlippedView::new(mtm, NSRect::ZERO);
-            saturate.setLayer(Some(&layer));
-            saturate.setWantsLayer(true);
-            saturate.setAutoresizingMask(fill);
-            holder.addSubview(&saturate);
-        }
-        glass.setAutoresizingMask(fill);
-        holder.addSubview(&glass);
         if std::env::var_os("YATT_DUMP").is_some() {
             eprintln!("card_blur: NSGlassEffectView path");
-            dump_tree(&holder, 0);
+            dump_tree(&glass, 0);
         }
-        return Retained::into_super(holder);
+        return Retained::into_super(glass);
     }
     if std::env::var_os("YATT_DUMP").is_some() {
         eprintln!("card_blur: fallback path (no NSGlassEffectView)");
@@ -349,11 +357,28 @@ pub fn real_glass() -> bool {
 }
 
 /// Debug: prints a view's subview and layer classes (`YATT_DUMP=1`).
-fn dump_tree(view: &NSView, depth: usize) {
+pub fn dump_tree(view: &NSView, depth: usize) {
     let pad = "  ".repeat(depth);
-    eprintln!("{pad}view {}", view.class().name().to_string_lossy());
+    eprintln!(
+        "{pad}view {} hidden={} alpha={:.2}",
+        view.class().name().to_string_lossy(),
+        view.isHidden(),
+        view.alphaValue()
+    );
     if let Some(layer) = view.layer() {
-        eprintln!("{pad}  layer {}", layer.class().name().to_string_lossy());
+        let bg = layer
+            .backgroundColor()
+            .map(|c| objc2_core_graphics::CGColor::alpha(Some(&c)))
+            .unwrap_or(0.0);
+        eprintln!(
+            "{pad}  layer {} opacity={:.2} bg_alpha={:.2} contents={} filters={} sublayers={}",
+            layer.class().name().to_string_lossy(),
+            layer.opacity(),
+            bg,
+            unsafe { layer.contents() }.is_some(),
+            layer.filters().map_or(0, |f| f.count()),
+            unsafe { layer.sublayers() }.map_or(0, |l| l.count()),
+        );
     }
     for sub in view.subviews().iter() {
         dump_tree(&sub, depth + 1);
@@ -553,7 +578,7 @@ impl Edges {
         with_edge_images(|outer, _| Self {
             lift: Retained::into_super(lift),
             lift_layer,
-            outer: layer_view(outer, EDGE_PAD),
+            outer: layer_view(if real_glass() { None } else { outer }, EDGE_PAD),
             inner: layer_view(None, 0.0),
             ring: Retained::into_super(ring),
             ring_layer,
@@ -951,12 +976,12 @@ mod tests {
 
     /// The light palette as it was before the dark appearance came in.
     const LIGHT_BEFORE_DARK: [(Rgb, Rgb); 6] = [
-        ((0x62, 0x86, 0xF5), (0x22, 0x31, 0x6B)),
-        ((0xF2, 0x71, 0x85), (0x6B, 0x1E, 0x2A)),
-        ((0xA5, 0x3A, 0xF0), (0x3E, 0x11, 0x60)),
-        ((0xEC, 0xF5, 0x72), (0x4F, 0x54, 0x1A)),
-        ((0x7F, 0xD0, 0x96), (0x22, 0x54, 0x3A)),
-        ((0xE4, 0xE4, 0xE8), (0x2E, 0x2E, 0x34)),
+        ((0x6E, 0xA4, 0xFF), (0x1C, 0x33, 0x70)),
+        ((0xFF, 0x7E, 0x9E), (0x6E, 0x1A, 0x30)),
+        ((0xC0, 0x84, 0xFF), (0x42, 0x16, 0x6E)),
+        ((0xE2, 0xF2, 0x5C), (0x4A, 0x52, 0x10)),
+        ((0x6C, 0xCF, 0xB2), (0x14, 0x52, 0x42)),
+        ((0xF2, 0xF2, 0xF5), (0x2E, 0x2E, 0x34)),
     ];
 
     #[test]

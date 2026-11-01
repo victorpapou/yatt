@@ -954,6 +954,7 @@ impl Board {
 
         // Real blur of whatever is behind the card inside the window.
         let glass = style::card_blur(mtm);
+        style::tint_glass(&glass, hue);
         glass.setFrame(bounds);
         glass.setAutoresizingMask(fill_mask);
 
@@ -1005,6 +1006,10 @@ impl Board {
             v.setLayerContentsRedrawPolicy(policy);
         }
 
+        if std::env::var_os("YATT_DUMP").is_some() {
+            eprintln!("card view tree (bottom to top):");
+            style::dump_tree(&view, 0);
+        }
         let parts = [glass.clone(), Retained::into_super(face.clone())];
         let mut card = Card {
             view,
@@ -2216,6 +2221,7 @@ impl Card {
             self.icon = icon;
         }
         self.edges.restyle();
+        style::tint_glass(&self.parts[0], hue);
         self.face.repaint();
     }
 
