@@ -1586,6 +1586,7 @@ impl Board {
                 cmd,
                 clicks,
             } => self.on_down(at, shift, cmd, clicks),
+            CanvasMsg::Context { at, view } => self.context_menu(at, &view),
             CanvasMsg::Dragged(p) => {
                 if self.drag.borrow().is_none() {
                     let Some(press) = self.press.borrow_mut().take() else {
@@ -1646,6 +1647,49 @@ impl Board {
                 }
             }
         }
+    }
+
+    /// Right-click on a card: «Удалить» for it, or for the whole selection when
+    /// the card is part of it. Undoable (⌘Z) like any delete.
+    fn context_menu(self: &Rc<Self>, at: NSPoint, view: &NSView) {
+        let Some(id) = self.hit(at) else { return };
+        if !self.selected.borrow().contains(&id) {
+            self.selected.borrow_mut().clear();
+            self.selected.borrow_mut().insert(id);
+            self.anchor.set(Some(id));
+            self.retarget();
+        }
+        let mut ids: Vec<TaskId> = self.selected.borrow().iter().copied().collect();
+        ids.sort();
+        let mtm = MainThreadMarker::new().expect("main thread");
+        let title = if ids.len() > 1 {
+            format!("Удалить ({})", ids.len())
+        } else {
+            "Удалить".to_string()
+        };
+        let sink = self.sink.clone();
+        let weak = Rc::downgrade(self);
+        let target = crate::classes::ActionTarget::new(mtm, move || {
+            let deletes = ids.iter().copied().map(UiEvent::Delete).collect();
+            sink(UiEvent::Group(deletes));
+            if let Some(b) = weak.upgrade() {
+                b.clear_selection();
+            }
+        });
+        let item = unsafe {
+            objc2_app_kit::NSMenuItem::initWithTitle_action_keyEquivalent(
+                objc2_app_kit::NSMenuItem::alloc(mtm),
+                &objc2_foundation::NSString::from_str(&title),
+                Some(crate::classes::ActionTarget::sel()),
+                &objc2_foundation::NSString::from_str(""),
+            )
+        };
+        unsafe { item.setTarget(Some(&target)) };
+        let menu = objc2_app_kit::NSMenu::new(mtm);
+        menu.addItem(&item);
+        // Blocks until the menu closes, so the target outlives the click.
+        menu.popUpMenuPositioningItem_atLocation_inView(None, at, Some(view));
+        drop(target);
     }
 
     fn on_down(self: &Rc<Self>, at: NSPoint, shift: bool, cmd: bool, clicks: isize) {
