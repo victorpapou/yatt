@@ -330,12 +330,12 @@ pub fn card_blur(mtm: MainThreadMarker) -> Retained<NSView> {
 }
 
 /// The cards' backdrop: a plain backdrop blur of exactly [`CARD_BLUR`] points
-/// with the saturation boost, the lightest frost there is. `YATT_GLASS=1` puts
-/// the system's Liquid Glass (`NSGlassEffectView`) there instead, where the
-/// system has it; it has no blur radius to turn down, so it stays an option.
+/// with the saturation boost, the lightest frost there is. The system's Liquid Glass
+/// (`NSGlassEffectView`) is used where the system has it; `YATT_GLASS=0` falls
+/// back to the plain backdrop blur.
 pub fn real_glass() -> bool {
     thread_local! {
-        static ON: bool = std::env::var_os("YATT_GLASS").is_some_and(|v| v != "0")
+        static ON: bool = std::env::var_os("YATT_GLASS").is_none_or(|v| v != "0")
             && AnyClass::get(c"NSGlassEffectView").is_some();
     }
     ON.with(|on| *on)
@@ -529,24 +529,20 @@ impl Edges {
         let lift = FlippedView::new(mtm, NSRect::ZERO);
         lift.setLayer(Some(&lift_layer));
         lift.setWantsLayer(true);
-        with_edge_images(|outer, inner| Self {
+        // The system glass draws its own edge: no custom outline or inner glow.
+        Self {
             lift: Retained::into_super(lift),
             lift_layer,
-            outer: layer_view(outer, EDGE_PAD),
-            inner: layer_view(inner, 0.0),
+            outer: layer_view(None, EDGE_PAD),
+            inner: layer_view(None, 0.0),
             ring: Retained::into_super(ring),
             ring_layer,
-        })
+        }
     }
 
     /// The inner edge for the current appearance.
     pub fn restyle(&self) {
-        with_edge_images(|_, inner| {
-            if let (Some(layer), Some(image)) = (self.inner.layer(), inner) {
-                let image: &AnyObject = unsafe { &*(image as *const CGImage).cast::<AnyObject>() };
-                unsafe { layer.setContents(Some(image)) };
-            }
-        });
+        // Nothing to redraw: the inner edge is the system glass's own.
     }
 
     /// Fits both layers to a `w` × `h` card at the origin of its view.
@@ -1016,7 +1012,7 @@ mod tests {
         face.setFrame(root.bounds());
         face.setBackgroundColor(Some(&CGColor::new_srgb(tint.0, tint.1, tint.2, 1.0)));
         round(&face, CARD_RADIUS * scale);
-        let inner = with_edge_images(|_, inner| edge_layer(inner, 0.0));
+        let inner = edge_layer(None, 0.0);
         inner.setContentsScale(EDGE_SCALE / scale);
         inner.setFrame(root.bounds());
         root.addSublayer(&face);
@@ -1166,7 +1162,7 @@ mod tests {
         };
         let ring = selection_ring_layer();
         ring.setFrame(around(RING_GAP + RING_WIDTH));
-        let (outer, inner) = with_edge_images(|o, i| (edge_layer(o, EDGE_PAD), edge_layer(i, 0.0)));
+        let (outer, inner) = (edge_layer(None, EDGE_PAD), edge_layer(None, 0.0));
         outer.setFrame(around(EDGE_PAD));
         inner.setFrame(card);
         let face = CALayer::new();
