@@ -25,6 +25,8 @@ pub const PRESETS: [(u32, u32); 3] = [(25, 5), (40, 10), (50, 15)];
 /// auto-start breaks, auto-start work.
 type Prefs = (u32, u32, u32, u32, bool, bool);
 
+type CheckCell = std::cell::RefCell<Option<Retained<NSButton>>>;
+
 pub struct Durations {
     popover: Retained<NSPopover>,
     rows: Vec<(Retained<NSStepper>, Retained<NSTextField>)>,
@@ -125,7 +127,7 @@ impl Durations {
             .enumerate()
         {
             let (send, now) = (send.clone(), now.clone());
-            let cell: Rc<std::cell::RefCell<Option<Retained<NSButton>>>> = Rc::default();
+            let cell: Rc<CheckCell> = Rc::default();
             let c2 = cell.clone();
             let t = ActionTarget::new(mtm, move || {
                 let on = c2
