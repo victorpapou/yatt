@@ -275,12 +275,12 @@ pub fn card_blur(mtm: MainThreadMarker) -> Retained<NSView> {
 }
 
 /// The cards' backdrop: a plain backdrop blur of exactly [`CARD_BLUR`] points
-/// with the saturation boost, the lightest frost there is. `YATT_GLASS=1` puts
+/// with the saturation boost, the lightest frost there is. `YATT_GLASS=0` puts the plain blur back; by default
 /// the system's Liquid Glass (`NSGlassEffectView`) there instead, where the
 /// system has it; it has no blur radius to turn down, so it stays an option.
 pub fn real_glass() -> bool {
     thread_local! {
-        static ON: bool = std::env::var_os("YATT_GLASS").is_some_and(|v| v != "0")
+        static ON: bool = !std::env::var_os("YATT_GLASS").is_some_and(|v| v == "0")
             && AnyClass::get(c"NSGlassEffectView").is_some();
     }
     ON.with(|on| *on)
