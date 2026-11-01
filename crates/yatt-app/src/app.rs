@@ -166,7 +166,10 @@ pub fn run() -> anyhow::Result<()> {
 /// Tells the user about a failed save. The board is in memory and looks fine, so
 /// without this a full disk would only show after the next launch.
 fn report_problems(ws: &gpui::Entity<Workspace>, cx: &mut gpui::AsyncApp, mtm: MainThreadMarker) {
-    let problem = ws.update(cx, |ws, _| ws.engine.take_problem()).ok().flatten();
+    let problem = ws
+        .update(cx, |ws, _| ws.engine.take_problem())
+        .ok()
+        .flatten();
     if let Some(text) = problem {
         yatt_macos::alert(mtm, "yatt не сохранил изменения", &text);
     }
