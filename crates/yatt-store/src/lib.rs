@@ -49,12 +49,30 @@ pub struct Store {
 }
 
 impl Store {
+    /// Opens (or creates) the database at `path`. Every commit is on disk before
+    /// it returns, and an existing database is first copied to `backups/` next to
+    /// it, once a day, so neither a bad migration nor a bad day loses the board.
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| StoreError::Corrupt(e.to_string()))?;
+            std::fs::create_dir_all(dir).map_err(io)?;
         }
+        let existed = path.metadata().is_ok_and(|m| m.len() > 0);
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
+        // FULL: a commit survives a crash or power loss, not only the app quitting.
+        conn.pragma_update(None, "synchronous", "FULL")?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        if existed {
+            let check: String = conn.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
+            if check != "ok" {
+                return Err(StoreError::Corrupt(format!(
+                    "{}: {check}; backups are in {}",
+                    path.display(),
+                    backup_dir(path).display()
+                )));
+            }
+            backup_daily(&conn, path)?;
+        }
         Self::init(conn)
     }
 
@@ -230,6 +248,53 @@ impl Store {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(merged_len(spans))
     }
+}
+
+/// How many daily copies `backups/` keeps.
+const BACKUPS_KEPT: usize = 14;
+
+fn backup_dir(db: &Path) -> std::path::PathBuf {
+    db.with_file_name("backups")
+}
+
+/// Copies the database to `backups/<name>-<date>.sqlite` unless today's copy is
+/// there already, and drops the oldest beyond [`BACKUPS_KEPT`].
+fn backup_daily(conn: &Connection, db: &Path) -> Result<()> {
+    let dir = backup_dir(db);
+    std::fs::create_dir_all(&dir).map_err(io)?;
+    let stem = db.file_stem().and_then(|s| s.to_str()).unwrap_or("yatt");
+    let today = Timestamp::now().to_zoned(jiff::tz::TimeZone::system()).date();
+    let target = dir.join(format!("{stem}-{today}.sqlite"));
+    if !target.exists() {
+        // A consistent copy of a live database, WAL included, written to a
+        // temporary name first so a half-written copy never passes for a backup.
+        let tmp = target.with_extension("sqlite-tmp");
+        let _ = std::fs::remove_file(&tmp);
+        conn.execute("VACUUM INTO ?1", [tmp.to_string_lossy()])?;
+        std::fs::rename(&tmp, &target).map_err(io)?;
+    }
+    let prefix = format!("{stem}-");
+    let mut copies: Vec<_> = std::fs::read_dir(&dir)
+        .map_err(io)?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.extension().is_some_and(|x| x == "sqlite")
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with(&prefix))
+        })
+        .collect();
+    // Dates sort as text.
+    copies.sort();
+    let extra = copies.len().saturating_sub(BACKUPS_KEPT);
+    for old in &copies[..extra] {
+        let _ = std::fs::remove_file(old);
+    }
+    Ok(())
+}
+
+fn io(e: std::io::Error) -> StoreError {
+    StoreError::Corrupt(e.to_string())
 }
 
 fn merged_len(sorted: Vec<(i64, i64)>) -> i64 {
@@ -454,6 +519,50 @@ mod tests {
                 ended_at: None
             }]
         );
+    }
+
+    #[test]
+    fn reopening_keeps_tasks_and_backs_up_once_a_day() {
+        let dir = std::env::temp_dir().join(format!("yatt-store-{}", Uuid::now_v7()));
+        let db = dir.join("yatt.sqlite");
+        let mut board = Board::default();
+        let id = TaskId::new();
+        board
+            .apply(
+                Command::Create {
+                    id,
+                    title: "a".into(),
+                    status: Status::Backlog,
+                    placement: Placement::Bottom,
+                },
+                t(0),
+            )
+            .unwrap();
+        board
+            .apply(
+                Command::SetNotes {
+                    id,
+                    notes: "заметка".into(),
+                },
+                t(1),
+            )
+            .unwrap();
+        {
+            let store = Store::open(&db).unwrap();
+            store.save_task(board.get(id).unwrap()).unwrap();
+            // A fresh database has nothing to back up.
+            assert!(!backup_dir(&db).exists());
+        }
+        for _ in 0..2 {
+            let store = Store::open(&db).unwrap();
+            assert_eq!(store.load_tasks().unwrap()[0].notes, "заметка");
+        }
+        let backups: Vec<_> = std::fs::read_dir(backup_dir(&db)).unwrap().collect();
+        assert_eq!(backups.len(), 1);
+        let copy = Store::open(&backups[0].as_ref().unwrap().path()).unwrap();
+        assert_eq!(copy.load_tasks().unwrap()[0].notes, "заметка");
+        drop(copy);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
