@@ -306,7 +306,14 @@ pub fn card_blur(mtm: MainThreadMarker) -> Retained<NSView> {
         }
         glass.setAutoresizingMask(fill);
         holder.addSubview(&glass);
+        if std::env::var_os("YATT_DUMP").is_some() {
+            eprintln!("card_blur: NSGlassEffectView path");
+            dump_tree(&holder, 0);
+        }
         return Retained::into_super(holder);
+    }
+    if std::env::var_os("YATT_DUMP").is_some() {
+        eprintln!("card_blur: fallback path (no NSGlassEffectView)");
     }
     if let Some(layer) = backdrop_layer(CARD_BLUR) {
         round(&layer, CARD_RADIUS);
@@ -339,6 +346,18 @@ pub fn real_glass() -> bool {
             && AnyClass::get(c"NSGlassEffectView").is_some();
     }
     ON.with(|on| *on)
+}
+
+/// Debug: prints a view's subview and layer classes (`YATT_DUMP=1`).
+fn dump_tree(view: &NSView, depth: usize) {
+    let pad = "  ".repeat(depth);
+    eprintln!("{pad}view {}", view.class().name().to_string_lossy());
+    if let Some(layer) = view.layer() {
+        eprintln!("{pad}  layer {}", layer.class().name().to_string_lossy());
+    }
+    for sub in view.subviews().iter() {
+        dump_tree(&sub, depth + 1);
+    }
 }
 
 /// `NSGlassEffectView` has no public blur radius. What it exposes beyond `style`
@@ -529,15 +548,16 @@ impl Edges {
         let lift = FlippedView::new(mtm, NSRect::ZERO);
         lift.setLayer(Some(&lift_layer));
         lift.setWantsLayer(true);
-        // The system glass draws its own edge: no custom outline or inner glow.
-        Self {
+        // The system glass draws its own white edge; the thin dark outline
+        // it lacks is the outer layer here. No inner glow of our own.
+        with_edge_images(|outer, _| Self {
             lift: Retained::into_super(lift),
             lift_layer,
-            outer: layer_view(None, EDGE_PAD),
+            outer: layer_view(outer, EDGE_PAD),
             inner: layer_view(None, 0.0),
             ring: Retained::into_super(ring),
             ring_layer,
-        }
+        })
     }
 
     /// The inner edge for the current appearance.
@@ -1162,7 +1182,7 @@ mod tests {
         };
         let ring = selection_ring_layer();
         ring.setFrame(around(RING_GAP + RING_WIDTH));
-        let (outer, inner) = (edge_layer(None, EDGE_PAD), edge_layer(None, 0.0));
+        let (outer, inner) = with_edge_images(|o, _| (edge_layer(o, EDGE_PAD), edge_layer(None, 0.0)));
         outer.setFrame(around(EDGE_PAD));
         inner.setFrame(card);
         let face = CALayer::new();
