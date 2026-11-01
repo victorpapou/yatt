@@ -418,6 +418,7 @@ impl Modal {
                     return;
                 };
                 let text = field.stringValue().to_string().trim().to_string();
+                crate::eventlog::log(format!("title action: {text:?} known {:?}", known.borrow()));
                 if !text.is_empty() && text != *known.borrow() {
                     *known.borrow_mut() = text.clone();
                     sink(UiEvent::Rename(id, text));
@@ -878,6 +879,7 @@ impl Modal {
     fn commit_title(&self) {
         let Some(id) = self.open.get() else { return };
         let text = self.title.stringValue().to_string().trim().to_string();
+        crate::eventlog::log(format!("commit_title on close: {text:?}"));
         if !text.is_empty() && text != *self.title_known.borrow() {
             *self.title_known.borrow_mut() = text.clone();
             (self.sink)(UiEvent::Rename(id, text));

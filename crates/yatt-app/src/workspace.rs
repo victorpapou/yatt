@@ -52,7 +52,10 @@ impl Workspace {
                     Some(id)
                 };
             }
-            UiEvent::Rename(id, title) => e.execute(Command::Rename { id, title }),
+            UiEvent::Rename(id, title) => {
+                yatt_macos::eventlog::log(format!("workspace rename {id:?} {title:?}"));
+                e.execute(Command::Rename { id, title })
+            }
             UiEvent::SetNotes(id, notes) => e.execute(Command::SetNotes { id, notes }),
             UiEvent::SetLook { id, color, icon } => e.execute(Command::SetLook { id, color, icon }),
             UiEvent::Paste { .. } | UiEvent::Group(_) => {
