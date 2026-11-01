@@ -53,6 +53,7 @@ impl Engine {
             last_refresh: 0,
         };
         // Catch up on phases that ended while the app was closed.
+        engine.purge_expired();
         engine.tick();
         engine.sync_active();
         engine.refresh_times();
@@ -111,6 +112,70 @@ impl Engine {
 
     pub fn delete_task(&mut self, id: TaskId) {
         self.execute(Command::Delete { id });
+    }
+
+    /// Tucks every done task on the board into the archive, as one undo step.
+    pub fn archive_done(&mut self) {
+        let cmds: Vec<Command> = self
+            .board
+            .done_ids()
+            .into_iter()
+            .map(|id| Command::Archive { id })
+            .collect();
+        if !cmds.is_empty() {
+            self.execute(Command::Batch(cmds));
+        }
+    }
+
+    pub fn archive_task(&mut self, id: TaskId) {
+        self.execute(Command::Archive { id });
+    }
+
+    /// Brings a task back from the archive or the trash onto the board.
+    pub fn bring_back(&mut self, id: TaskId) {
+        let Some(t) = self.board.get(id) else { return };
+        let mut cmds = Vec::new();
+        if t.is_deleted() {
+            cmds.push(Command::Restore { id });
+        }
+        if t.is_archived() {
+            cmds.push(Command::Unarchive { id });
+        }
+        if !cmds.is_empty() {
+            self.execute(Command::Batch(cmds));
+        }
+    }
+
+    /// Empties the trash for good. Not undoable.
+    pub fn empty_trash(&mut self) {
+        let ids: Vec<TaskId> = self.board.trashed().iter().map(|t| t.id).collect();
+        self.purge(&ids);
+    }
+
+    /// Drops what has been in the trash longer than [`yatt_core::task::TRASH_DAYS`].
+    pub fn purge_expired(&mut self) {
+        let limit = self.now() - jiff::SignedDuration::from_hours(24 * yatt_core::task::TRASH_DAYS);
+        let ids: Vec<TaskId> = self
+            .board
+            .trashed()
+            .iter()
+            .filter(|t| t.deleted_at.is_some_and(|d| d < limit))
+            .map(|t| t.id)
+            .collect();
+        self.purge(&ids);
+    }
+
+    fn purge(&mut self, ids: &[TaskId]) {
+        if ids.is_empty() {
+            return;
+        }
+        match self.store.purge_tasks(ids) {
+            Ok(()) => {
+                self.board.purge(ids);
+                self.history.clear();
+            }
+            Err(e) => eprintln!("emptying the trash failed: {e}"),
+        }
     }
 
     pub fn is_active(&self, id: TaskId) -> bool {
@@ -383,5 +448,19 @@ mod tests {
         f.engine.timer.active_tasks.insert(TaskId::new());
         f.engine.sync_active();
         assert_eq!(f.engine.timer.active_tasks, BTreeSet::from([a]));
+    }
+
+    #[test]
+    fn archive_done_and_empty_trash() {
+        let mut f = Fixture::new();
+        let a = f.engine.create_task("a".into(), Status::Done);
+        let b = f.engine.create_task("b".into(), Status::Backlog);
+        f.engine.archive_done();
+        assert!(f.engine.board.get(a).unwrap().is_archived());
+        f.engine.undo();
+        assert!(!f.engine.board.get(a).unwrap().is_archived());
+        f.engine.delete_task(b);
+        f.engine.empty_trash();
+        assert!(f.engine.board.get(b).is_none());
     }
 }
