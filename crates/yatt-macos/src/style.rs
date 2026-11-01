@@ -1182,7 +1182,8 @@ mod tests {
         };
         let ring = selection_ring_layer();
         ring.setFrame(around(RING_GAP + RING_WIDTH));
-        let (outer, inner) = with_edge_images(|o, _| (edge_layer(o, EDGE_PAD), edge_layer(None, 0.0)));
+        let (outer, inner) =
+            with_edge_images(|o, _| (edge_layer(o, EDGE_PAD), edge_layer(None, 0.0)));
         outer.setFrame(around(EDGE_PAD));
         inner.setFrame(card);
         let face = CALayer::new();
