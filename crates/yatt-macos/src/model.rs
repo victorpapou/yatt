@@ -53,6 +53,10 @@ pub struct TimerSnap {
     /// The pomodoro's lengths, in minutes.
     pub work_min: u32,
     pub break_min: u32,
+    pub long_min: u32,
+    pub every: u32,
+    pub auto_breaks: bool,
+    pub auto_work: bool,
     /// For the menu bar.
     pub menu_bar: yatt_platform::MenuBarTimer,
 }
@@ -106,6 +110,13 @@ pub enum UiEvent {
     SetDurations {
         work_min: u32,
         break_min: u32,
+    },
+    /// Long break length, a long break every N works, the two auto-starts.
+    SetCycle {
+        long_min: u32,
+        every: u32,
+        auto_breaks: bool,
+        auto_work: bool,
     },
     StartStopwatch,
     Skip,

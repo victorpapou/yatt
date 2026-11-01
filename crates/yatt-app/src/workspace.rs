@@ -79,6 +79,12 @@ impl Workspace {
                 work_min,
                 break_min,
             } => e.set_durations(work_min, break_min),
+            UiEvent::SetCycle {
+                long_min,
+                every,
+                auto_breaks,
+                auto_work,
+            } => e.set_cycle(long_min, every, auto_breaks, auto_work),
             UiEvent::StartStopwatch => e.start_or_pause(Mode::Stopwatch),
             UiEvent::Skip => e.skip(),
             UiEvent::Stop => e.stop(),
@@ -183,6 +189,10 @@ impl Workspace {
             running: t.is_running(),
             work_min: t.settings.work_secs / 60,
             break_min: t.settings.short_break_secs / 60,
+            long_min: t.settings.long_break_secs / 60,
+            every: t.settings.long_break_every,
+            auto_breaks: t.settings.auto_start_breaks,
+            auto_work: t.settings.auto_start_work,
             menu_bar: match (t.phase, t.planned_secs()) {
                 (Phase::Idle, _) => MenuBarTimer::Idle,
                 (_, Some(p)) => MenuBarTimer::Pomodoro {

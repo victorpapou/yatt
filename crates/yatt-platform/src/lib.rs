@@ -127,6 +127,11 @@ pub trait MenuBar {
     fn show(&self, look: &MenuBarLook);
 }
 
+/// A system notification with a sound, for the end of a phase.
+pub trait Notifier {
+    fn notify(&self, title: &str, body: &str);
+}
+
 /// The whole platform layer handed to the app at startup.
 pub struct Platform {
     pub apps: Box<dyn AppBlocker>,

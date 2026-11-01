@@ -31,6 +31,8 @@ pub struct Engine {
     clock: Clock,
     tz: TimeZone,
     last_refresh: i64,
+    /// Told when a phase ends: the phase that finished and the one that follows.
+    pub on_phase_finished: Option<Box<dyn FnMut(Phase, Phase)>>,
 }
 
 impl Engine {
@@ -51,6 +53,7 @@ impl Engine {
             clock,
             tz,
             last_refresh: 0,
+            on_phase_finished: None,
         };
         // Catch up on phases that ended while the app was closed.
         engine.tick();
@@ -143,6 +146,16 @@ impl Engine {
         self.apply_timer(Vec::new());
     }
 
+    /// Long break, "every N" and the two auto-starts. Kept with the timer.
+    pub fn set_cycle(&mut self, long_min: u32, every: u32, auto_breaks: bool, auto_work: bool) {
+        let s = &mut self.timer.settings;
+        s.long_break_secs = long_min.clamp(1, 120) * 60;
+        s.long_break_every = every.clamp(2, 12);
+        s.auto_start_breaks = auto_breaks;
+        s.auto_start_work = auto_work;
+        self.apply_timer(Vec::new());
+    }
+
     pub fn skip(&mut self) {
         let fx = self.timer.skip(self.now());
         self.apply_timer(fx);
@@ -205,8 +218,9 @@ impl Engine {
     fn apply_timer(&mut self, fx: Vec<Effect>) {
         for e in &fx {
             if let Effect::PhaseFinished { phase, next } = e {
-                // Notifications and sounds hook in here (stage 3).
-                eprintln!("phase {phase:?} finished, next {next:?}");
+                if let Some(f) = self.on_phase_finished.as_mut() {
+                    f(*phase, *next);
+                }
             }
         }
         if let Err(e) = self.store.apply_timer(&fx, &self.timer) {
