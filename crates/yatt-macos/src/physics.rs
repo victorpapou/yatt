@@ -182,6 +182,9 @@ pub fn fan_mix(pile: (f64, f64, f64), fan: (f64, f64, f64), q: f64) -> (f64, f64
 /// 3° per 1000 pt/s and at most 7°, following through a damped response
 /// (period 0.45 s, ζ 0.7: one slight overshoot, no swinging). Matched to the
 /// reference clip (docs/reference/tima/motion).
+/// Drag on a card's sweep round its stack's centre, per second of its speed
+/// round: the air that takes the roll out of folding and unfolding.
+pub const ROUND_DRAG: f64 = 5.0;
 pub const SWING_PERIOD: f64 = 0.45;
 pub const SWING_ZETA: f64 = 0.7;
 pub const SWING_PER_SPEED: f64 = 0.003;
@@ -446,7 +449,9 @@ impl Body {
         // Going round takes a pull in toward the centre, or the body would
         // drift outward off the circle.
         let a_out = FALL.accel(rho - reach, v_out) - v_round * v_round / rho;
-        let a_round = FALL.accel(round, v_round);
+        // Air against the sweep round the centre: a card rolls less far round
+        // on the way out and in, and what it carries past its place dies sooner.
+        let a_round = FALL.accel(round, v_round) - ROUND_DRAG * v_round;
         let polar = (a_out * u.0 + a_round * t.0, a_out * u.1 + a_round * t.1);
         (
             straight.0 + (polar.0 - straight.0) * w,
