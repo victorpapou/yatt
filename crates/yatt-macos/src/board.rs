@@ -67,6 +67,8 @@ const STACK_SHOWN: usize = 3;
 /// only when it is open fade in or out, and the cards behind the top one let
 /// their text show or fade: nothing a stack shows appears or goes at once.
 const STACK_FADE: f64 = 0.3;
+/// The shortest a stack card fades in or out, in seconds, however fast the fan moves.
+const STACK_FADE_MIN: f64 = 0.22;
 /// How far beyond a column's visible area list rows stay drawn, in screens:
 /// enough that a fast scroll never shows an empty slot, few enough glass views.
 const ROW_OVERSCAN: f64 = 0.5;
@@ -1567,12 +1569,26 @@ impl Board {
         }
         self.opening.set(opening);
         let hidden = self.hidden.get();
+        let mut fading = false;
         for (id, card) in cards.iter_mut() {
             let Some(place) = card.stack else { continue };
-            if !opened[place.col] {
+            let q = opening[place.col].at;
+            // A card the fan hides or shows fades over at least STACK_FADE_MIN,
+            // however fast the swipe: with the openness alone a quick fold
+            // blinked the cards past the pile out.
+            let fade = {
+                let to = place.fade(q);
+                let step = dt / STACK_FADE_MIN;
+                if reduce || hidden == Some(*id) || card.removing {
+                    to
+                } else {
+                    card.fade + (to - card.fade).clamp(-step, step)
+                }
+            };
+            if !opened[place.col] && (fade - card.fade).abs() < 1e-3 {
                 continue;
             }
-            let q = opening[place.col].at;
+            fading |= (fade - place.fade(q)).abs() >= 1e-3;
             let (to, c) = place.at(q);
             // Ride with the openness: the card moves by exactly as much as its
             // place did, so what is left to fall is only its own offset (a new
@@ -1588,12 +1604,12 @@ impl Board {
             card.body.folding = self.open_goal(place.col) < q;
             card.target_scale = place.scale(q);
             if hidden != Some(*id) {
-                card.set_fade(place.fade(q));
+                card.set_fade(fade);
             }
             card.set_text(place.text(q));
         }
 
-        let mut moving = dragging || part || opened.contains(&true);
+        let mut moving = dragging || part || fading || opened.contains(&true);
         let drag_ids = self.dragged();
         let started = now;
         for card in cards.values_mut() {
