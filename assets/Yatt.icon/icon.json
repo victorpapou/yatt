@@ -1,6 +1,9 @@
 {
   "fill": {
-    "solid": "display-p3:1.00000,1.00000,1.00000,1.00000"
+    "linear-gradient": [
+      "display-p3:0.42,0.64,1.00,1.0",
+      "display-p3:0.75,0.52,1.00,1.0"
+    ]
   },
   "groups": [
     {
@@ -13,16 +16,6 @@
           "glass": true,
           "image-name": "card.svg",
           "name": "card"
-        },
-        {
-          "glass": true,
-          "image-name": "strip1.svg",
-          "name": "strip1"
-        },
-        {
-          "glass": true,
-          "image-name": "strip2.svg",
-          "name": "strip2"
         }
       ],
       "shadow": {
