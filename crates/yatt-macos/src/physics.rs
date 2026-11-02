@@ -105,13 +105,13 @@ pub const ROUND_BLEND: f64 = 25.0;
 /// point of travel for the openness ([`Opening`]).
 pub const FAN_TRAVEL: f64 = 160.0;
 /// The fall of a stack's openness (0 folded, 1 fanned): a little softer than a
-/// card's, about 3.5% past fully open (or folded) and back; within 5% of its
-/// end after about 0.4 s (the reference opens in about 0.47 s).
+/// card's and damped as if by more air: barely past fully open and back, no
+/// rolling round the spiral; within 5% of its end after about 0.4 s.
 pub const FALL_OPEN: Fall = Fall {
     g: 4000.0 / FAN_TRAVEL,
     brake: 1500.0 / FAN_TRAVEL,
     tau: 0.09,
-    zeta: 0.55,
+    zeta: 0.65,
 };
 
 /// A stack's openness folding (or settling part open): no overshoot, about
@@ -633,7 +633,7 @@ pub fn fan_recoil(v: f64) -> f64 {
 /// Opening speed (openness a second) under which a let-go adds no recoil.
 pub const FAN_RECOIL_FROM: f64 = 0.4;
 /// The most a flick carries a fan past fully open.
-pub const FAN_RECOIL_MAX: f64 = 0.1;
+pub const FAN_RECOIL_MAX: f64 = 0.07;
 
 /// How open a stack is (0 folded, 1 fanned) after a scroll of `down` points.
 pub fn fan_scrub(open: f64, down: f64) -> f64 {
@@ -854,7 +854,7 @@ mod tests {
                 assert!(t < 1.5, "{from}→{to} still moving");
             }
             if to > from {
-                assert!(past > 0.02 && past < 0.1, "{from}→{to}: past by {past}");
+                assert!(past > 0.01 && past < 0.05, "{from}→{to}: past by {past}");
             } else {
                 assert!(past < 1e-6, "folding went past the pile by {past}");
                 assert!(t < 0.6, "folded in {t}s");
