@@ -63,9 +63,6 @@ use crate::style;
 
 pub type Sink = Rc<dyn Fn(UiEvent)>;
 
-/// The toolbar's timer item: room for the longest clock («0:00:00»), the
-/// digits centred in it; the item itself stands in the toolbar's middle.
-const TIMER_ITEM_W: f64 = 100.0;
 /// Height of the timer row in the toolbar.
 const TOOLBAR_H: f64 = 40.0;
 /// The progress ring (minimal mode only): diameter and stroke.
