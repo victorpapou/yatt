@@ -2714,7 +2714,7 @@ pub(crate) fn card_face(mtm: MainThreadMarker, id: TaskId, title: &str, hue: usi
     let icon = style::glyph_view(mtm, style::glyph_of(id), hue);
     icon.setFrame(NSRect::new(
         NSPoint::new(TEXT_X, 14.0),
-        NSSize::new(16.0, 16.0),
+        NSSize::new(22.0, 22.0),
     ));
 
     // No "···": nothing on a card that does not do something.

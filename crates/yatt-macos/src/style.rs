@@ -907,8 +907,8 @@ pub fn glyph_image(symbol: &str, hue: usize) -> Option<Retained<CGImage>> {
                 );
                 let tinted = base.imageWithSymbolConfiguration(&config)?;
                 let size = tinted.size();
-                // Fit the symbol into 16 pt, at 2 px per point.
-                let k = 16.0 / size.width.max(size.height).max(1.0);
+                // Fit the symbol into 22 pt, at 2 px per point.
+                let k = 22.0 / size.width.max(size.height).max(1.0);
                 let mut rect = NSRect::new(
                     NSPoint::ZERO,
                     NSSize::new(size.width * k * EDGE_SCALE, size.height * k * EDGE_SCALE),
