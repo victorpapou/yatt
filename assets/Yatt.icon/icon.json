@@ -6,7 +6,7 @@
     {
       "layers": [
         {
-          "image-name": "check.svg",
+          "image-name": "check.png",
           "name": "check"
         },
         {
@@ -20,8 +20,8 @@
         "opacity": 0.35
       },
       "translucency": {
-        "enabled": true,
-        "value": 0.25
+        "enabled": false,
+        "value": 0
       }
     },
     {
