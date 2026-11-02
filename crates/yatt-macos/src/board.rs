@@ -116,6 +116,9 @@ pub enum DemoPointer {
     Hover(Option<(f64, f64)>),
 }
 
+/// Told how far a list has scrolled (points).
+pub type ScrollHandler = Box<dyn Fn(f64)>;
+
 /// One column's horizontal extent on the canvas.
 #[derive(Clone, Copy, Default)]
 pub struct ColumnGeom {
@@ -371,6 +374,9 @@ pub struct Board {
     perf: RefCell<Option<Vec<(f64, f64)>>>,
     /// Tells the window which column to tint while dragging.
     on_target: Box<dyn Fn(Option<usize>)>,
+    /// Told how far the furthest-scrolled list has gone up under the toolbar
+    /// (points; 0 at the top or rubber-banding past it), on every scroll.
+    pub on_scrolled: RefCell<Option<ScrollHandler>>,
 }
 
 impl Board {
@@ -441,6 +447,7 @@ impl Board {
             last_tick: Cell::new(0.0),
             perf: RefCell::new(std::env::var_os("YATT_PERF").map(|_| Vec::new())),
             on_target: Box::new(on_target),
+            on_scrolled: RefCell::new(None),
         });
         // Scrolling (momentum and rubber band included) shows the rows coming near.
         for col in &board.cols {
@@ -450,6 +457,7 @@ impl Board {
             let block = RcBlock::new(move |_note: NonNull<NSNotification>| {
                 if let Some(b) = weak.upgrade() {
                     b.cull_lists();
+                    b.report_scroll();
                 }
             });
             let token = unsafe {
@@ -484,6 +492,21 @@ impl Board {
             if layer.zPosition() != z {
                 layer.setZPosition(z);
             }
+        }
+    }
+
+    /// How far the furthest-scrolled list has gone up (stacks do not scroll),
+    /// to whoever listens.
+    pub fn report_scroll(&self) {
+        let up = self
+            .cols
+            .iter()
+            .zip(self.layouts.get())
+            .filter(|(_, l)| *l == Layout::List)
+            .map(|(c, _)| c.scroll.contentView().bounds().origin.y + c.scroll.contentInsets().top)
+            .fold(0.0_f64, f64::max);
+        if let Some(f) = self.on_scrolled.borrow().as_ref() {
+            f(up);
         }
     }
 
