@@ -29,8 +29,7 @@ use objc2_app_kit::{
     NSFontWeightMedium, NSFontWeightRegular, NSImage, NSLineBreakMode, NSNormalWindowLevel,
     NSPasteboard, NSPasteboardTypeString, NSSearchField, NSSearchToolbarItem, NSTextAlignment,
     NSTextField, NSToolbar, NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier,
-    NSToolbarItem, NSToolbarSpaceItemIdentifier, NSView, NSVisualEffectBlendingMode,
-    NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindow,
+    NSToolbarItem, NSToolbarSpaceItemIdentifier, NSView, NSWindow,
     NSWindowOrderingMode, NSWindowStyleMask, NSWindowTitleVisibility, NSWindowToolbarStyle,
 };
 use objc2_core_graphics::CGMutablePath;
@@ -126,8 +125,6 @@ struct Ui {
     heads: Retained<PassView>,
     capsule: Retained<NSView>,
     bottom_fade: Retained<BottomFade>,
-    bar_material: Retained<NSVisualEffectView>,
-    bar_rule: Retained<FillView>,
     new_task: Retained<NSTextField>,
     cards: Rc<Board>,
     modal: Modal,
@@ -200,7 +197,7 @@ impl MainWindow {
         // The board runs under the toolbar; the bar's material is a view of its
         // own over it (`bar_material`), live from the first frame: the system's
         // scroll-edge blur of an opaque titlebar caught up a beat late.
-        window.setTitlebarAppearsTransparent(true);
+        window.setTitlebarAppearsTransparent(false);
         // No line under it: the columns start right there.
         window.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::None);
         window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
@@ -441,34 +438,6 @@ impl MainWindow {
                 layer.setZPosition(z);
             }
         }
-        // The toolbar's material over the top of the board: the system's
-        // titlebar blur, live (a within-window backdrop) on every frame, cards
-        // scrolled up go under it.
-        let bar_material = NSVisualEffectView::new(mtm);
-        bar_material.setMaterial(NSVisualEffectMaterial::Titlebar);
-        bar_material.setBlendingMode(NSVisualEffectBlendingMode::WithinWindow);
-        bar_material.setState(NSVisualEffectState::FollowsWindowActiveState);
-        root.addSubview(&bar_material);
-        // Its hairline, with it.
-        let bar_rule = FillView::new(mtm, Fill::Separator);
-        root.addSubview(&bar_rule);
-        // Like Finder's: at rest (every list at its top) the bar is the board's
-        // own background, no material, no line; as a list scrolls under it,
-        // both come in with how far it has gone.
-        for v in [&*bar_material as &NSView, &bar_rule] {
-            v.setAlphaValue(0.0);
-        }
-        {
-            let (m, r) = (bar_material.clone(), bar_rule.clone());
-            *cards.on_scrolled.borrow_mut() = Some(Box::new(move |up| {
-                let a = bar_alpha(up);
-                if (m.alphaValue() - a).abs() > 0.001 {
-                    m.setAlphaValue(a);
-                    r.setAlphaValue(a);
-                }
-            }));
-        }
-
         let modal = Modal::new(mtm, &sink);
         root.addSubview(&modal.dim);
         root.addSubview(&modal.panel);
@@ -490,8 +459,6 @@ impl MainWindow {
             heads,
             capsule,
             bottom_fade,
-            bar_material,
-            bar_rule,
             new_task,
             cards,
             modal,
@@ -1201,12 +1168,6 @@ impl Ui {
         let full = NSRect::new(NSPoint::ZERO, NSSize::new(size.width, board_h));
         self.cards.overlay.setFrame(full);
         self.heads.setFrame(full);
-        self.bar_material
-            .setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(size.width, top)));
-        self.bar_rule.setFrame(NSRect::new(
-            NSPoint::new(0.0, top - 1.0),
-            NSSize::new(size.width, 1.0),
-        ));
         self.bottom_fade.setFrame(NSRect::new(
             NSPoint::new(0.0, board_h - BOTTOM_FADE_H),
             NSSize::new(size.width, BOTTOM_FADE_H),
@@ -2081,6 +2042,7 @@ impl Column {
 /// The toolbar's material and hairline for a list scrolled `up` points under
 /// it: none at the top (or rubber-banding past it), all of it by
 /// [`BAR_FADE_IN`], in proportion between, so it never switches.
+#[allow(dead_code)]
 fn bar_alpha(up: f64) -> f64 {
     (up / BAR_FADE_IN).clamp(0.0, 1.0)
 }
