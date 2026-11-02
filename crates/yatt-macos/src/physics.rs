@@ -111,10 +111,21 @@ pub const FALL_OPEN: Fall = Fall {
     g: 4000.0 / FAN_TRAVEL,
     brake: 1500.0 / FAN_TRAVEL,
     tau: 0.09,
-    zeta: 0.6,
+    zeta: 0.55,
 };
 
-/// How open a stack is, falling toward how open it should be ([`FALL_OPEN`]).
+/// A stack's openness folding (or settling part open): no overshoot, about
+/// 0.4 s from fully open, most of it in the first 0.25 s.
+pub const FALL_FOLD: Fall = Fall {
+    g: 5000.0 / FAN_TRAVEL,
+    brake: 2400.0 / FAN_TRAVEL,
+    tau: 0.07,
+    zeta: 1.0,
+};
+
+/// How open a stack is, falling toward how open it should be: opening all the
+/// way by [`FALL_OPEN`] (a little past and back), any other way by
+/// [`FALL_FOLD`] (no overshoot).
 /// Every card of the stack sits at its place for this openness, on the straight
 /// way from its pile place to its fan place, so the stack opens and folds as
 /// one mass; a card off its place falls back onto it ([`Body::fall`]).
@@ -122,6 +133,8 @@ pub const FALL_OPEN: Fall = Fall {
 pub struct Opening {
     pub at: f64,
     pub v: f64,
+    /// How far past fully open a flick still carries it ([`fan_recoil`]).
+    pub past: f64,
 }
 
 impl Opening {
@@ -130,10 +143,24 @@ impl Opening {
         let steps = (dt / (1.0 / 480.0)).ceil().max(1.0) as usize;
         let h = dt / steps as f64;
         for _ in 0..steps {
-            self.v += FALL_OPEN.accel(self.at - to, self.v) * h;
+            // Only opening all the way carries on past; any other way (a
+            // fold, a part-open scroll step) lands without.
+            // A flick carries the fan on past fully open by its recoil; once
+            // there (or turned back), it falls back to fully open.
+            let goal = if to >= 1.0 { to + self.past } else { to };
+            if self.past > 0.0 && (self.at >= goal - 1e-3 || self.v <= 0.0 && self.at > to) {
+                self.past = 0.0;
+            }
+            let goal = if to >= 1.0 { to + self.past } else { to };
+            let law = if to >= 1.0 && goal >= self.at - 0.5 {
+                FALL_OPEN
+            } else {
+                FALL_FOLD
+            };
+            self.v += law.accel(self.at - goal, self.v) * h;
             self.at += self.v * h;
         }
-        if (self.at - to).abs() < 1e-3 && self.v.abs() < 1e-2 {
+        if self.past == 0.0 && (self.at - to).abs() < 1e-3 && self.v.abs() < 1e-2 {
             self.at = to;
             self.v = 0.0;
             return false;
@@ -145,6 +172,8 @@ impl Opening {
 /// A card's place at openness `q`: on the straight way from `pile` to `fan`
 /// (x, y, turn), and on past either end while the openness overshoots.
 pub fn fan_mix(pile: (f64, f64, f64), fan: (f64, f64, f64), q: f64) -> (f64, f64, f64) {
+    // Never past the pile: a pile turned the other way reads as a glitch.
+    let q = q.max(0.0);
     let mix = |a: f64, b: f64| a + (b - a) * q;
     (mix(pile.0, fan.0), mix(pile.1, fan.1), mix(pile.2, fan.2))
 }
@@ -519,18 +548,92 @@ pub const FAN_FLING: f64 = 40.0;
 /// nearer.
 pub const FAN_SNAP_IDLE: f64 = 0.12;
 
-/// The opening speed (openness a second) a fan yanked open by fingers moving
-/// `speed` points a second down keeps: nothing for an ordinary scroll, then
-/// growing with the yank, never past [`FAN_YANK_MAX`], so a hard yank
-/// recoils past fully open a little and settles back.
-pub fn fan_yank(speed: f64) -> f64 {
-    ((speed - FAN_YANK_FROM) / FAN_SCRUB).clamp(0.0, FAN_YANK_MAX)
+/// How open a stack is while the fingers hold it, `down` points of travel
+/// from where they took it at openness `start`: one for one with the fingers
+/// ([`FAN_SCRUB`] points to fully open), and past either end on a rubber band
+/// that gives less the further it is pulled, never more than [`FAN_STRETCH`].
+pub fn fan_pull(start: f64, down: f64) -> f64 {
+    let q = start + down / FAN_SCRUB;
+    let band = |over: f64| FAN_STRETCH * (1.0 - (-over / FAN_STRETCH).exp());
+    if q > 1.0 {
+        1.0 + band(q - 1.0)
+    } else if q < 0.0 {
+        // Folded is as far as it goes.
+        0.0
+    } else {
+        q
+    }
 }
 
-/// Finger speed (pt/s) under which opening a fan gives no extra recoil.
-pub const FAN_YANK_FROM: f64 = 600.0;
-/// The most extra opening speed a yank gives: about 6% more past fully open.
-pub const FAN_YANK_MAX: f64 = 1.2;
+/// The most a held fan stretches past fully open or folded.
+pub const FAN_STRETCH: f64 = 0.08;
+/// The fastest a let-go fan keeps opening, in openness per second (about
+/// 200 pt/s of fingers): the harder the flick, the further it recoils past
+/// fully open, but never by much.
+pub const FAN_THROW_MAX: f64 = 1.5;
+
+/// The fingers' speed over a stack, in points a second down: each scroll
+/// step's travel over the time since the last, smoothed, and fading once the
+/// fingers rest (so lifting them after a pause throws nothing).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Swipe {
+    pub v: f64,
+    pub t: f64,
+}
+
+impl Swipe {
+    /// The fingers moved `down` points at media time `t`.
+    pub fn feed(&mut self, down: f64, t: f64) {
+        let dt = (t - self.t).clamp(1.0 / 240.0, 0.1);
+        let v = if self.t == 0.0 { 0.0 } else { down / dt };
+        // Steps come every frame or so while the fingers move; only a longer
+        // gap means they rested.
+        let old = if t - self.t > 0.05 {
+            self.speed(t)
+        } else {
+            self.v
+        };
+        self.v = old * 0.4 + v * 0.6;
+        self.t = t;
+    }
+
+    /// Its speed at media time `now`: halving every 30 ms the fingers rest.
+    pub fn speed(&self, now: f64) -> f64 {
+        let rest = (now - self.t).max(0.0);
+        self.v * (-rest / 0.043).exp()
+    }
+}
+
+/// Where a fan let go at openness `at`, moving at `v` (openness a second),
+/// goes: open if it would coast past the middle braking as the fall brakes,
+/// folded if not; and the speed it leaves the fingers with (capped at
+/// [`FAN_THROW_MAX`]), which the fall then carries on.
+pub fn fan_release(at: f64, v: f64) -> (bool, f64) {
+    let coast = v * v.abs() / (2.0 * FALL_OPEN.brake);
+    let open = at + coast > 0.5;
+    // Opening keeps the flick (its recoil); folding keeps nothing.
+    (
+        open,
+        if open {
+            v.clamp(0.0, FAN_THROW_MAX)
+        } else {
+            0.0
+        },
+    )
+}
+
+/// How far past fully open a fan let go opening at `v` (openness a second)
+/// recoils: what that speed coasts braking as a fall brakes, never more than
+/// [`FAN_RECOIL_MAX`]; a slow let-go, nothing.
+pub fn fan_recoil(v: f64) -> f64 {
+    let v = (v - FAN_RECOIL_FROM).max(0.0);
+    (v * v / (2.0 * FALL_OPEN.brake)).min(FAN_RECOIL_MAX)
+}
+
+/// Opening speed (openness a second) under which a let-go adds no recoil.
+pub const FAN_RECOIL_FROM: f64 = 0.4;
+/// The most a flick carries a fan past fully open.
+pub const FAN_RECOIL_MAX: f64 = 0.1;
 
 /// How open a stack is (0 folded, 1 fanned) after a scroll of `down` points.
 pub fn fan_scrub(open: f64, down: f64) -> f64 {
@@ -738,7 +841,10 @@ mod tests {
         // overshoot), back, and at rest within a second and a half; never a
         // jump between frames.
         for (from, to) in [(0.0, 1.0), (1.0, 0.0), (0.3, 1.0)] {
-            let mut o = Opening { at: from, v: 0.0 };
+            let mut o = Opening {
+                at: from,
+                ..Default::default()
+            };
             let (mut t, mut prev, mut past) = (0.0, from, 0.0_f64);
             while o.step(to, 1.0 / 120.0) {
                 t += 1.0 / 120.0;
@@ -747,8 +853,23 @@ mod tests {
                 prev = o.at;
                 assert!(t < 1.5, "{from}→{to} still moving");
             }
-            assert!(past > 0.02 && past < 0.1, "{from}→{to}: past by {past}");
+            if to > from {
+                assert!(past > 0.02 && past < 0.1, "{from}→{to}: past by {past}");
+            } else {
+                assert!(past < 1e-6, "folding went past the pile by {past}");
+                assert!(t < 0.6, "folded in {t}s");
+            }
         }
+        // A part-open scroll step lands without passing.
+        let mut o = Opening {
+            at: 0.2,
+            ..Default::default()
+        };
+        let mut most = 0.0_f64;
+        while o.step(0.5, 1.0 / 120.0) {
+            most = most.max(o.at);
+        }
+        assert!(most <= 0.5 + 1e-9, "{most}");
         // Its start is gentle: after one frame it has barely moved.
         let mut o = Opening::default();
         o.step(1.0, 1.0 / 60.0);
@@ -887,21 +1008,54 @@ mod tests {
     }
 
     #[test]
-    fn a_hard_yank_recoils_a_little_and_a_scroll_not_at_all() {
-        assert_eq!(fan_yank(300.0), 0.0);
-        assert!(fan_yank(1200.0) > 0.0);
-        assert_eq!(fan_yank(1e6), FAN_YANK_MAX);
-        let mut most = 0.0_f64;
+    fn a_held_fan_follows_the_fingers_and_a_flick_decides() {
+        // One for one with the fingers, a rubber band past fully open, nothing
+        // past folded.
+        assert!((fan_pull(0.0, FAN_SCRUB / 2.0) - 0.5).abs() < 1e-9);
+        assert!((fan_pull(0.2, FAN_SCRUB * 0.3) - 0.5).abs() < 1e-9);
+        let far = fan_pull(0.0, FAN_SCRUB * 10.0);
+        assert!(far > 1.05 && far <= 1.0 + FAN_STRETCH, "{far}");
+        assert_eq!(fan_pull(0.3, -FAN_SCRUB), 0.0);
+        // The further pulled past the end, the less it gives.
+        let (a, b) = (
+            fan_pull(1.0, 10.0) - 1.0,
+            fan_pull(1.0, 20.0) - fan_pull(1.0, 10.0),
+        );
+        assert!(b < a);
+        // Let go: a slow drag decides by where it is, a flick by its speed.
+        assert!(fan_release(0.6, 0.0).0);
+        assert!(!fan_release(0.4, 0.0).0);
+        assert!(fan_release(0.2, 3.0).0, "a flick open from near folded");
+        assert!(!fan_release(0.8, -3.0).0, "a flick shut from near open");
+        assert!(!fan_release(0.3, 0.5).0, "a nudge is not a flick");
+        assert_eq!(fan_release(0.5, 40.0).1, FAN_THROW_MAX);
+        // Let go folding, it brings no speed along.
+        assert_eq!(fan_release(0.3, -4.0), (false, 0.0));
+        // The hardest flick, let go nearly open: a small recoil past fully
+        // open, and at rest within a second.
         let mut o = Opening {
-            at: 0.8,
-            v: FAN_YANK_MAX,
+            at: 0.9,
+            v: FAN_THROW_MAX,
+            past: fan_recoil(FAN_THROW_MAX),
         };
-        let mut t = 0.0;
+        let (mut most, mut t) = (0.0_f64, 0.0);
         while o.step(1.0, 1.0 / 120.0) && t < 2.0 {
             most = most.max(o.at);
             t += 1.0 / 120.0;
         }
-        assert!(most > 1.02 && most < 1.15 && t < 1.6, "to {most} in {t}s");
+        assert!(most > 1.05 && most < 1.13 && t < 1.2, "to {most}, {t}s");
+        // A gentle let-go: no recoil.
+        assert_eq!(fan_recoil(0.3), 0.0);
+        assert!(fan_recoil(1.2) > 0.0 && fan_recoil(1.2) < fan_recoil(1.5));
+        // The fingers' speed: steady steps read as their speed; a pause
+        // before lifting them throws nothing.
+        let mut s = Swipe::default();
+        for k in 0..20 {
+            s.feed(5.0, 1.0 + k as f64 / 120.0);
+        }
+        let t = 1.0 + 19.0 / 120.0;
+        assert!((s.speed(t) - 600.0).abs() < 10.0, "{}", s.speed(t));
+        assert!(s.speed(t + 0.3) < 1.0);
     }
 
     #[test]

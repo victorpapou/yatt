@@ -29,8 +29,8 @@ use objc2_app_kit::{
     NSFontWeightMedium, NSFontWeightRegular, NSImage, NSLineBreakMode, NSNormalWindowLevel,
     NSPasteboard, NSPasteboardTypeString, NSSearchField, NSSearchToolbarItem, NSTextAlignment,
     NSTextField, NSToolbar, NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier,
-    NSToolbarItem, NSToolbarSpaceItemIdentifier, NSView, NSWindow,
-    NSWindowOrderingMode, NSWindowStyleMask, NSWindowTitleVisibility, NSWindowToolbarStyle,
+    NSToolbarItem, NSToolbarSpaceItemIdentifier, NSView, NSWindow, NSWindowOrderingMode,
+    NSWindowStyleMask, NSWindowTitleVisibility, NSWindowToolbarStyle,
 };
 use objc2_core_graphics::CGMutablePath;
 use objc2_foundation::{NSArray, NSNumber, NSObjectNSKeyValueCoding, NSValue};
