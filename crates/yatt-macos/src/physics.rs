@@ -104,13 +104,14 @@ pub const ROUND_BLEND: f64 = 25.0;
 /// How far a stack's cards travel between folded and fanned, taken as one
 /// point of travel for the openness ([`Opening`]).
 pub const FAN_TRAVEL: f64 = 160.0;
-/// The fall of a stack's openness (0 folded, 1 fanned): softer than a card's,
-/// a gentler start, about 6% past fully open (or folded) and back.
+/// The fall of a stack's openness (0 folded, 1 fanned): a little softer than a
+/// card's, about 3.5% past fully open (or folded) and back; within 5% of its
+/// end after about 0.4 s (the reference opens in about 0.47 s).
 pub const FALL_OPEN: Fall = Fall {
-    g: 3000.0 / FAN_TRAVEL,
-    brake: 1000.0 / FAN_TRAVEL,
-    tau: 0.1,
-    zeta: 0.5,
+    g: 4000.0 / FAN_TRAVEL,
+    brake: 1500.0 / FAN_TRAVEL,
+    tau: 0.09,
+    zeta: 0.6,
 };
 
 /// How open a stack is, falling toward how open it should be ([`FALL_OPEN`]).
@@ -516,7 +517,7 @@ pub const FAN_SCRUB: f64 = 140.0;
 pub const FAN_FLING: f64 = 40.0;
 /// A part-open fan left alone this long (seconds) opens or folds, whichever is
 /// nearer.
-pub const FAN_SNAP_IDLE: f64 = 0.25;
+pub const FAN_SNAP_IDLE: f64 = 0.12;
 
 /// The opening speed (openness a second) a fan yanked open by fingers moving
 /// `speed` points a second down keeps: nothing for an ordinary scroll, then
