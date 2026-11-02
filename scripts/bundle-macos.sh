@@ -17,6 +17,13 @@ cargo build --release -p yatt-app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp target/release/yatt "$APP/Contents/MacOS/yatt"
+ICONSET=target/release/yatt.iconset
+rm -rf "$ICONSET" && mkdir -p "$ICONSET"
+for sz in 16 32 128 256 512; do
+    sips -z $sz $sz assets/icon-1024.png --out "$ICONSET/icon_${sz}x${sz}.png" >/dev/null
+    sips -z $((sz*2)) $((sz*2)) assets/icon-1024.png --out "$ICONSET/icon_${sz}x${sz}@2x.png" >/dev/null
+done
+iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/Yatt.icns"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -25,6 +32,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleIdentifier</key><string>dev.yatt.app</string>
     <key>CFBundleName</key><string>Yatt</string>
     <key>CFBundleDisplayName</key><string>Yatt</string>
+    <key>CFBundleIconFile</key><string>Yatt</string>
     <key>CFBundleExecutable</key><string>yatt</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
