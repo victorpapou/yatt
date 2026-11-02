@@ -13,15 +13,10 @@ VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 APP=target/release/Yatt.app
 DMG=target/release/Yatt-$VERSION.dmg
 STAGE=target/release/dmg-stage
-RW=target/release/Yatt-rw.dmg
 
 scripts/bundle-macos.sh
-rm -rf "$STAGE" "$DMG" "$RW"
-mkdir -p "$STAGE/.background"
-cp -R "$APP" "$STAGE/Yatt.app"
-cp assets/dmg/background.png "$STAGE/.background/background.png"
-cp assets/dmg/background@2x.png "$STAGE/.background/background@2x.png"
-ln -s /Applications "$STAGE/Applications"
+rm -rf "$DMG" "$STAGE"
+mkdir -p "$STAGE"
 cat > "$STAGE/Как открыть.txt" <<'TXT'
 1. Перетащи Yatt на папку Applications.
 2. Первый запуск: macOS скажет, что разработчик неизвестен (приложение не
@@ -32,36 +27,9 @@ cat > "$STAGE/Как открыть.txt" <<'TXT'
 3. Дальше Yatt открывается обычным двойным кликом.
 Нужен macOS 14 или новее.
 TXT
-
-hdiutil create -srcfolder "$STAGE" -volname "Yatt" -fs HFS+ -format UDRW -ov "$RW" >/dev/null
-DEV=$(hdiutil attach -readwrite -noverify -noautoopen "$RW" | awk '/Apple_HFS/ {print $1; exit}')
-# Lay out the window: icons side by side, Applications on the right.
-osascript <<OSA || echo "warning: Finder layout skipped"
-tell application "Finder"
-  tell disk "Yatt"
-    open
-    set current view of container window to icon view
-    set toolbar visible of container window to false
-    set statusbar visible of container window to false
-    set bounds of container window to {200, 120, 760, 480}
-    set opts to icon view options of container window
-    set arrangement of opts to not arranged
-    set icon size of opts to 112
-    set background picture of opts to file ".background:background.png"
-    set position of item "Yatt.app" of container window to {150, 160}
-    set position of item "Applications" of container window to {410, 160}
-    set position of item "Как открыть.txt" of container window to {280, 310}
-    close
-    open
-    update without registering applications
-    delay 1
-    close
-  end tell
-end tell
-OSA
-sync
-hdiutil detach "$DEV" >/dev/null
-hdiutil convert "$RW" -format UDZO -imagekey zlib-level=9 -o "$DMG" >/dev/null
-rm -rf "$RW" "$STAGE"
+# dmgbuild writes .DS_Store directly (no Finder/AppleScript needed).
+[ -x target/dmgenv/bin/dmgbuild ] || { python3 -m venv target/dmgenv && target/dmgenv/bin/pip install -q dmgbuild; }
+APP="$APP" NOTE="$STAGE/Как открыть.txt" target/dmgenv/bin/dmgbuild -s assets/dmg/settings.py Yatt "$DMG"
+rm -rf "$STAGE"
 codesign --force --sign - "$DMG" 2>/dev/null || true
 echo "built $DMG"
