@@ -1,14 +1,38 @@
 {
-  "fill": {"solid": "display-p3:1.00000,1.00000,1.00000,1.00000"},
-  "groups": [
+  "fill" : {
+    "solid" : "display-p3:1.00000,1.00000,1.00000,1.00000"
+  },
+  "groups" : [
     {
-      "layers": [
-        {"name": "check", "image-name": "check.svg"},
-        {"name": "card", "image-name": "card.svg", "glass": true}
+      "layers" : [
+        {
+          "image-name" : "check.svg",
+          "name" : "check"
+        },
+        {
+          "glass" : true,
+          "image-name" : "card.svg",
+          "name" : "card",
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              0,
+              0
+            ]
+          }
+        }
       ],
-      "shadow": {"kind": "neutral", "opacity": 0.5},
-      "translucency": {"enabled": true, "value": 0.5}
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.5
+      }
     }
   ],
-  "supported-platforms": {"squares": "shared"}
+  "supported-platforms" : {
+    "squares" : "shared"
+  }
 }
