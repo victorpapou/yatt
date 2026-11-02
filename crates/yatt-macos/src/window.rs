@@ -140,9 +140,6 @@ struct Ui {
 
 struct Header {
     view: Retained<FlippedView>,
-    /// The clock as the toolbar's own item: one plain label, sized by the bar.
-    /// (`view` carries the animated digits and serves minimal mode.)
-    bar_clock: Retained<NSTextField>,
     digits_box: Retained<FlippedView>,
     digits: RefCell<Vec<Retained<NSTextField>>>,
     shown_clock: RefCell<String>,
@@ -253,9 +250,14 @@ impl MainWindow {
         };
         // The timer row lives in a native toolbar, unified with the titlebar.
         let timer_item = PlainToolbarItem::item(mtm, ns_string!("yatt.timer"));
-        timer_item.setView(Some(&header.bar_clock));
+        timer_item.setView(Some(&header.view));
         // Plain text in the toolbar: no bubble (see `PlainToolbarItem`).
         timer_item.setBordered(false);
+        #[allow(deprecated)]
+        {
+            timer_item.setMinSize(NSSize::new(TIMER_ITEM_W, TOOLBAR_H));
+            timer_item.setMaxSize(NSSize::new(TIMER_ITEM_W, TOOLBAR_H));
+        }
         // Search: a native field in the toolbar; every keystroke narrows the board.
         let search = NSSearchField::new(mtm);
         search.setPlaceholderString(Some(ns_string!("Поиск")));
@@ -1259,7 +1261,7 @@ impl Ui {
             self.minimal.set(false);
             self.header.minimal.set(false);
             self.header.view.removeFromSuperview();
-            self.timer_item.setView(Some(&self.header.bar_clock));
+            self.timer_item.setView(Some(&self.header.view));
             self.toolbar.setVisible(true);
             self.header.reset_clock();
             self.window.setLevel(NSNormalWindowLevel);
@@ -1520,13 +1522,8 @@ impl Header {
         let ring = Ring::new(mtm);
         view.addSubview(&ring.view);
 
-        let bar_clock = label(mtm, "", DIGITS_BAR.0, unsafe { NSFontWeightMedium });
-        bar_clock.setFont(Some(&clock_font(DIGITS_BAR.0)));
-        bar_clock.setAlignment(NSTextAlignment::Center);
-
         let header = Self {
             view,
-            bar_clock,
             digits_box,
             digits: RefCell::new(Vec::new()),
             shown_clock: RefCell::new(String::new()),
@@ -1708,8 +1705,6 @@ impl Header {
         // hover away.
         let summary = format!("{} · {}", t.phase_label, t.tasks_label);
         self.view.setToolTip(Some(&NSString::from_str(&summary)));
-        self.bar_clock
-            .setToolTip(Some(&NSString::from_str(&summary)));
         self.stopwatch.setHidden(!t.can_start_stopwatch);
         self.skip.setHidden(!t.can_skip);
         self.stop.setHidden(!t.can_stop);
@@ -1734,7 +1729,6 @@ impl Header {
         if *shown == clock {
             return;
         }
-        self.bar_clock.setStringValue(&NSString::from_str(clock));
         let mtm = MainThreadMarker::new().expect("main thread");
         let mut digits = self.digits.borrow_mut();
         let chars: Vec<char> = clock.chars().collect();
