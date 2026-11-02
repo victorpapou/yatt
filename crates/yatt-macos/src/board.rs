@@ -379,6 +379,21 @@ pub struct Board {
     pub on_scrolled: RefCell<Option<ScrollHandler>>,
 }
 
+/// The system picks the scroll-edge effect per column ("automatic"): soft under the
+/// window buttons, a hard cut under the toolbar's controls. All three columns get
+/// the soft one. AppKit has no public setter on `NSScrollView` for it, so this
+/// asks for the (private) one only if the running system has it, and does
+/// nothing otherwise.
+fn soft_top_edge(scroll: &NSScrollView) {
+    /// `NSScrollEdgeEffectStyle` order: automatic, soft, hard; edge 0 is the top.
+    const SOFT: isize = 1;
+    const TOP: isize = 0;
+    let sel = objc2::sel!(setScrollPocketStyle:onEdge:);
+    if scroll.respondsToSelector(sel) {
+        let _: () = unsafe { objc2::msg_send![scroll, setScrollPocketStyle: SOFT, onEdge: TOP] };
+    }
+}
+
 impl Board {
     pub fn new(
         mtm: MainThreadMarker,
@@ -404,6 +419,7 @@ impl Board {
             // inset, the scroller starting below it) and softens the edge where
             // the rows go under it.
             scroll.setAutomaticallyAdjustsContentInsets(true);
+            soft_top_edge(&scroll);
             let doc = FlippedView::new(mtm, NSRect::ZERO);
             scroll.setDocumentView(Some(&doc));
             canvas.addSubview(&scroll);
