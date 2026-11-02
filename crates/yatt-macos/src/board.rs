@@ -1238,7 +1238,7 @@ impl Board {
                     // The document is as tall as the list (room for the gap included).
                     let slots = n + gap.map_or(0, |(_, k)| k);
                     let doc_h = (self.doc_top() + slots as f64 * PITCH + LIST_BOTTOM)
-                        .max(self.height.get());
+                        .max(self.height.get() - self.cols[ci].scroll.contentInsets().top);
                     let doc = &self.cols[ci].doc;
                     if doc.frame().size.height != doc_h
                         || doc.frame().size.width != self.geom.get()[ci].w
