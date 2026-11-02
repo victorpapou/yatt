@@ -1323,7 +1323,10 @@ impl Board {
             match card.stack {
                 Some(place) => {
                     let q = self.opening.get()[place.col].at;
-                    if hidden != Some(*id) {
+                    // Its fade follows in `tick`, over at least STACK_FADE_MIN:
+                    // set here, a flick (one retarget per scroll event) blinked
+                    // the cards past the pile out.
+                    if hidden != Some(*id) && motion::reduce_motion() {
                         card.set_fade(place.fade(q));
                     }
                     card.set_text(place.text(q));
