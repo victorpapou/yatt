@@ -1,9 +1,6 @@
 {
   "fill": {
-    "linear-gradient": [
-      "display-p3:0.42,0.64,1.00,1.0",
-      "display-p3:0.75,0.52,1.00,1.0"
-    ]
+    "solid": "display-p3:1.00000,1.00000,1.00000,1.00000"
   },
   "groups": [
     {
@@ -20,11 +17,45 @@
       ],
       "shadow": {
         "kind": "neutral",
-        "opacity": 0.5
+        "opacity": 0.35
       },
       "translucency": {
-        "enabled": true,
-        "value": 0.5
+        "enabled": false,
+        "value": 0
+      }
+    },
+    {
+      "layers": [
+        {
+          "glass": true,
+          "image-name": "pink.svg",
+          "name": "pink"
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.35
+      },
+      "translucency": {
+        "enabled": false,
+        "value": 0
+      }
+    },
+    {
+      "layers": [
+        {
+          "glass": true,
+          "image-name": "lime.svg",
+          "name": "lime"
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.35
+      },
+      "translucency": {
+        "enabled": false,
+        "value": 0
       }
     }
   ],
