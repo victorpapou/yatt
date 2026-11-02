@@ -8,6 +8,8 @@
 # The app keeps its data in ~/Library/Application Support/yatt (YATT_DB overrides).
 set -eu
 cd "$(dirname "$0")/.."
+# actool lives in full Xcode; use it even when xcode-select points at the CLT.
+[ -d /Applications/Xcode.app ] && export DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
 
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 APP=target/release/Yatt.app
