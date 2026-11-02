@@ -518,6 +518,15 @@ impl Body {
         }
     }
 
+    /// Brings the speed down to at most `max`, keeping its direction.
+    pub fn limit_speed(&mut self, max: f64) {
+        let v = self.vx.hypot(self.vy);
+        if v > max {
+            self.vx *= max / v;
+            self.vy *= max / v;
+        }
+    }
+
     /// Close enough to the target that drawing another frame changes nothing visible.
     pub fn at_rest(&self) -> bool {
         (self.x - self.tx).abs() < 0.25
@@ -647,6 +656,10 @@ pub fn fan_scrub(open: f64, down: f64) -> f64 {
 pub fn fan_snap(open: f64) -> bool {
     open > 0.5
 }
+
+/// The fastest a card may still be moving when it is let go, in points a
+/// second: enough for a little overshoot (about 3-4% of a column's move), never a fly-off.
+pub const RELEASE_SPEED: f64 = 900.0;
 
 /// The fastest any card moves, in points a second.
 pub const MAX_SPEED: f64 = 6000.0;
