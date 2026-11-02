@@ -396,7 +396,8 @@ impl Board {
             scroll.setHasHorizontalScroller(false);
             scroll.setAutohidesScrollers(true);
             scroll.setScrollerStyle(NSScrollerStyle::Overlay);
-            scroll.setVerticalScrollElasticity(NSScrollElasticity::Allowed);
+            // Rubber band only when the list is taller than the column.
+            scroll.setVerticalScrollElasticity(NSScrollElasticity::Automatic);
             scroll.setHorizontalScrollElasticity(NSScrollElasticity::None);
             scroll.contentView().setDrawsBackground(false);
             // The system keeps the list clear of the toolbar (a top content
@@ -1238,7 +1239,7 @@ impl Board {
                     // The document is as tall as the list (room for the gap included).
                     let slots = n + gap.map_or(0, |(_, k)| k);
                     let doc_h = (self.doc_top() + slots as f64 * PITCH + LIST_BOTTOM)
-                        .max(self.height.get() - self.cols[ci].scroll.contentInsets().top);
+                        .max(self.height.get() - self.cols[ci].scroll.contentInsets().top.max(self.top.get()));
                     let doc = &self.cols[ci].doc;
                     if doc.frame().size.height != doc_h
                         || doc.frame().size.width != self.geom.get()[ci].w
