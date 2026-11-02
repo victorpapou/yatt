@@ -1,38 +1,41 @@
 {
-  "fill" : {
-    "solid" : "display-p3:1.00000,1.00000,1.00000,1.00000"
+  "fill": {
+    "solid": "display-p3:1.00000,1.00000,1.00000,1.00000"
   },
-  "groups" : [
+  "groups": [
     {
-      "layers" : [
+      "layers": [
         {
-          "image-name" : "check.svg",
-          "name" : "check"
+          "image-name": "check.svg",
+          "name": "check"
         },
         {
-          "glass" : true,
-          "image-name" : "card.svg",
-          "name" : "card",
-          "position" : {
-            "scale" : 1,
-            "translation-in-points" : [
-              0,
-              0
-            ]
-          }
+          "glass": true,
+          "image-name": "card.svg",
+          "name": "card"
+        },
+        {
+          "glass": true,
+          "image-name": "strip1.svg",
+          "name": "strip1"
+        },
+        {
+          "glass": true,
+          "image-name": "strip2.svg",
+          "name": "strip2"
         }
       ],
-      "shadow" : {
-        "kind" : "neutral",
-        "opacity" : 0.5
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.5
       },
-      "translucency" : {
-        "enabled" : true,
-        "value" : 0.5
+      "translucency": {
+        "enabled": true,
+        "value": 0.5
       }
     }
   ],
-  "supported-platforms" : {
-    "squares" : "shared"
+  "supported-platforms": {
+    "squares": "shared"
   }
 }
