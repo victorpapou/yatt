@@ -1621,9 +1621,7 @@ impl Board {
             if card.parked.get()
                 && !card.view.isHidden()
                 && card.body.at_rest()
-                && card
-                    .stack
-                    .is_none_or(|p| p.fade(card.stack_q.unwrap_or(0.0)) < 0.01)
+                && (card.stack.is_none() || card.fade < 0.01)
             {
                 card.view.setHidden(true);
             }
