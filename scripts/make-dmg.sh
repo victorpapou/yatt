@@ -19,6 +19,8 @@ scripts/bundle-macos.sh
 rm -rf "$STAGE" "$DMG" "$RW"
 mkdir -p "$STAGE/.background"
 cp -R "$APP" "$STAGE/Yatt.app"
+cp assets/dmg/background.png "$STAGE/.background/background.png"
+cp assets/dmg/background@2x.png "$STAGE/.background/background@2x.png"
 ln -s /Applications "$STAGE/Applications"
 cat > "$STAGE/Как открыть.txt" <<'TXT'
 1. Перетащи Yatt на папку Applications.
@@ -45,9 +47,10 @@ tell application "Finder"
     set opts to icon view options of container window
     set arrangement of opts to not arranged
     set icon size of opts to 112
+    set background picture of opts to file ".background:background.png"
     set position of item "Yatt.app" of container window to {150, 160}
     set position of item "Applications" of container window to {410, 160}
-    set position of item "Как открыть.txt" of container window to {280, 300}
+    set position of item "Как открыть.txt" of container window to {280, 310}
     close
     open
     update without registering applications
