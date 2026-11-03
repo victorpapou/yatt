@@ -185,7 +185,7 @@ pub fn fan_mix(pile: (f64, f64, f64), fan: (f64, f64, f64), q: f64) -> (f64, f64
 pub const SWING_PERIOD: f64 = 0.45;
 pub const SWING_ZETA: f64 = 0.7;
 pub const SWING_PER_SPEED: f64 = 0.003;
-pub const SWING_MAX: f64 = 7.0;
+pub const SWING_MAX: f64 = 4.5;
 
 /// The lead of a dragged group: nearly attached, a touch of lag.
 pub const LEAD: Spring = Spring::new(1200.0, 1.0);
@@ -269,11 +269,11 @@ pub fn ring_shown(selected: bool, dragging: bool) -> bool {
 /// its return to level, and the most it turns.
 pub const GRIP_PERIOD: f64 = 0.5;
 pub const GRIP_ZETA: f64 = 0.7;
-pub const GRIP_MAX: f64 = 8.0;
+pub const GRIP_MAX: f64 = 5.0;
 /// How much of the full rigid-body turn a held card takes: matched frame by
 /// frame to the reference pull (a few degrees of lean, docs/reference/tima/
 /// motion/compare), so it reads as weight, not as hanging.
-pub const GRIP_GAIN: f64 = 0.9;
+pub const GRIP_GAIN: f64 = 0.6;
 
 /// A card held at the point it was grabbed: a rigid body hanging from the
 /// pointer there. The grab point follows the pointer (very stiff, critically
@@ -659,7 +659,7 @@ pub fn fan_snap(open: f64) -> bool {
 
 /// The fastest a card may still be moving when it is let go, in points a
 /// second: enough for a little overshoot (about 3-4% of a column's move), never a fly-off.
-pub const RELEASE_SPEED: f64 = 900.0;
+pub const RELEASE_SPEED: f64 = 450.0;
 
 /// The fastest any card moves, in points a second.
 pub const MAX_SPEED: f64 = 6000.0;
