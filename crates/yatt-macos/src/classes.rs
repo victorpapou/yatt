@@ -236,7 +236,7 @@ define_class!(
     impl ColumnsSplit {
         #[unsafe(method(dividerThickness))]
         fn divider_thickness(&self) -> f64 {
-            0.0
+            1.0
         }
 
         #[unsafe(method(drawDividerInRect:))]

@@ -108,7 +108,7 @@ struct Ui {
     window: Retained<NSWindow>,
     root: Retained<RootView>,
     /// The columns' split view, under the board's other layers.
-    split_view: Retained<crate::classes::ColumnsSplit>,
+    _split_view: Retained<crate::classes::ColumnsSplit>,
     sink: Sink,
     header: Header,
     /// The timer in the system's menu bar.
@@ -220,7 +220,6 @@ impl MainWindow {
         // a split-view controller, as in Finder.
         let root_vc = objc2_app_kit::NSViewController::new(mtm);
         root_vc.setView(&root);
-        window.setContentViewController(Some(&root_vc));
 
         let mut retained: Vec<Retained<AnyObject>> = Vec::new();
         retained.extend(crate::eventlog::install());
@@ -330,6 +329,21 @@ impl MainWindow {
                 retained.push(m);
             }
         }
+        let split_view = crate::classes::ColumnsSplit::new(mtm);
+        split_view.setVertical(true);
+        split_view.setDividerStyle(objc2_app_kit::NSSplitViewDividerStyle::Thin);
+        // The toolbar follows the column dividers: one section per column, so each
+        // column's scroll view gets the edge effect under its own part of the bar.
+        let seps: Vec<Retained<NSToolbarItem>> = (0..2)
+            .map(|i| {
+                let t = objc2_app_kit::NSTrackingSeparatorToolbarItem::trackingSeparatorToolbarItemWithIdentifier_splitView_dividerIndex(
+                    &NSString::from_str(&format!("yatt.sep{i}")),
+                    &split_view,
+                    i,
+                );
+                Retained::into_super(t)
+            })
+            .collect();
         let toolbar =
             NSToolbar::initWithIdentifier(NSToolbar::alloc(mtm), ns_string!("yatt.toolbar"));
         // … [digits] … [Старт] [Секундомер] [Пропустить] [Стоп] [▤ ⤡]
@@ -343,6 +357,8 @@ impl MainWindow {
             bar.stack.clone(),
             bar.mini.clone(),
             Retained::into_super(search_item.clone()),
+            seps[0].clone(),
+            seps[1].clone(),
         ];
         // The toolbar gives neighbouring items one shared bubble; a fixed space
         // between two items gives each its own.
@@ -353,8 +369,11 @@ impl MainWindow {
         // there as the window resizes), the controls on the right.
         let space2 = space.clone();
         let order: Vec<Retained<NSString>> = vec![
+            id(&items[8]),
             flexible.clone(),
             id(&items[0]),
+            flexible.clone(),
+            id(&items[9]),
             flexible,
             id(&items[1]),
             space.clone(),
@@ -375,13 +394,8 @@ impl MainWindow {
         };
         let toolbar_delegate = ToolbarDelegate::new(mtm, items, order);
         toolbar.setDelegate(Some(ProtocolObject::from_ref(&*toolbar_delegate)));
-        toolbar.setCenteredItemIdentifiers(&objc2_foundation::NSSet::from_retained_slice(&[
-            timer_item.itemIdentifier(),
-        ]));
         toolbar.setDisplayMode(NSToolbarDisplayMode::IconOnly);
         toolbar.setAllowsUserCustomization(false);
-        window.setToolbar(Some(&toolbar));
-        window.setToolbarStyle(NSWindowToolbarStyle::Unified);
         retained.push(Retained::into_super(Retained::into_super(toolbar_delegate)));
 
         // The board tints the column under a dragged card through a weak handle,
@@ -389,9 +403,6 @@ impl MainWindow {
         let tint_target: Rc<RefCell<Option<std::rc::Weak<Ui>>>> = Rc::new(RefCell::new(None));
         let tint_target_for_board = tint_target.clone();
         let columns = [0, 1, 2].map(|i| Column::new(mtm, i));
-        let split_view = crate::classes::ColumnsSplit::new(mtm);
-        split_view.setVertical(true);
-        split_view.setDividerStyle(objc2_app_kit::NSSplitViewDividerStyle::Thin);
         let split_vc = objc2_app_kit::NSSplitViewController::new(mtm);
         split_vc.setSplitView(&split_view);
         // Created before its cards: each column's scroll view goes into the
@@ -408,20 +419,27 @@ impl MainWindow {
         };
         for (i, c) in columns.iter().enumerate() {
             let scroll = cards.scroll_view(i);
+            let vc = objc2_app_kit::NSViewController::new(mtm);
             scroll.setFrame(c.view.bounds());
             c.view.addSubview(scroll);
-            let vc = objc2_app_kit::NSViewController::new(mtm);
             vc.setView(&c.view);
             let item = objc2_app_kit::NSSplitViewItem::splitViewItemWithViewController(&vc);
             item.setCanCollapse(false);
             item.setMinimumThickness(120.0);
             split_vc.addSplitViewItem(&item);
         }
-        root_vc.addChildViewController(&split_vc);
-        // The items' views join the split view once the controller's view loads.
-        let _ = split_vc.view();
+        // The split-view controller is the window's own content controller, as in
+        // Finder, so the toolbar knows the three columns and gives each one its
+        // scroll edge effect. Everything else (board, modal) lies over it in
+        // `root`, a non-arranged subview of the split view.
+        // The toolbar after the columns are split items (its tracking separators
+        // follow their dividers), before the controller becomes the content.
+        window.setToolbar(Some(&toolbar));
+        window.setToolbarStyle(NSWindowToolbarStyle::Unified);
+        window.setContentViewController(Some(&split_vc));
         split_vc.view().layoutSubtreeIfNeeded();
-        root.addSubview(&split_view);
+        root.setFrame(split_view.bounds());
+        split_view.addSubview(&root);
         unsafe {
             retained.push(Retained::cast_unchecked::<AnyObject>(root_vc.clone()));
             retained.push(Retained::cast_unchecked::<AnyObject>(split_vc.clone()));
@@ -430,15 +448,8 @@ impl MainWindow {
         let board = FlippedView::new(mtm, NSRect::ZERO);
         root.addSubview(&board);
         let dividers = [FadeLine::new(mtm), FadeLine::new(mtm)];
-        for d in &dividers {
-            board.addSubview(d);
-        }
         board.addSubview(&cards.canvas);
         let heads = PassView::new(mtm);
-        for c in &columns {
-            heads.addSubview(&c.chip_glass);
-            heads.addSubview(&c.chip);
-        }
         board.addSubview(&heads);
 
         // The new-task capsule floats over the cards, under the dragged ones.
@@ -479,7 +490,7 @@ impl MainWindow {
             mtm,
             window,
             root,
-            split_view,
+            _split_view: split_view,
             sink: sink.clone(),
             header,
             status,
@@ -1218,8 +1229,7 @@ impl Ui {
         ));
         // Three equal columns: the split view lays its items out (the
         // dividers have no width and nowhere to go).
-        self.split_view.setFrame(full);
-        self.split_view.layoutSubtreeIfNeeded();
+        // The window lays the split view out (it is the content view).
         let col_w = (size.width / 3.0).floor();
         let mut geom = [ColumnGeom::default(); 3];
         for (i, c) in self.columns.iter().enumerate() {
