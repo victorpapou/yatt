@@ -2,10 +2,10 @@
 //! against the views it already has: cards are kept per task id, updated in place
 //! and moved with animations, so reorders and column moves stay smooth.
 //!
-//! Layout: the timer row in a native toolbar unified with the titlebar (a
-//! progress ring, the digits, the phase, the controls), then the board split into
-//! three columns by
-//! full-height 1 px dividers. Each column's title and count sit in a glass chip in
+//! Layout: the timer row in a native toolbar unified with the titlebar (the
+//! digits in its middle, the controls on the right), the board running under it,
+//! split into three columns by 1 px dividers that fade in from the top. Each
+//! column's title and count sit in a small glass chip right under the toolbar, in
 //! the column's colour, floating over the cards; one header button switches the
 //! whole board between lists and stacks.
 //! The new-task field floats over the bottom of the board as a glass capsule.
@@ -27,10 +27,10 @@ use objc2_app_kit::{
     NSBackingStoreType, NSBezelStyle, NSButton, NSColor, NSControlSize, NSEvent,
     NSEventModifierFlags, NSEventType, NSFloatingWindowLevel, NSFocusRingType, NSFont,
     NSFontWeightMedium, NSFontWeightRegular, NSImage, NSLineBreakMode, NSNormalWindowLevel,
-    NSPasteboard, NSPasteboardTypeString, NSTextAlignment, NSTextField, NSToolbar,
-    NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem,
-    NSToolbarSpaceItemIdentifier, NSView, NSWindow, NSWindowOrderingMode, NSWindowStyleMask,
-    NSWindowTitleVisibility, NSWindowToolbarStyle,
+    NSPasteboard, NSPasteboardTypeString, NSSearchField, NSSearchToolbarItem, NSTextAlignment,
+    NSTextField, NSToolbar, NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier,
+    NSToolbarItem, NSToolbarSpaceItemIdentifier, NSView, NSWindow, NSWindowOrderingMode,
+    NSWindowStyleMask, NSWindowTitleVisibility, NSWindowToolbarStyle,
 };
 use objc2_core_graphics::CGMutablePath;
 use objc2_foundation::{NSArray, NSNumber, NSObjectNSKeyValueCoding, NSValue};
@@ -52,8 +52,9 @@ pub enum DemoMouse {
     Up,
 }
 use crate::classes::{
-    ActionTarget, EditCmd, FieldDelegate, Fill, FillView, FlippedView, PassView, PlainToolbarItem,
-    RootView, ToolbarDelegate, WindowDelegate, editing_in_web_view, editing_text,
+    ActionTarget, BottomFade, EditCmd, FadeLine, FieldDelegate, Fill, FillView, FlippedView,
+    PassView, PlainToolbarItem, RootView, ToolbarDelegate, WindowDelegate, editing_in_web_view,
+    editing_text,
 };
 use crate::modal::Modal;
 use crate::model::{Snapshot, TimerSnap, UiEvent, format_clock};
@@ -62,27 +63,36 @@ use crate::style;
 
 pub type Sink = Rc<dyn Fn(UiEvent)>;
 
-/// The toolbar's timer item: the ring and five digits.
-const TIMER_ITEM_W: f64 = 112.0;
+/// The toolbar's timer item: room for the longest clock («0:00:00»), the
+/// digits centred in it; the item itself stands in the toolbar's middle.
+const TIMER_ITEM_W: f64 = 100.0;
 /// Height of the timer row in the toolbar.
 const TOOLBAR_H: f64 = 40.0;
-/// The progress ring: diameter and stroke, in the toolbar and in minimal mode.
-const RING_D: f64 = 22.0;
+/// The progress ring (minimal mode only): diameter and stroke.
 const RING_D_MINI: f64 = 34.0;
 const RING_LINE: f64 = 3.0;
 const PAD: f64 = 16.0;
 /// Column chips: height and distance from the top of the board.
-const CHIP_H: f64 = 18.0;
-const CHIP_TOP: f64 = 12.0;
+const CHIP_H: f64 = 16.0;
+const CHIP_TOP: f64 = 4.0;
+/// Column chips: the text's inset at each end, and the gap before the count
+/// (labels bring 2 pt of inset of their own, so the ink sits 2 pt further in).
+const CHIP_PAD: f64 = 4.0;
+const CHIP_GAP: f64 = 1.0;
 /// The new-task capsule.
 const CAPSULE_H: f64 = 44.0;
 const CAPSULE_MAX_W: f64 = 460.0;
 const CAPSULE_BOTTOM: f64 = 22.0;
+/// The fade under the capsule: from clear to the background over this height.
+const BOTTOM_FADE_H: f64 = 72.0;
+/// How far a list scrolls under the toolbar before the bar's material and
+/// hairline are fully in.
+const BAR_FADE_IN: f64 = 12.0;
 /// The clock's digits in minimal mode: font size, the step from one digit to the
 /// next and from a colon on (tabular figures, tracked tight), and height.
 const DIGITS_MINI: (f64, f64, f64, f64) = (46.0, 26.0, 12.0, 56.0);
 /// The same in the toolbar.
-const DIGITS_BAR: (f64, f64, f64, f64) = (24.0, 14.0, 7.0, 32.0);
+const DIGITS_BAR: (f64, f64, f64, f64) = (24.0, 15.0, 7.0, 32.0);
 /// Each digit's label is this much wider than its step, so the glyph is never
 /// clipped by the field's inset; neighbouring labels overlap, glyphs don't.
 const DIGIT_PAD: f64 = 6.0;
@@ -97,6 +107,8 @@ struct Ui {
     mtm: MainThreadMarker,
     window: Retained<NSWindow>,
     root: Retained<RootView>,
+    /// The columns' split view, under the board's other layers.
+    split_view: Retained<crate::classes::ColumnsSplit>,
     sink: Sink,
     header: Header,
     /// The timer in the system's menu bar.
@@ -104,16 +116,17 @@ struct Ui {
     toolbar: Retained<NSToolbar>,
     /// The toolbar's one item, holding the header's view outside minimal mode.
     timer_item: Retained<NSToolbarItem>,
+    search_item: Retained<NSSearchToolbarItem>,
     /// Height of the titlebar with the toolbar: where the board starts.
     top_inset: Cell<f64>,
     /// Everything below the header; hidden in minimal mode.
     board: Retained<FlippedView>,
-    header_rule: Retained<FillView>,
-    dividers: [Retained<FillView>; 2],
+    dividers: [Retained<FadeLine>; 2],
     columns: [Column; 3],
     /// Holds the column chips above the cards; clicks elsewhere fall through.
     heads: Retained<PassView>,
     capsule: Retained<NSView>,
+    bottom_fade: Retained<BottomFade>,
     new_task: Retained<NSTextField>,
     cards: Rc<Board>,
     modal: Modal,
@@ -160,6 +173,8 @@ struct Column {
     title: Retained<NSTextField>,
     count: Retained<NSTextField>,
     highlighted: Cell<bool>,
+    /// The column's middle on the board, set by the layout.
+    middle: Cell<f64>,
 }
 
 impl MainWindow {
@@ -183,7 +198,12 @@ impl MainWindow {
         };
         unsafe { window.setReleasedWhenClosed(false) };
         window.setTitle(ns_string!("yatt"));
-        window.setTitlebarAppearsTransparent(true);
+        // The board runs under the toolbar; the system softens the edge where
+        // each column's rows go under it (the columns are split-view items, so
+        // all three get the same effect).
+        window.setTitlebarAppearsTransparent(false);
+        // No line under it: the columns start right there.
+        window.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::None);
         window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
         window.setMinSize(NSSize::new(760.0, 480.0));
 
@@ -196,7 +216,11 @@ impl MainWindow {
             NSAutoresizingMaskOptions::ViewWidthSizable
                 | NSAutoresizingMaskOptions::ViewHeightSizable,
         );
-        window.setContentView(Some(&root));
+        // The content comes from a view controller: the columns are the items of
+        // a split-view controller, as in Finder.
+        let root_vc = objc2_app_kit::NSViewController::new(mtm);
+        root_vc.setView(&root);
+        window.setContentViewController(Some(&root_vc));
 
         let mut retained: Vec<Retained<AnyObject>> = Vec::new();
         retained.extend(crate::eventlog::install());
@@ -242,9 +266,73 @@ impl MainWindow {
             timer_item.setMinSize(NSSize::new(TIMER_ITEM_W, TOOLBAR_H));
             timer_item.setMaxSize(NSSize::new(TIMER_ITEM_W, TOOLBAR_H));
         }
+        // Search: a native field in the toolbar; every keystroke narrows the board.
+        let search = NSSearchField::new(mtm);
+        search.setPlaceholderString(Some(ns_string!("Поиск")));
+        search.setSendsSearchStringImmediately(true);
+        let search_target = {
+            let (field, sink) = (search.clone(), sink.clone());
+            ActionTarget::new(mtm, move || {
+                sink(UiEvent::SetFilter(field.stringValue().to_string()))
+            })
+        };
+        unsafe {
+            search.setTarget(Some(&search_target));
+            search.setAction(Some(ActionTarget::sel()));
+        }
+        // The system's own search item: it sits at the right edge, grows when
+        // focused and folds back to a magnifier when left empty.
+        let search_item = NSSearchToolbarItem::initWithItemIdentifier(
+            NSSearchToolbarItem::alloc(mtm),
+            ns_string!("yatt.search"),
+        );
+        search_item.setSearchField(&search);
+        search_item.setPreferredWidthForSearchField(220.0);
+        search_item.setResignsFirstResponderWithCancel(true);
+        // AppKit's own switch (no header, found on the class at run time): the
+        // item shows as a magnifier and expands on click / beginSearchInteraction.
+        unsafe {
+            let _: () = objc2::msg_send![&*search_item, setPrefersCompactRepresentation: true];
+        }
+        retained.push(Retained::into_super(Retained::into_super(search_target)));
+        // A click outside the open search field ends editing, and an empty
+        // field folds back to the magnifier (the board takes no first responder).
+        {
+            let (field, item) = (search.clone(), search_item.clone());
+            let block = block2::RcBlock::new(
+                move |e: std::ptr::NonNull<objc2_app_kit::NSEvent>| -> *mut objc2_app_kit::NSEvent {
+                    let e = unsafe { e.as_ref() };
+                    if let Some(w) = field.window() {
+                        if field.currentEditor().is_some() {
+                            let r = field.convertRect_toView(field.bounds(), None);
+                            let p = e.locationInWindow();
+                            let inside = p.x >= r.origin.x
+                                && p.x <= r.origin.x + r.size.width
+                                && p.y >= r.origin.y
+                                && p.y <= r.origin.y + r.size.height;
+                            if !inside {
+                                let empty = field.stringValue().to_string().is_empty();
+                                w.makeFirstResponder(None);
+                                if empty {
+                                    item.endSearchInteraction();
+                                }
+                            }
+                        }
+                    }
+                    e as *const _ as *mut _
+                },
+            );
+            let mask = objc2_app_kit::NSEventMask::LeftMouseDown
+                | objc2_app_kit::NSEventMask::RightMouseDown;
+            if let Some(m) = unsafe {
+                objc2_app_kit::NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &block)
+            } {
+                retained.push(m);
+            }
+        }
         let toolbar =
             NSToolbar::initWithIdentifier(NSToolbar::alloc(mtm), ns_string!("yatt.toolbar"));
-        // [ring, digits, phase] … [Старт] [Секундомер] [Пропустить] [Стоп] [▤ ⤡]
+        // … [digits] … [Старт] [Секундомер] [Пропустить] [Стоп] [▤ ⤡]
         let bar = &header.bar;
         let items: Vec<Retained<NSToolbarItem>> = vec![
             timer_item.clone(),
@@ -254,13 +342,18 @@ impl MainWindow {
             bar.stop.clone(),
             bar.stack.clone(),
             bar.mini.clone(),
+            Retained::into_super(search_item.clone()),
         ];
         // The toolbar gives neighbouring items one shared bubble; a fixed space
         // between two items gives each its own.
         let id = |item: &Retained<NSToolbarItem>| item.itemIdentifier();
         let flexible = unsafe { NSToolbarFlexibleSpaceItemIdentifier }.copy();
         let space = unsafe { NSToolbarSpaceItemIdentifier }.copy();
+        // The timer in the middle of the toolbar (a centred item, so it stays
+        // there as the window resizes), the controls on the right.
+        let space2 = space.clone();
         let order: Vec<Retained<NSString>> = vec![
+            flexible.clone(),
             id(&items[0]),
             flexible,
             id(&items[1]),
@@ -272,6 +365,8 @@ impl MainWindow {
             id(&items[4]),
             space,
             id(&items[5]),
+            space2,
+            id(&items[7]),
         ];
         let order = if crate::model::MINIMAL_MODE {
             [order, vec![id(&items[6])]].concat()
@@ -280,33 +375,29 @@ impl MainWindow {
         };
         let toolbar_delegate = ToolbarDelegate::new(mtm, items, order);
         toolbar.setDelegate(Some(ProtocolObject::from_ref(&*toolbar_delegate)));
+        toolbar.setCenteredItemIdentifiers(&objc2_foundation::NSSet::from_retained_slice(&[
+            timer_item.itemIdentifier(),
+        ]));
         toolbar.setDisplayMode(NSToolbarDisplayMode::IconOnly);
         toolbar.setAllowsUserCustomization(false);
         window.setToolbar(Some(&toolbar));
         window.setToolbarStyle(NSWindowToolbarStyle::Unified);
         retained.push(Retained::into_super(Retained::into_super(toolbar_delegate)));
 
-        let board = FlippedView::new(mtm, NSRect::ZERO);
-        root.addSubview(&board);
-        let header_rule = FillView::new(mtm, Fill::Separator);
-        board.addSubview(&header_rule);
-
-        let columns = [0, 1, 2].map(|i| Column::new(mtm, i));
-        for c in &columns {
-            board.addSubview(&c.view);
-        }
-        let dividers = [
-            FillView::new(mtm, Fill::Separator),
-            FillView::new(mtm, Fill::Separator),
-        ];
-        for d in &dividers {
-            board.addSubview(d);
-        }
         // The board tints the column under a dragged card through a weak handle,
         // filled in once `Ui` exists.
         let tint_target: Rc<RefCell<Option<std::rc::Weak<Ui>>>> = Rc::new(RefCell::new(None));
+        let tint_target_for_board = tint_target.clone();
+        let columns = [0, 1, 2].map(|i| Column::new(mtm, i));
+        let split_view = crate::classes::ColumnsSplit::new(mtm);
+        split_view.setVertical(true);
+        split_view.setDividerStyle(objc2_app_kit::NSSplitViewDividerStyle::Thin);
+        let split_vc = objc2_app_kit::NSSplitViewController::new(mtm);
+        split_vc.setSplitView(&split_view);
+        // Created before its cards: each column's scroll view goes into the
+        // column's own view controller (the canvas and the chips float over them).
         let cards = {
-            let tint_target = tint_target.clone();
+            let tint_target = tint_target_for_board.clone();
             Board::new(mtm, sink.clone(), move |col| {
                 if let Some(ui) = tint_target.borrow().as_ref().and_then(|w| w.upgrade()) {
                     for i in 0..3 {
@@ -315,6 +406,33 @@ impl MainWindow {
                 }
             })
         };
+        for (i, c) in columns.iter().enumerate() {
+            let scroll = cards.scroll_view(i);
+            scroll.setFrame(c.view.bounds());
+            c.view.addSubview(scroll);
+            let vc = objc2_app_kit::NSViewController::new(mtm);
+            vc.setView(&c.view);
+            let item = objc2_app_kit::NSSplitViewItem::splitViewItemWithViewController(&vc);
+            item.setCanCollapse(false);
+            item.setMinimumThickness(120.0);
+            split_vc.addSplitViewItem(&item);
+        }
+        root_vc.addChildViewController(&split_vc);
+        // The items' views join the split view once the controller's view loads.
+        let _ = split_vc.view();
+        split_vc.view().layoutSubtreeIfNeeded();
+        root.addSubview(&split_view);
+        unsafe {
+            retained.push(Retained::cast_unchecked::<AnyObject>(root_vc.clone()));
+            retained.push(Retained::cast_unchecked::<AnyObject>(split_vc.clone()));
+        }
+
+        let board = FlippedView::new(mtm, NSRect::ZERO);
+        root.addSubview(&board);
+        let dividers = [FadeLine::new(mtm), FadeLine::new(mtm)];
+        for d in &dividers {
+            board.addSubview(d);
+        }
         board.addSubview(&cards.canvas);
         let heads = PassView::new(mtm);
         for c in &columns {
@@ -335,9 +453,24 @@ impl MainWindow {
         new_task.setFocusRingType(NSFocusRingType::None);
         new_task.setFont(Some(&NSFont::systemFontOfSize(14.0)));
         capsule_content.addSubview(&new_task);
-        board.addSubview(&capsule);
         board.addSubview(&cards.overlay);
-
+        // The cards fade out under the capsule: the fade and the capsule above
+        // every card, flying and dragged ones too, explicitly (own layers, own
+        // z), so nothing added in a hurry ends up over them.
+        let bottom_fade = BottomFade::new(mtm);
+        bottom_fade.setWantsLayer(true);
+        board.addSubview(&bottom_fade);
+        board.addSubview(&capsule);
+        for (v, z) in [
+            (&*cards.overlay as &NSView, crate::board::OVERLAY_Z),
+            (&bottom_fade, 20.0),
+            (&capsule, 30.0),
+        ] {
+            v.setWantsLayer(true);
+            if let Some(layer) = v.layer() {
+                layer.setZPosition(z);
+            }
+        }
         let modal = Modal::new(mtm, &sink);
         root.addSubview(&modal.dim);
         root.addSubview(&modal.panel);
@@ -346,18 +479,20 @@ impl MainWindow {
             mtm,
             window,
             root,
+            split_view,
             sink: sink.clone(),
             header,
             status,
             toolbar,
             timer_item,
+            search_item,
             top_inset: Cell::new(52.0),
             board,
-            header_rule,
             dividers,
             columns,
             heads,
             capsule,
+            bottom_fade,
             new_task,
             cards,
             modal,
@@ -370,7 +505,15 @@ impl MainWindow {
         *tint_target.borrow_mut() = Some(Rc::downgrade(&ui));
         Ui::wire(&ui);
 
-        let delegate = WindowDelegate::new(mtm, move || sink(UiEvent::Quit));
+        // The red button hides the window (the app and its timer keep running; the
+        // Dock icon brings it back), once the edits still in the fields are saved.
+        let weak = Rc::downgrade(&ui);
+        let delegate = WindowDelegate::new(mtm, move || {
+            if let Some(ui) = weak.upgrade() {
+                let target = ui.clone();
+                ui.save_edits_then(move || target.window.orderOut(None));
+            }
+        });
         ui.window
             .setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
         ui._retained
@@ -378,7 +521,15 @@ impl MainWindow {
             .push(Retained::into_super(Retained::into_super(delegate)));
 
         ui.layout();
-        ui.window.center();
+        // Size and place come back from the last run; the first run centres.
+        let frame_name = ns_string!("yatt.main");
+        if !ui.window.setFrameUsingName(frame_name) {
+            ui.window.center();
+        }
+        ui.window.setFrameAutosaveName(frame_name);
+        if stacks_saved() {
+            ui.toggle_stack();
+        }
         ui.window.makeKeyAndOrderFront(None);
         ui.window.makeFirstResponder(Some(&ui.root));
         Self { ui }
@@ -388,12 +539,31 @@ impl MainWindow {
         self.ui.render(snap);
     }
 
+    /// Saves what is still being typed (the open task's title and notes), then
+    /// calls `done`, which sends its events behind those edits. For quitting.
+    pub fn save_edits_then(&self, done: impl FnOnce() + 'static) {
+        self.ui.save_edits_then(done);
+    }
+
+    /// Brings the window back after the red button hid it.
+    pub fn show(&self) {
+        self.ui.window.makeKeyAndOrderFront(None);
+    }
+
     /// cmd-N: put the cursor into the new-task field.
     pub fn focus_new_task(&self) {
         if self.ui.minimal.get() {
             self.ui.toggle_minimal();
         }
         self.ui.window.makeFirstResponder(Some(&self.ui.new_task));
+    }
+
+    /// cmd-F: the toolbar search expands and takes the cursor.
+    pub fn focus_search(&self) {
+        if self.ui.minimal.get() {
+            self.ui.toggle_minimal();
+        }
+        self.ui.search_item.beginSearchInteraction();
     }
 
     /// cmd-shift-M: the timer alone in a small floating window, or back to the board.
@@ -562,6 +732,84 @@ impl MainWindow {
         self.ui.cards.is_fanned()
     }
 
+    /// Development aid: the task panel's frame, angle, openness and alphas (dim, panel,
+    /// controls, card text).
+    pub fn demo_modal_state(&self) -> (NSRect, f64, f64, [f64; 4]) {
+        self.ui.modal.debug_state()
+    }
+
+    /// Development aid: types into the open task's title and notes, as a user
+    /// still in the middle of both.
+    pub fn demo_type(&self, title: &str, notes: &str) {
+        self.ui.modal.debug_type(title, notes);
+    }
+
+    /// Development aid: the notes editor's place and its text's, on stderr.
+    pub fn demo_editor_geometry(&self) {
+        self.ui.modal.debug_editor_geometry();
+    }
+
+    /// Development aid: switches the window to the dark or light appearance, as
+    /// the system would.
+    pub fn demo_appearance(&self, dark: bool) {
+        let name = if dark {
+            unsafe { NSAppearanceNameDarkAqua }
+        } else {
+            unsafe { NSAppearanceNameAqua }
+        };
+        self.ui
+            .window
+            .setAppearance(objc2_app_kit::NSAppearance::appearanceNamed(name).as_deref());
+    }
+
+    /// Development aid: the clock digits' middle and the window's, in window
+    /// points, and how wide a rounded clock digit and colon draw.
+    pub fn demo_timer_center(&self) -> (f64, f64, f64, f64) {
+        let b = &self.ui.header.digits_box;
+        let r = b.convertRect_toView(b.bounds(), None);
+        let digit = |c: &str| {
+            let font = clock_font(DIGITS_BAR.0);
+            let attrs = objc2_foundation::NSDictionary::from_retained_objects(
+                &[unsafe { objc2_app_kit::NSFontAttributeName }],
+                &[Retained::into_super(Retained::into_super(font))],
+            );
+            unsafe { NSString::from_str(c).sizeWithAttributes(Some(&attrs)) }.width
+        };
+        (
+            r.origin.x + r.size.width / 2.0,
+            self.ui.window.frame().size.width / 2.0,
+            digit("0"),
+            digit(":"),
+        )
+    }
+
+    /// Development aid: whether the bottom fade is shown and stands above every
+    /// other view on the board (subview order and layer z).
+    pub fn demo_fade_on_top(&self) -> bool {
+        let views = self.ui.board.subviews();
+        let fade: &NSView = &self.ui.bottom_fade;
+        let Some(i) = views.iter().position(|v| std::ptr::eq(&*v, fade)) else {
+            return false;
+        };
+        let z = |v: &NSView| v.layer().map_or(0.0, |l| l.zPosition());
+        let capsule: &NSView = &self.ui.capsule;
+        !fade.isHidden()
+            && fade.alphaValue() > 0.99
+            && views.iter().enumerate().all(|(j, v)| {
+                std::ptr::eq(&*v, capsule) || std::ptr::eq(&*v, fade) || (j < i && z(&v) < z(fade))
+            })
+    }
+
+    /// Development aid: each column's chip frame and the column's middle, in the
+    /// board's points.
+    pub fn demo_chips(&self) -> Vec<(NSRect, f64)> {
+        self.ui
+            .columns
+            .iter()
+            .map(|c| (c.chip.frame(), c.middle.get()))
+            .collect()
+    }
+
     /// Development aid: the board's list/stack toggle.
     pub fn demo_toggle_stack(&self) {
         self.ui.toggle_stack();
@@ -668,6 +916,12 @@ impl MainWindow {
 }
 
 impl Ui {
+    fn save_edits_then(&self, done: impl FnOnce() + 'static) {
+        // Ending the title's editing sends its rename.
+        self.window.makeFirstResponder(None);
+        self.modal.flush_then(done);
+    }
+
     /// Hooks AppKit callbacks (resize, keys, drops) up to this object.
     fn wire(this: &Rc<Self>) {
         let weak = Rc::downgrade(this);
@@ -816,6 +1070,7 @@ impl Ui {
     fn toggle_stack(&self) {
         self.cards.toggle_stack();
         self.header.update_stack_icon(self.cards.is_stacked());
+        save_stacks(self.cards.is_stacked());
     }
 
     fn key_down(&self, event: &NSEvent) -> bool {
@@ -929,23 +1184,25 @@ impl Ui {
         if inset > 20.0 && inset < TOOLBAR_H + 40.0 {
             self.top_inset.set(inset);
         }
+        // The board runs under the toolbar, which blurs it as the system's own
+        // bar does; what must stay clear of it starts `top` down. No rule
+        // between them.
         let top = self.top_inset.get();
-        let board_h = (size.height - top).max(100.0);
-        self.board.setFrame(NSRect::new(
-            NSPoint::new(0.0, top),
-            NSSize::new(size.width, board_h),
-        ));
-        self.header_rule
-            .setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(size.width, 1.0)));
-        // The cards run under the column chips, so the canvas starts right below the rule.
-        let canvas_h = board_h - 1.0;
+        let board_h = size.height.max(100.0);
+        self.board
+            .setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(size.width, board_h)));
+        let canvas_h = board_h;
         self.cards.canvas.setFrame(NSRect::new(
-            NSPoint::new(0.0, 1.0),
+            NSPoint::ZERO,
             NSSize::new(size.width, canvas_h),
         ));
         let full = NSRect::new(NSPoint::ZERO, NSSize::new(size.width, board_h));
         self.cards.overlay.setFrame(full);
         self.heads.setFrame(full);
+        self.bottom_fade.setFrame(NSRect::new(
+            NSPoint::new(0.0, board_h - BOTTOM_FADE_H),
+            NSSize::new(size.width, BOTTOM_FADE_H),
+        ));
         let cw = (size.width - 80.0).min(CAPSULE_MAX_W);
         self.capsule.setFrame(NSRect::new(
             NSPoint::new(
@@ -959,26 +1216,30 @@ impl Ui {
             NSPoint::new(20.0, ((CAPSULE_H - field_h) / 2.0).round()),
             NSSize::new(cw - 40.0, field_h),
         ));
+        // Three equal columns: the split view lays its items out (the
+        // dividers have no width and nowhere to go).
+        self.split_view.setFrame(full);
+        self.split_view.layoutSubtreeIfNeeded();
         let col_w = (size.width / 3.0).floor();
         let mut geom = [ColumnGeom::default(); 3];
         for (i, c) in self.columns.iter().enumerate() {
+            // The items share the width equally, give or take half a point.
             let x = i as f64 * col_w;
             let w = if i == 2 { size.width - x } else { col_w };
-            c.view.setFrame(NSRect::new(
-                NSPoint::new(x, 1.0),
-                NSSize::new(w, board_h - 1.0),
-            ));
-            c.tint.setFrame(c.view.bounds());
-            c.layout_chip(x + PAD);
+            c.tint
+                .setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(w, board_h)));
+            c.middle.set(x + w / 2.0);
+            c.layout_chip(x + w / 2.0, top + CHIP_TOP);
             if i < 2 {
+                // From under the toolbar, fading in to full by half way down.
                 self.dividers[i].setFrame(NSRect::new(
-                    NSPoint::new(x + w - 0.5, 1.0),
-                    NSSize::new(1.0, board_h),
+                    NSPoint::new(x + w - 0.5, top),
+                    NSSize::new(1.0, board_h - top),
                 ));
             }
             geom[i] = ColumnGeom { x, w };
         }
-        self.cards.set_geometry(geom, canvas_h, 1.0);
+        self.cards.set_geometry(geom, canvas_h, 0.0, top);
     }
 
     fn set_highlight(&self, index: usize, on: bool) {
@@ -1097,7 +1358,7 @@ impl Ui {
                 motion::soften(&c.chip);
                 c.count.setStringValue(&NSString::from_str(&count));
             }
-            c.layout_chip(c.view.frame().origin.x + PAD);
+            c.layout_chip(c.middle.get(), self.top_inset.get() + CHIP_TOP);
         }
         self.cards.render(&snap.columns);
         self.sync_modal(snap);
@@ -1413,16 +1674,12 @@ impl Header {
             ));
             return;
         }
-        // One toolbar row, everything on its centre line: ring, digits, phase over
-        // the tasks, then the controls on the right.
+        // One toolbar row: just the digits, centred in the item (no ring), the
+        // controls are items of their own on the right.
         let mid = height / 2.0;
         let (_, _, _, dh) = DIGITS_BAR;
-        self.ring.view.setFrame(NSRect::new(
-            NSPoint::new(0.0, mid - RING_D / 2.0),
-            NSSize::new(RING_D, RING_D),
-        ));
-        self.ring.layout();
-        let dx = RING_D + 8.0;
+        self.ring.view.setHidden(true);
+        let dx = ((width - digits_w) / 2.0).max(0.0).round();
         // Optically centred: the digits' line box sits a little high of their
         // ink (measured on the toolbar capture: 1.5 pt).
         self.digits_box.setFrame(NSRect::new(
@@ -1489,7 +1746,7 @@ impl Header {
         self.bar.start.setToolTip(Some(&NSString::from_str(&hint)));
         self.hold.setImage(icon.as_deref());
         self.hold.setToolTip(Some(&NSString::from_str(&hint)));
-        self.durations.show_values(t.work_min, t.break_min);
+        self.durations.show_values(t);
         self.bar.stopwatch.setHidden(!t.can_start_stopwatch);
         self.bar.skip.setHidden(!t.can_skip);
         self.bar.stop.setHidden(!t.can_stop);
@@ -1524,10 +1781,7 @@ impl Header {
                     colon_w
                 };
                 let d = label(mtm, &ch.to_string(), size, unsafe { NSFontWeightMedium });
-                d.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(
-                    size,
-                    unsafe { NSFontWeightMedium },
-                )));
+                d.setFont(Some(&clock_font(size)));
                 d.setAlignment(NSTextAlignment::Center);
                 d.setWantsLayer(true);
                 d.setLayerUsesCoreImageFilters(true);
@@ -1791,23 +2045,19 @@ impl Column {
             title,
             count,
             highlighted: Cell::new(false),
+            middle: Cell::new(0.0),
         }
     }
 
-    /// Sizes the chip to its title and count, at `x` on the board.
-    fn layout_chip(&self, x: f64) {
+    /// Sizes the chip to its title and count, centred on `centre_x` (the
+    /// column's middle, the cards' centre line), its top at `y`.
+    fn layout_chip(&self, centre_x: f64, y: f64) {
         let (tw, cw) = (
             self.title.fittingSize().width.ceil(),
             self.count.fittingSize().width.ceil(),
         );
-        // Snug: the chip is CHIP_H tall around 14 pt of text, 2 pt above and
-        // below; at the ends a little more, for the round caps. The count sits a
-        // short gap after the title.
-        let (pad, gap, text_h) = (8.0, 4.0, 14.0);
-        let frame = NSRect::new(
-            NSPoint::new(x, CHIP_TOP),
-            NSSize::new(pad + tw + gap + cw + pad, CHIP_H),
-        );
+        let (pad, gap, text_h) = (CHIP_PAD, CHIP_GAP, 14.0);
+        let frame = chip_frame(centre_x, y, tw, cw);
         self.chip.setFrame(frame);
         self.chip_glass.setFrame(frame);
         let y = ((CHIP_H - text_h) / 2.0).round();
@@ -1821,6 +2071,24 @@ impl Column {
 }
 
 // ---- helpers ----
+
+/// The toolbar's material and hairline for a list scrolled `up` points under
+/// it: none at the top (or rubber-banding past it), all of it by
+/// [`BAR_FADE_IN`], in proportion between, so it never switches.
+#[allow(dead_code)]
+fn bar_alpha(up: f64) -> f64 {
+    (up / BAR_FADE_IN).clamp(0.0, 1.0)
+}
+
+/// A column chip's frame for a title `tw` and a count `cw` wide: [`CHIP_H`]
+/// tall, [`CHIP_PAD`] at the ends, [`CHIP_GAP`] between, centred on `centre_x`.
+fn chip_frame(centre_x: f64, y: f64, tw: f64, cw: f64) -> NSRect {
+    let w = CHIP_PAD + tw + CHIP_GAP + cw + CHIP_PAD;
+    NSRect::new(
+        NSPoint::new((centre_x - w / 2.0).round(), y),
+        NSSize::new(w, CHIP_H),
+    )
+}
 
 /// An SF Symbol by name.
 /// How far the toolbar digits sit below their box's geometric centre line.
@@ -1874,6 +2142,57 @@ fn tomato() -> Retained<NSImage> {
     TOMATO.with(|t| t.clone())
 }
 
+/// The clock's digits: SF Rounded, medium, tabular, with case-sensitive forms
+/// on. Each character is a label of its own, so the font never sees the colon
+/// between figures and would leave it low, at lowercase height; the
+/// case-sensitive colon sits on the figures' middle.
+fn clock_font(size: f64) -> Retained<NSFont> {
+    use objc2_app_kit::{
+        NSFontDescriptorAttributeName, NSFontFeatureSelectorIdentifierKey,
+        NSFontFeatureSettingsAttribute, NSFontFeatureTypeIdentifierKey,
+    };
+    let base = NSFont::monospacedDigitSystemFontOfSize_weight(size, unsafe { NSFontWeightMedium });
+    let Some(rounded) = base
+        .fontDescriptor()
+        .fontDescriptorWithDesign(unsafe { objc2_app_kit::NSFontDescriptorSystemDesignRounded })
+    else {
+        return base;
+    };
+    // kCaseSensitiveLayoutType (33), kCaseSensitiveLayoutOnSelector (0).
+    let feature = objc2_foundation::NSDictionary::<
+        objc2_app_kit::NSFontDescriptorFeatureKey,
+        AnyObject,
+    >::from_retained_objects(
+        &[unsafe { NSFontFeatureTypeIdentifierKey }, unsafe {
+            NSFontFeatureSelectorIdentifierKey
+        }],
+        &[
+            Retained::into_super(Retained::into_super(Retained::into_super(
+                NSNumber::new_i64(33),
+            ))),
+            Retained::into_super(Retained::into_super(Retained::into_super(
+                NSNumber::new_i64(0),
+            ))),
+        ],
+    );
+    let mut settings: Vec<Retained<AnyObject>> = unsafe {
+        rounded
+            .objectForKey(NSFontFeatureSettingsAttribute)
+            .and_then(|v| v.downcast::<NSArray>().ok())
+            .map(|a| a.to_vec())
+            .unwrap_or_default()
+    };
+    settings.push(Retained::into_super(Retained::into_super(feature)));
+    let attrs = objc2_foundation::NSDictionary::<NSFontDescriptorAttributeName, AnyObject>::from_retained_objects(
+        &[unsafe { NSFontFeatureSettingsAttribute }],
+        &[Retained::into_super(Retained::into_super(
+            NSArray::from_retained_slice(&settings),
+        ))],
+    );
+    let desc = unsafe { rounded.fontDescriptorByAddingAttributes(&attrs) };
+    NSFont::fontWithDescriptor_size(&desc, size).unwrap_or(base)
+}
+
 fn label(mtm: MainThreadMarker, text: &str, size: f64, weight: f64) -> Retained<NSTextField> {
     let l = NSTextField::labelWithString(&NSString::from_str(text), mtm);
     l.setFont(Some(&NSFont::systemFontOfSize_weight(size, weight)));
@@ -1913,4 +2232,49 @@ pub(crate) fn animate_with_completion(secs: f64, changes: impl Fn(), done: impl 
     });
     let done = RcBlock::new(done);
     NSAnimationContext::runAnimationGroup_completionHandler(&block, Some(&done));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_bar_shows_its_material_only_as_lists_go_under_it() {
+        assert_eq!(bar_alpha(0.0), 0.0);
+        // Rubber-banding past the top.
+        assert_eq!(bar_alpha(-30.0), 0.0);
+        assert!((bar_alpha(BAR_FADE_IN / 2.0) - 0.5).abs() < 1e-9);
+        assert_eq!(bar_alpha(BAR_FADE_IN), 1.0);
+        assert_eq!(bar_alpha(400.0), 1.0);
+        // Continuous: no step anywhere.
+        let mut last = 0.0;
+        for k in 0..=200 {
+            let a = bar_alpha(k as f64 * 0.1);
+            assert!(a - last <= 0.1 / BAR_FADE_IN + 1e-9);
+            last = a;
+        }
+    }
+
+    #[test]
+    fn a_chip_is_snug_and_centred_on_its_column() {
+        let f = chip_frame(300.0, 44.0, 50.0, 8.0);
+        assert_eq!(f.size.height, CHIP_H);
+        assert_eq!(f.size.width, CHIP_PAD + 50.0 + CHIP_GAP + 8.0 + CHIP_PAD);
+        assert!((f.origin.x + f.size.width / 2.0 - 300.0).abs() <= 0.5);
+        assert_eq!(f.origin.y, 44.0);
+        const { assert!(CHIP_H <= 16.0 && CHIP_PAD <= 6.0 && CHIP_GAP <= 3.0) };
+    }
+}
+
+const STACKS_KEY: &str = "yatt.stacked";
+
+/// Whether the board was in stack mode when the app last ran.
+fn stacks_saved() -> bool {
+    objc2_foundation::NSUserDefaults::standardUserDefaults()
+        .boolForKey(&NSString::from_str(STACKS_KEY))
+}
+
+fn save_stacks(on: bool) {
+    objc2_foundation::NSUserDefaults::standardUserDefaults()
+        .setBool_forKey(on, &NSString::from_str(STACKS_KEY));
 }

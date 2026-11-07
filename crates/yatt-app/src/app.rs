@@ -18,7 +18,7 @@ actions!(
     yatt,
     [
         Quit, NewTask, Undo, Redo, StartPause, Stopwatch, Stop, Skip, Minimal, Cut, Copy, Paste,
-        SelectAll
+        SelectAll, Find
     ]
 );
 
@@ -26,17 +26,84 @@ fn data_path() -> PathBuf {
     if let Some(p) = std::env::var_os("YATT_DB") {
         return PathBuf::from(p);
     }
+    // The demo moves, renames and rewrites cards: never on the real board.
+    if let Some(dir) = std::env::var_os("YATT_DEMO") {
+        return PathBuf::from(dir).join("demo.sqlite");
+    }
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_default();
     home.join("Library/Application Support/yatt/yatt.sqlite")
 }
 
-pub fn run() -> anyhow::Result<()> {
-    let store = Store::open(&data_path())?;
-    let engine = Engine::load(store)?;
+/// Takes the single-instance lock next to the database. A second copy writing to
+/// the same board would double every task's time, so it must not start. The lock
+/// is released by the system when the process ends, however it ends.
+fn lock_instance(db: &std::path::Path) -> anyhow::Result<std::fs::File> {
+    use std::fs::{File, TryLockError};
+    if let Some(dir) = db.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let file = File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(db.with_extension("lock"))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(TryLockError::WouldBlock) => anyhow::bail!(
+            "yatt уже запущен. Две копии, пишущие в одну базу, удвоили бы время задач. \
+             Найдите открытую копию в Dock или в строке меню."
+        ),
+        Err(TryLockError::Error(e)) => Err(e.into()),
+    }
+}
 
-    Application::new().run(move |cx: &mut App| {
+/// Everything that can stop the app before its window exists. A bundled .app has
+/// no terminal, so the reason goes into an alert instead of stderr.
+fn open_board() -> anyhow::Result<(std::fs::File, Engine)> {
+    let path = data_path();
+    let lock = lock_instance(&path)?;
+    let store = Store::open(&path)?;
+    let mut engine = Engine::load(store)?;
+    engine.on_phase_finished = Some(Box::new(|phase, next| {
+        use yatt_core::Phase;
+        use yatt_platform::Notifier;
+        let (title, body) = match (phase, next) {
+            (Phase::Work, Phase::LongBreak) => ("Помидор готов", "Пора на длинный перерыв"),
+            (Phase::Work, _) => ("Помидор готов", "Пора на перерыв"),
+            (_, Phase::Work) => ("Перерыв закончился", "Пора работать"),
+            _ => ("Фаза закончилась", "Следующая фаза готова"),
+        };
+        yatt_macos::MacNotifier.notify(title, body);
+    }));
+    Ok((lock, engine))
+}
+
+pub fn run() -> anyhow::Result<()> {
+    let (_lock, engine) = match open_board() {
+        Ok(opened) => opened,
+        Err(e) => {
+            if let Some(mtm) = MainThreadMarker::new() {
+                yatt_macos::alert(mtm, "yatt не может открыть доску", &format!("{e:#}"));
+            }
+            return Err(e);
+        }
+    };
+
+    // The window, once it exists, for the Dock icon to bring back.
+    let shown: Rc<std::cell::RefCell<Option<Rc<MainWindow>>>> = Rc::default();
+    let app = Application::new();
+    {
+        let shown = shown.clone();
+        app.on_reopen(move |cx| {
+            if let Some(window) = shown.borrow().as_ref() {
+                window.show();
+            }
+            cx.activate(true);
+        });
+    }
+    app.run(move |cx: &mut App| {
         let mtm = MainThreadMarker::new().expect("GPUI runs the app on the main thread");
         let workspace = cx.new(|_| Workspace::new(engine));
 
@@ -46,6 +113,7 @@ pub fn run() -> anyhow::Result<()> {
         });
         let window = Rc::new(MainWindow::new(mtm, sink.clone()));
         window.render(&workspace.read(cx).snapshot());
+        *shown.borrow_mut() = Some(window.clone());
 
         // UI events -> engine.
         let ws = workspace.clone();
@@ -58,6 +126,7 @@ pub fn run() -> anyhow::Result<()> {
                         keep
                     })
                     .unwrap_or(false);
+                report_problems(&ws, cx, mtm);
                 if !keep_going {
                     let _ = cx.update(|cx| cx.quit());
                     break;
@@ -87,6 +156,7 @@ pub fn run() -> anyhow::Result<()> {
                         cx.notify();
                     }
                 });
+                report_problems(&ws, cx, mtm);
                 if alive.is_err() {
                     break;
                 }
@@ -104,6 +174,18 @@ pub fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Tells the user about a failed save. The board is in memory and looks fine, so
+/// without this a full disk would only show after the next launch.
+fn report_problems(ws: &gpui::Entity<Workspace>, cx: &mut gpui::AsyncApp, mtm: MainThreadMarker) {
+    let problem = ws
+        .update(cx, |ws, _| ws.engine.take_problem())
+        .ok()
+        .flatten();
+    if let Some(text) = problem {
+        yatt_macos::alert(mtm, "yatt не сохранил изменения", &text);
+    }
+}
+
 fn install_menus(cx: &mut App, window: &Rc<MainWindow>, sink: &yatt_macos::Sink) {
     // Single-key shortcuts (space) live in the window, so they never fire while typing.
     cx.bind_keys([
@@ -118,12 +200,32 @@ fn install_menus(cx: &mut App, window: &Rc<MainWindow>, sink: &yatt_macos::Sink)
         KeyBinding::new("cmd-c", Copy, None),
         KeyBinding::new("cmd-v", Paste, None),
         KeyBinding::new("cmd-a", SelectAll, None),
+        KeyBinding::new("cmd-f", Find, None),
     ]);
 
-    cx.on_action(|_: &Quit, cx| cx.quit());
+    {
+        // The title and notes being typed are saved first; the quit goes in behind them.
+        let (window, sink) = (window.clone(), sink.clone());
+        cx.on_action(move |_: &Quit, cx| {
+            let sink = sink.clone();
+            window.save_edits_then(move || sink(UiEvent::Quit));
+            // Should the editor never answer, quit anyway.
+            cx.spawn(async |cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(1500))
+                    .await;
+                let _ = cx.update(|cx| cx.quit());
+            })
+            .detach();
+        });
+    }
     {
         let window = window.clone();
         cx.on_action(move |_: &NewTask, _| window.focus_new_task());
+    }
+    {
+        let window = window.clone();
+        cx.on_action(move |_: &Find, _| window.focus_search());
     }
     {
         let window = window.clone();
@@ -178,6 +280,8 @@ fn install_menus(cx: &mut App, window: &Rc<MainWindow>, sink: &yatt_macos::Sink)
                     MenuItem::os_action("Скопировать", Copy, OsAction::Copy),
                     MenuItem::os_action("Вставить", Paste, OsAction::Paste),
                     MenuItem::os_action("Выбрать все", SelectAll, OsAction::SelectAll),
+                    MenuItem::separator(),
+                    MenuItem::action("Найти", Find),
                 ],
             },
             Menu {

@@ -102,5 +102,7 @@ CREATE TABLE kv (
             "ALTER TABLE tasks ADD COLUMN color INTEGER;
          ALTER TABLE tasks ADD COLUMN icon TEXT;",
         ),
+        // Done tasks tucked into the archive.
+        M::up("ALTER TABLE tasks ADD COLUMN archived_at INTEGER;"),
     ])
 }

@@ -38,28 +38,50 @@ pub const CARD_SATURATE: f64 = 1.5;
 
 type Rgb = (u8, u8, u8);
 
-/// (fill, text) as sRGB: the clip's blue, pink, purple, yellow and green with a
-/// quarter more saturation, and white.
-const HUES: [(Rgb, Rgb); 6] = [
-    ((0x62, 0x86, 0xF5), (0x22, 0x31, 0x6B)),
-    ((0xF2, 0x71, 0x85), (0x6B, 0x1E, 0x2A)),
-    ((0xA5, 0x3A, 0xF0), (0x3E, 0x11, 0x60)),
-    ((0xEC, 0xF5, 0x72), (0x4F, 0x54, 0x1A)),
-    ((0x7F, 0xD0, 0x96), (0x22, 0x54, 0x3A)),
+/// (fill, text) as sRGB. The original six indices stay stable for saved tasks.
+const HUES: [(Rgb, Rgb); 15] = [
+    ((0x6E, 0xA4, 0xFF), (0x1C, 0x33, 0x70)),
+    ((0xFF, 0x7E, 0x9E), (0x6E, 0x1A, 0x30)),
+    ((0xC0, 0x84, 0xFF), (0x42, 0x16, 0x6E)),
+    ((0xE2, 0xF2, 0x5C), (0x4A, 0x52, 0x10)),
+    ((0x6C, 0xCF, 0xB2), (0x14, 0x52, 0x42)),
     // The "white" card: a light neutral grey, so it reads as a card of its own.
-    ((0xE4, 0xE4, 0xE8), (0x2E, 0x2E, 0x34)),
+    ((0xF2, 0xF2, 0xF5), (0x2E, 0x2E, 0x34)),
+    ((0xFF, 0x86, 0x6A), (0x72, 0x25, 0x1C)),
+    ((0xFF, 0xB2, 0x66), (0x6E, 0x3B, 0x0D)),
+    ((0xFF, 0xC2, 0x28), (0x65, 0x49, 0x08)),
+    ((0x96, 0xB5, 0xA0), (0x25, 0x3F, 0x2E)),
+    ((0x4D, 0xC2, 0xA6), (0x05, 0x55, 0x47)),
+    ((0x00, 0xB8, 0xE8), (0x05, 0x4E, 0x68)),
+    ((0xB8, 0x99, 0x75), (0x4F, 0x38, 0x23)),
+    ((0x6C, 0x7B, 0xFF), (0x22, 0x2A, 0x78)),
+    ((0xC8, 0x5C, 0xF2), (0x50, 0x16, 0x6E)),
 ];
 
 /// The same colours for the dark appearance: deep tints of each hue, the text a
 /// pale version of it, so a card reads as the same colour on a dark board.
-const HUES_DARK: [(Rgb, Rgb); 6] = [
+const HUES_DARK: [(Rgb, Rgb); 15] = [
     ((0x2C, 0x45, 0x9C), (0xD6, 0xE0, 0xFF)),
     ((0x9C, 0x33, 0x48), (0xFF, 0xD9, 0xE0)),
     ((0x63, 0x24, 0x9A), (0xEC, 0xD9, 0xFF)),
     ((0x7A, 0x80, 0x22), (0xF7, 0xFA, 0xCF)),
     ((0x2F, 0x78, 0x4A), (0xD5, 0xF5, 0xDF)),
     ((0x3A, 0x3A, 0x40), (0xEC, 0xEC, 0xF0)),
+    ((0xA5, 0x3B, 0x31), (0xFF, 0xDE, 0xD8)),
+    ((0xA6, 0x5F, 0x21), (0xFF, 0xE7, 0xCB)),
+    ((0xA3, 0x7C, 0x18), (0xFF, 0xEF, 0xC6)),
+    ((0x49, 0x6B, 0x56), (0xE1, 0xF1, 0xE5)),
+    ((0x0A, 0x84, 0x6D), (0xD1, 0xFA, 0xF1)),
+    ((0x0B, 0x7D, 0xA0), (0xD1, 0xF3, 0xFF)),
+    ((0x6D, 0x55, 0x42), (0xF2, 0xE6, 0xD7)),
+    ((0x3E, 0x4E, 0xA0), (0xDF, 0xE4, 0xFF)),
+    ((0x75, 0x4E, 0x9C), (0xF0, 0xE2, 0xFF)),
 ];
+
+const NEUTRAL_HUE: usize = 5;
+/// A task with no colour of its own takes one of the original six from its id,
+/// so the colours added later never repaint old cards.
+const AUTO_HUES: usize = 6;
 
 thread_local! {
     static DARK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -74,7 +96,7 @@ pub fn set_dark(on: bool) {
     DARK.with(|d| d.set(on));
 }
 
-fn palette() -> &'static [(Rgb, Rgb); 6] {
+fn palette() -> &'static [(Rgb, Rgb); 15] {
     if dark() { &HUES_DARK } else { &HUES }
 }
 
@@ -90,7 +112,7 @@ const GLYPHS: [&str; 6] = [
 
 /// Every icon a card can wear, for the picker: the six picked from the id
 /// first.
-pub const ICONS: [&str; 24] = [
+pub const ICONS: [&str; 48] = [
     "paperplane.fill",
     "flag.fill",
     "bubble.left.fill",
@@ -115,6 +137,30 @@ pub const ICONS: [&str; 24] = [
     "graduationcap.fill",
     "music.note",
     "gamecontroller.fill",
+    "car.fill",
+    "bus.fill",
+    "tram.fill",
+    "bicycle",
+    "fuelpump.fill",
+    "binoculars.fill",
+    "map.fill",
+    "figure.walk",
+    "figure.walk.motion",
+    "location.north.circle.fill",
+    "arrow.up.and.down.and.arrow.left.and.right",
+    "arrow.turn.up.right",
+    "arrow.uturn.right",
+    "waveform",
+    "applewatch",
+    "laptopcomputer",
+    "keyboard.fill",
+    "printer.fill",
+    "server.rack",
+    "display",
+    "headphones",
+    "ear.fill",
+    "hifispeaker.fill",
+    "airpodspro",
 ];
 
 /// How many colours a card can be.
@@ -151,13 +197,22 @@ fn look(id: TaskId) -> Look {
 pub fn hue_of(id: TaskId) -> usize {
     look(id)
         .0
-        .unwrap_or((fold(id) % HUES.len() as u64) as usize)
+        .unwrap_or((mix(fold(id)) % AUTO_HUES as u64) as usize)
 }
 
 pub fn glyph_of(id: TaskId) -> &'static str {
     look(id)
         .1
         .unwrap_or(GLYPHS[((fold(id) / 7) % GLYPHS.len() as u64) as usize])
+}
+
+/// Spreads every bit of `x` over the result (SplitMix64's finaliser): the low
+/// bits of a UUIDv7's tail are a counter, the same for ids made close together,
+/// so taken plainly they would give most new tasks the same few colours.
+fn mix(mut x: u64) -> u64 {
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    x ^ (x >> 31)
 }
 
 fn fold(id: TaskId) -> u64 {
@@ -181,7 +236,7 @@ pub fn fill(hue: usize) -> Retained<NSColor> {
     // Dense enough that text behind is only a soft patch under the light blur.
     // Over the system's glass the tint is lighter, so less of the frost shows
     // through as colour mud; over the plain blur it is denser.
-    let white = hue % HUES.len() == HUES.len() - 1;
+    let white = hue % HUES.len() == NEUTRAL_HUE;
     // The grey card is denser than the colours: a pale, thin grey over other
     // cards reads as a white halo round the card in front, not as a card.
     let alpha = match (real_glass(), white) {
@@ -196,6 +251,25 @@ pub fn fill(hue: usize) -> Retained<NSColor> {
         alpha
     };
     rgb(palette()[hue % HUES.len()].0, alpha)
+}
+
+/// Tints a card's backdrop (as made by [`card_blur`]) with the card's colour,
+/// when it is the system glass. The colour goes in solid: how strongly it shows
+/// is the glass's own call, so it follows the system's Liquid Glass setting
+/// (Clear or Tinted) and Reduce Transparency like the system's own glass. The
+/// neutral card has no tint at all: plain system glass.
+pub fn tint_glass(view: &NSView, hue: usize) {
+    if let Some(glass) = view.downcast_ref::<NSGlassEffectView>() {
+        if hue % HUES.len() == NEUTRAL_HUE {
+            glass.setTintColor(None);
+        } else {
+            // The reference palette, a touch softened toward white.
+            let soft = swatch(hue)
+                .blendedColorWithFraction_ofColor(0.15, &NSColor::whiteColor())
+                .unwrap_or_else(|| swatch(hue));
+            glass.setTintColor(Some(&soft));
+        }
+    }
 }
 
 /// A card colour, solid: for the colour picker.
@@ -230,28 +304,24 @@ pub fn text_css(hue: usize) -> String {
 /// a system within-window blur where those are missing.
 pub fn card_blur(mtm: MainThreadMarker) -> Retained<NSView> {
     if real_glass() {
+        // The system's Liquid Glass as it is: its own edge, highlight and
+        // shadow, coloured only through its tint. Nothing of ours over or under it.
         let glass = NSGlassEffectView::new(mtm);
         glass.setCornerRadius(CARD_RADIUS);
-        // The public style with the least frost.
-        glass.setStyle(NSGlassEffectViewStyle::Clear);
+        let style = match std::env::var("YATT_GLASS_STYLE").as_deref() {
+            Ok("clear") => NSGlassEffectViewStyle::Clear,
+            _ => NSGlassEffectViewStyle::Regular,
+        };
+        glass.setStyle(style);
         tune_glass(&glass);
-        // The glass has no saturation of its own: under it, a backdrop that only
-        // saturates (no blur), so it shows the same 1.2 boost as the plain path.
-        let holder = FlippedView::new(mtm, NSRect::ZERO);
-        let fill = NSAutoresizingMaskOptions::ViewWidthSizable
-            | NSAutoresizingMaskOptions::ViewHeightSizable;
-        if let Some(layer) = backdrop_layer(0.0) {
-            round(&layer, CARD_RADIUS);
-            layer.setMasksToBounds(true);
-            let saturate = FlippedView::new(mtm, NSRect::ZERO);
-            saturate.setLayer(Some(&layer));
-            saturate.setWantsLayer(true);
-            saturate.setAutoresizingMask(fill);
-            holder.addSubview(&saturate);
+        if std::env::var_os("YATT_DUMP").is_some() {
+            eprintln!("card_blur: NSGlassEffectView path");
+            dump_tree(&glass, 0);
         }
-        glass.setAutoresizingMask(fill);
-        holder.addSubview(&glass);
-        return Retained::into_super(holder);
+        return Retained::into_super(glass);
+    }
+    if std::env::var_os("YATT_DUMP").is_some() {
+        eprintln!("card_blur: fallback path (no NSGlassEffectView)");
     }
     if let Some(layer) = backdrop_layer(CARD_BLUR) {
         round(&layer, CARD_RADIUS);
@@ -275,15 +345,90 @@ pub fn card_blur(mtm: MainThreadMarker) -> Retained<NSView> {
 }
 
 /// The cards' backdrop: a plain backdrop blur of exactly [`CARD_BLUR`] points
-/// with the saturation boost, the lightest frost there is. `YATT_GLASS=1` puts
-/// the system's Liquid Glass (`NSGlassEffectView`) there instead, where the
-/// system has it; it has no blur radius to turn down, so it stays an option.
+/// with the saturation boost, the lightest frost there is. The system's Liquid Glass
+/// (`NSGlassEffectView`) is used where the system has it; `YATT_GLASS=0` falls
+/// back to the plain backdrop blur.
 pub fn real_glass() -> bool {
     thread_local! {
-        static ON: bool = std::env::var_os("YATT_GLASS").is_some_and(|v| v != "0")
+        static ON: bool = std::env::var_os("YATT_GLASS").is_none_or(|v| v != "0")
             && AnyClass::get(c"NSGlassEffectView").is_some();
     }
     ON.with(|on| *on)
+}
+
+/// Debug: prints a view's subview and layer classes (`YATT_DUMP=1`).
+pub fn dump_tree(view: &NSView, depth: usize) {
+    let pad = "  ".repeat(depth);
+    eprintln!(
+        "{pad}view {} hidden={} alpha={:.2}",
+        view.class().name().to_string_lossy(),
+        view.isHidden(),
+        view.alphaValue()
+    );
+    if let Some(layer) = view.layer() {
+        let bg = layer
+            .backgroundColor()
+            .map(|c| objc2_core_graphics::CGColor::alpha(Some(&c)))
+            .unwrap_or(0.0);
+        eprintln!(
+            "{pad}  layer {} opacity={:.2} bg_alpha={:.2} contents={} filters={} sublayers={}",
+            layer.class().name().to_string_lossy(),
+            layer.opacity(),
+            bg,
+            unsafe { layer.contents() }.is_some(),
+            layer.filters().map_or(0, |f| f.count()),
+            unsafe { layer.sublayers() }.map_or(0, |l| l.count()),
+        );
+    }
+    for sub in view.subviews().iter() {
+        dump_tree(&sub, depth + 1);
+    }
+}
+
+/// Gives every rounded layer under `layer` (the system glass draws its shape,
+/// rim and highlight in layers of its own, made lazily on first display) the
+/// continuous corner curve of system controls instead of a circular arc.
+/// Returns how many rounded layers it found.
+pub fn continuous_layers(layer: &CALayer) -> usize {
+    let mut n = 0;
+    if layer.cornerRadius() > 0.0 {
+        layer.setCornerCurve(unsafe { kCACornerCurveContinuous });
+        n += 1;
+    }
+    if let Some(mask) = layer.mask() {
+        n += continuous_layers(&mask);
+    }
+    if let Some(subs) = unsafe { layer.sublayers() } {
+        for sub in subs.iter() {
+            n += continuous_layers(&sub);
+        }
+    }
+    n
+}
+
+/// Debug: prints a layer tree with each layer's corners (`YATT_DUMP=1`).
+pub fn dump_layers(layer: &CALayer, depth: usize) {
+    let pad = "  ".repeat(depth);
+    let b = layer.bounds();
+    eprintln!(
+        "{pad}{} {:.0}x{:.0} radius={:.1} curve={} mask={} filters={}",
+        layer.class().name().to_string_lossy(),
+        b.size.width,
+        b.size.height,
+        layer.cornerRadius(),
+        layer.cornerCurve(),
+        layer.mask().is_some(),
+        layer.filters().map_or(0, |f| f.count()),
+    );
+    if let Some(mask) = layer.mask() {
+        eprintln!("{pad} mask:");
+        dump_layers(&mask, depth + 1);
+    }
+    if let Some(subs) = unsafe { layer.sublayers() } {
+        for sub in subs.iter() {
+            dump_layers(&sub, depth + 1);
+        }
+    }
 }
 
 /// `NSGlassEffectView` has no public blur radius. What it exposes beyond `style`
@@ -474,11 +619,13 @@ impl Edges {
         let lift = FlippedView::new(mtm, NSRect::ZERO);
         lift.setLayer(Some(&lift_layer));
         lift.setWantsLayer(true);
-        with_edge_images(|outer, inner| Self {
+        // The system glass draws its own white edge; the thin dark outline
+        // it lacks is the outer layer here. No inner glow of our own.
+        with_edge_images(|outer, _| Self {
             lift: Retained::into_super(lift),
             lift_layer,
-            outer: layer_view(outer, EDGE_PAD),
-            inner: layer_view(inner, 0.0),
+            outer: layer_view(if real_glass() { None } else { outer }, EDGE_PAD),
+            inner: layer_view(None, 0.0),
             ring: Retained::into_super(ring),
             ring_layer,
         })
@@ -486,12 +633,7 @@ impl Edges {
 
     /// The inner edge for the current appearance.
     pub fn restyle(&self) {
-        with_edge_images(|_, inner| {
-            if let (Some(layer), Some(image)) = (self.inner.layer(), inner) {
-                let image: &AnyObject = unsafe { &*(image as *const CGImage).cast::<AnyObject>() };
-                unsafe { layer.setContents(Some(image)) };
-            }
-        });
+        // Nothing to redraw: the inner edge is the system glass's own.
     }
 
     /// Fits both layers to a `w` × `h` card at the origin of its view.
@@ -689,9 +831,9 @@ fn edge_layer(image: Option<&CGImage>, inset: f64) -> Retained<CALayer> {
 /// The outline: black at 50%, blurred 1 pt.
 const OUTLINE_ALPHA: f64 = 0.5;
 const OUTLINE_BLUR: f64 = 1.0;
-/// The inner edge: a soft white glow, 51% at the edge, fading out on an ease-out
+/// The inner edge: a soft white glow, 61% at the edge, fading out on an ease-out
 /// curve over 3.75 pt, drawn as stacked strokes.
-const INSET_ALPHA: f64 = 0.51;
+const INSET_ALPHA: f64 = 0.61;
 /// On a dark card the white edge is fainter, or it reads as a frame.
 const INSET_ALPHA_DARK: f64 = 0.2;
 const INSET_DEPTH: f64 = 3.75;
@@ -725,6 +867,9 @@ pub fn set_blur_corners(view: &NSView, scale: f64) {
     let r = CARD_RADIUS * scale;
     if let Some(glass) = view.downcast_ref::<NSGlassEffectView>() {
         glass.setCornerRadius(r);
+        if let Some(layer) = glass.layer() {
+            continuous_layers(&layer);
+        }
     } else if let Some(layer) = view.layer() {
         layer.setCornerRadius(r);
     }
@@ -750,14 +895,20 @@ pub fn glyph_image(symbol: &str, hue: usize) -> Option<Retained<CGImage>> {
                 let base = NSImage::imageWithSystemSymbolName_accessibilityDescription(
                     &NSString::from_str(symbol),
                     None,
-                )?;
+                )
+                .or_else(|| {
+                    NSImage::imageWithSystemSymbolName_accessibilityDescription(
+                        ns_string!("questionmark.circle"),
+                        None,
+                    )
+                })?;
                 let config = NSImageSymbolConfiguration::configurationWithPaletteColors(
                     &NSArray::from_retained_slice(&[ink]),
                 );
                 let tinted = base.imageWithSymbolConfiguration(&config)?;
                 let size = tinted.size();
-                // Fit the symbol into 16 pt, at 2 px per point.
-                let k = 16.0 / size.width.max(size.height).max(1.0);
+                // Fit the symbol into 22 pt, at 2 px per point.
+                let k = 22.0 / size.width.max(size.height).max(1.0);
                 let mut rect = NSRect::new(
                     NSPoint::ZERO,
                     NSSize::new(size.width * k * EDGE_SCALE, size.height * k * EDGE_SCALE),
@@ -790,6 +941,16 @@ pub fn set_tracked(label: &NSTextField, text: &str, kern: f64) {
     if label.stringValue().to_string() == text {
         return;
     }
+    set_tracked_value(label, text, kern);
+}
+
+/// Reapplies a tracked label's attributes after its font or colour changes.
+pub fn refresh_tracked(label: &NSTextField, kern: f64) {
+    let text = label.stringValue().to_string();
+    set_tracked_value(label, &text, kern);
+}
+
+fn set_tracked_value(label: &NSTextField, text: &str, kern: f64) {
     let style = NSMutableParagraphStyle::new();
     style.setLineBreakMode(label.lineBreakMode());
     style.setAlignment(label.alignment());
@@ -862,6 +1023,73 @@ pub fn glass(mtm: MainThreadMarker, radius: f64) -> (Retained<NSView>, Retained<
 mod tests {
     use super::*;
 
+    /// The light palette as it was before the dark appearance came in.
+    const LIGHT_BEFORE_DARK: [(Rgb, Rgb); 6] = [
+        ((0x6E, 0xA4, 0xFF), (0x1C, 0x33, 0x70)),
+        ((0xFF, 0x7E, 0x9E), (0x6E, 0x1A, 0x30)),
+        ((0xC0, 0x84, 0xFF), (0x42, 0x16, 0x6E)),
+        ((0xE2, 0xF2, 0x5C), (0x4A, 0x52, 0x10)),
+        ((0x6C, 0xCF, 0xB2), (0x14, 0x52, 0x42)),
+        ((0xF2, 0xF2, 0xF5), (0x2E, 0x2E, 0x34)),
+    ];
+
+    #[test]
+    fn the_light_palette_is_the_one_from_before_dark() {
+        assert_eq!(HUES[..6], LIGHT_BEFORE_DARK);
+        // Tasks with no colour of their own keep the hue they always had.
+        // Ids made one after another spread evenly over those six.
+        let mut seen = [0; 6];
+        for _ in 0..600 {
+            seen[hue_of(TaskId::new())] += 1;
+        }
+        assert!(seen.iter().all(|&n| (60..=140).contains(&n)), "{seen:?}");
+    }
+
+    /// WCAG contrast of `ink` over the card's tint on its board.
+    fn contrast(ink: Rgb, tint: Rgb, alpha: f64, board: Rgb) -> f64 {
+        let lin = |c: f64| {
+            let c = c / 255.0;
+            if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        let lum = |(r, g, b): (f64, f64, f64)| 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+        let over = |f: u8, b: u8| f as f64 * alpha + b as f64 * (1.0 - alpha);
+        let card = (
+            over(tint.0, board.0),
+            over(tint.1, board.1),
+            over(tint.2, board.2),
+        );
+        let text = (ink.0 as f64, ink.1 as f64, ink.2 as f64);
+        let (a, b) = (lum(card), lum(text));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn card_text_reads_on_its_tint_in_both_appearances() {
+        for dark in [false, true] {
+            set_dark(dark);
+            // The window's background in each appearance.
+            let board = if dark {
+                (0x1E, 0x1E, 0x1E)
+            } else {
+                (0xFF, 0xFF, 0xFF)
+            };
+            for hue in 0..HUE_COUNT {
+                let (tint, ink) = palette()[hue];
+                let alpha = fill(hue).alphaComponent();
+                let c = contrast(ink, tint, alpha, board);
+                assert!(c >= 4.5, "hue {hue}, dark {dark}: contrast {c:.2}");
+                // Dark ink in light, pale ink in dark: never the other way round.
+                let sum = ink.0 as u32 + ink.1 as u32 + ink.2 as u32;
+                assert_eq!(sum > 3 * 128, dark, "hue {hue}, dark {dark}: ink {ink:?}");
+            }
+        }
+        set_dark(false);
+    }
+
     /// Renders a card's plain layers (tint, then the inner edge; no backdrop) into
     /// a bitmap at 2 px per point and returns its BGRA pixels and row length.
     fn render_card(tint: (f64, f64, f64)) -> (Vec<u8>, usize) {
@@ -878,7 +1106,7 @@ mod tests {
         face.setFrame(root.bounds());
         face.setBackgroundColor(Some(&CGColor::new_srgb(tint.0, tint.1, tint.2, 1.0)));
         round(&face, CARD_RADIUS * scale);
-        let inner = with_edge_images(|_, inner| edge_layer(inner, 0.0));
+        let inner = edge_layer(None, 0.0);
         inner.setContentsScale(EDGE_SCALE / scale);
         inner.setFrame(root.bounds());
         root.addSublayer(&face);
@@ -931,11 +1159,11 @@ mod tests {
             at(2.0),
             at(3.0)
         );
-        // Right inside the edge about a third of the way to white (the glow is
-        // 42% white there), fading softly, gone by about 4 pt.
+        // Right inside the edge over half the way to white in light (the glow
+        // is about half white there), fading softly, gone by about 4 pt.
         let white = 3 * 255;
         assert!(
-            (at(0.25) - centre) * 100 > 30 * (white - centre),
+            (at(0.25) - centre) * 100 > 50 * (white - centre),
             "edge {} vs centre {centre}",
             at(0.25)
         );
@@ -950,6 +1178,8 @@ mod tests {
             "4.5 pt {} vs centre {centre}",
             at(4.5)
         );
+        // Dark keeps its fainter edge.
+        const { assert!(INSET_ALPHA_DARK < INSET_ALPHA - 0.3) };
     }
 
     #[test]
@@ -1026,7 +1256,8 @@ mod tests {
         };
         let ring = selection_ring_layer();
         ring.setFrame(around(RING_GAP + RING_WIDTH));
-        let (outer, inner) = with_edge_images(|o, i| (edge_layer(o, EDGE_PAD), edge_layer(i, 0.0)));
+        let (outer, inner) =
+            with_edge_images(|o, _| (edge_layer(o, EDGE_PAD), edge_layer(None, 0.0)));
         outer.setFrame(around(EDGE_PAD));
         inner.setFrame(card);
         let face = CALayer::new();

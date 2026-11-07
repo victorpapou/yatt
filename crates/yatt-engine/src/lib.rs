@@ -28,9 +28,19 @@ pub struct Engine {
     /// Tracked time per task, refreshed once a second while the timer runs.
     pub times: HashMap<TaskId, TaskTime>,
     store: Store,
+    /// Messages for the user that nobody has shown yet.
+    problems: Vec<String>,
+    /// Saving is failing right now; the user has been told once already.
+    save_failing: bool,
     clock: Clock,
     tz: TimeZone,
     last_refresh: i64,
+    last_saved: i64,
+    /// A clock jump longer than this while running means sleep or a closed app.
+    pub max_gap_ms: i64,
+    day: Option<jiff::civil::Date>,
+    /// Told when a phase ends: the phase that finished and the one that follows.
+    pub on_phase_finished: Option<Box<dyn FnMut(Phase, Phase)>>,
 }
 
 impl Engine {
@@ -48,15 +58,51 @@ impl Engine {
             filter: Filter::default(),
             times: HashMap::new(),
             store,
+            problems: Vec::new(),
+            save_failing: false,
             clock,
             tz,
             last_refresh: 0,
+            last_saved: 0,
+            max_gap_ms: 15_000,
+            day: None,
+            on_phase_finished: None,
         };
         // Catch up on phases that ended while the app was closed.
+        engine.purge_expired();
         engine.tick();
         engine.sync_active();
         engine.refresh_times();
         Ok(engine)
+    }
+
+    /// Hands over the oldest message the user has not seen yet (a failed save,
+    /// say), or `None`. The app shows it in an alert.
+    pub fn take_problem(&mut self) -> Option<String> {
+        if self.problems.is_empty() {
+            None
+        } else {
+            Some(self.problems.remove(0))
+        }
+    }
+
+    /// Records a failed save. The user hears about it once, not on every edit
+    /// until it works again.
+    fn save_result(&mut self, what: &str, result: Result<(), impl std::fmt::Display>) {
+        match result {
+            Ok(()) => self.save_failing = false,
+            Err(e) => {
+                eprintln!("{what} failed: {e}");
+                if !self.save_failing {
+                    self.save_failing = true;
+                    self.problems.push(format!(
+                        "Не удалось записать изменения на диск ({what}): {e}\n\n\
+                         Последние правки могут пропасть после перезапуска. \
+                         Проверьте свободное место и не открыта ли база в другой программе."
+                    ));
+                }
+            }
+        }
     }
 
     pub fn now(&self) -> Timestamp {
@@ -113,6 +159,70 @@ impl Engine {
         self.execute(Command::Delete { id });
     }
 
+    /// Tucks every done task on the board into the archive, as one undo step.
+    pub fn archive_done(&mut self) {
+        let cmds: Vec<Command> = self
+            .board
+            .done_ids()
+            .into_iter()
+            .map(|id| Command::Archive { id })
+            .collect();
+        if !cmds.is_empty() {
+            self.execute(Command::Batch(cmds));
+        }
+    }
+
+    pub fn archive_task(&mut self, id: TaskId) {
+        self.execute(Command::Archive { id });
+    }
+
+    /// Brings a task back from the archive or the trash onto the board.
+    pub fn bring_back(&mut self, id: TaskId) {
+        let Some(t) = self.board.get(id) else { return };
+        let mut cmds = Vec::new();
+        if t.is_deleted() {
+            cmds.push(Command::Restore { id });
+        }
+        if t.is_archived() {
+            cmds.push(Command::Unarchive { id });
+        }
+        if !cmds.is_empty() {
+            self.execute(Command::Batch(cmds));
+        }
+    }
+
+    /// Empties the trash for good. Not undoable.
+    pub fn empty_trash(&mut self) {
+        let ids: Vec<TaskId> = self.board.trashed().iter().map(|t| t.id).collect();
+        self.purge(&ids);
+    }
+
+    /// Drops what has been in the trash longer than [`yatt_core::task::TRASH_DAYS`].
+    pub fn purge_expired(&mut self) {
+        let limit = self.now() - jiff::SignedDuration::from_hours(24 * yatt_core::task::TRASH_DAYS);
+        let ids: Vec<TaskId> = self
+            .board
+            .trashed()
+            .iter()
+            .filter(|t| t.deleted_at.is_some_and(|d| d < limit))
+            .map(|t| t.id)
+            .collect();
+        self.purge(&ids);
+    }
+
+    fn purge(&mut self, ids: &[TaskId]) {
+        if ids.is_empty() {
+            return;
+        }
+        match self.store.purge_tasks(ids) {
+            Ok(()) => {
+                self.board.purge(ids);
+                self.history.clear();
+            }
+            Err(e) => eprintln!("emptying the trash failed: {e}"),
+        }
+    }
+
     pub fn is_active(&self, id: TaskId) -> bool {
         self.timer.active_tasks.contains(&id)
     }
@@ -143,6 +253,22 @@ impl Engine {
         self.apply_timer(Vec::new());
     }
 
+    /// The Mac is going to sleep or the screen locks: stop counting right now.
+    pub fn system_sleep(&mut self) {
+        let fx = self.timer.interrupt(self.now());
+        self.apply_timer(fx);
+    }
+
+    /// Long break, "every N" and the two auto-starts. Kept with the timer.
+    pub fn set_cycle(&mut self, long_min: u32, every: u32, auto_breaks: bool, auto_work: bool) {
+        let s = &mut self.timer.settings;
+        s.long_break_secs = long_min.clamp(1, 120) * 60;
+        s.long_break_every = every.clamp(2, 12);
+        s.auto_start_breaks = auto_breaks;
+        s.auto_start_work = auto_work;
+        self.apply_timer(Vec::new());
+    }
+
     pub fn skip(&mut self) {
         let fx = self.timer.skip(self.now());
         self.apply_timer(fx);
@@ -151,12 +277,26 @@ impl Engine {
     /// Advances the timer. Returns true when something worth redrawing beyond the clock changed.
     pub fn tick(&mut self) -> bool {
         let now = self.now();
-        let fx = self.timer.tick(now);
+        let mut fx = self.timer.heartbeat(now, self.max_gap_ms);
+        fx.extend(self.timer.tick(now));
         let changed = !fx.is_empty();
         if changed {
             self.apply_timer(fx);
         }
+        let day = now.to_zoned(self.tz.clone()).date();
+        if self.day != Some(day) {
+            // Midnight passed: "today" restarts for every task, running or not.
+            self.day = Some(day);
+            self.refresh_times();
+        }
         let sec = now.as_second();
+        // Keep the last-seen moment on disk so a crash or quit loses at most a few seconds.
+        if !changed && self.timer.is_running() && sec - self.last_saved >= 5 {
+            self.last_saved = sec;
+            if let Err(e) = self.store.save_timer(&self.timer) {
+                eprintln!("saving timer failed: {e}");
+            }
+        }
         if self.timer.is_running() && sec != self.last_refresh {
             self.last_refresh = sec;
             let active: Vec<TaskId> = self.timer.active_tasks.iter().copied().collect();
@@ -177,6 +317,8 @@ impl Engine {
     fn after_change(&mut self, changed: &[TaskId]) {
         self.persist(changed);
         self.sync_active();
+        // A deleted task drops out of bulk refreshes; take its final numbers once.
+        self.refresh_times_of(changed.to_vec());
     }
 
     /// Makes the timer's active set equal the live tasks in "In progress".
@@ -205,13 +347,13 @@ impl Engine {
     fn apply_timer(&mut self, fx: Vec<Effect>) {
         for e in &fx {
             if let Effect::PhaseFinished { phase, next } = e {
-                // Notifications and sounds hook in here (stage 3).
-                eprintln!("phase {phase:?} finished, next {next:?}");
+                if let Some(f) = self.on_phase_finished.as_mut() {
+                    f(*phase, *next);
+                }
             }
         }
-        if let Err(e) = self.store.apply_timer(&fx, &self.timer) {
-            eprintln!("saving timer failed: {e}");
-        }
+        let saved = self.store.apply_timer(&fx, &self.timer);
+        self.save_result("таймер", saved);
         self.refresh_times();
     }
 
@@ -220,13 +362,17 @@ impl Engine {
             .iter()
             .filter_map(|id| self.board.get(*id))
             .collect();
-        if let Err(e) = self.store.save_tasks(tasks) {
-            eprintln!("saving tasks failed: {e}");
-        }
+        let saved = self.store.save_tasks(tasks);
+        self.save_result("задачи", saved);
     }
 
     fn refresh_times(&mut self) {
-        let ids: Vec<TaskId> = self.board.tasks().map(|t| t.id).collect();
+        let ids: Vec<TaskId> = self
+            .board
+            .tasks()
+            .filter(|t| t.deleted_at.is_none())
+            .map(|t| t.id)
+            .collect();
         self.refresh_times_of(ids);
     }
 
@@ -270,6 +416,8 @@ mod tests {
                 TimeZone::UTC,
             )
             .unwrap();
+            let mut engine = engine;
+            engine.max_gap_ms = i64::MAX / 2; // tests jump the clock freely
             Self { engine, clock }
         }
 
@@ -360,6 +508,18 @@ mod tests {
     }
 
     #[test]
+    fn sleep_gap_is_not_tracked() {
+        let mut f = Fixture::new();
+        let a = f.task("a", Status::InProgress);
+        f.at(0).start_or_pause(Mode::Stopwatch);
+        f.engine.max_gap_ms = 15_000;
+        f.at(5).tick();
+        f.at(36_000).tick(); // woke up ten hours later
+        assert_eq!(f.total(a), 5_000);
+        assert!(!f.engine.timer.is_running());
+    }
+
+    #[test]
     fn breaks_write_nothing() {
         let mut f = Fixture::new();
         let a = f.task("a", Status::InProgress);
@@ -383,5 +543,19 @@ mod tests {
         f.engine.timer.active_tasks.insert(TaskId::new());
         f.engine.sync_active();
         assert_eq!(f.engine.timer.active_tasks, BTreeSet::from([a]));
+    }
+
+    #[test]
+    fn archive_done_and_empty_trash() {
+        let mut f = Fixture::new();
+        let a = f.engine.create_task("a".into(), Status::Done);
+        let b = f.engine.create_task("b".into(), Status::Backlog);
+        f.engine.archive_done();
+        assert!(f.engine.board.get(a).unwrap().is_archived());
+        f.engine.undo();
+        assert!(!f.engine.board.get(a).unwrap().is_archived());
+        f.engine.delete_task(b);
+        f.engine.empty_trash();
+        assert!(f.engine.board.get(b).is_none());
     }
 }

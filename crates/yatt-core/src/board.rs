@@ -61,10 +61,26 @@ pub enum Command {
         status: Status,
         placement: Placement,
     },
+    /// Exact restore of a card's place, status and completion date. Only
+    /// produced as the inverse of `Move`, so undo gives back the original
+    /// `completed_at` instead of stamping a new one.
+    Reposition {
+        id: TaskId,
+        status: Status,
+        position: String,
+        completed_at: Option<Timestamp>,
+    },
     Delete {
         id: TaskId,
     },
     Restore {
+        id: TaskId,
+    },
+    /// Tucks a done task away from the board.
+    Archive {
+        id: TaskId,
+    },
+    Unarchive {
         id: TaskId,
     },
     /// Several commands as one: applied in order, undone as one step. If one
@@ -133,12 +149,45 @@ impl Board {
         self.tasks.values()
     }
 
+    /// Archived tasks, newest first.
+    pub fn archived(&self) -> Vec<&Task> {
+        let mut v: Vec<&Task> = self
+            .tasks
+            .values()
+            .filter(|t| t.is_archived() && !t.is_deleted())
+            .collect();
+        v.sort_by(|a, b| b.archived_at.cmp(&a.archived_at).then(a.id.cmp(&b.id)));
+        v
+    }
+
+    /// Tasks in the trash, most recently deleted first.
+    pub fn trashed(&self) -> Vec<&Task> {
+        let mut v: Vec<&Task> = self.tasks.values().filter(|t| t.is_deleted()).collect();
+        v.sort_by(|a, b| b.deleted_at.cmp(&a.deleted_at).then(a.id.cmp(&b.id)));
+        v
+    }
+
+    /// Done tasks still on the board.
+    pub fn done_ids(&self) -> Vec<TaskId> {
+        self.column(Status::Done, &Filter::default())
+            .into_iter()
+            .map(|t| t.id)
+            .collect()
+    }
+
+    /// Forgets tasks for good (after the store dropped them).
+    pub fn purge(&mut self, ids: &[TaskId]) {
+        for id in ids {
+            self.tasks.remove(id);
+        }
+    }
+
     /// Live tasks of one column in display order.
     pub fn column(&self, status: Status, filter: &Filter) -> Vec<&Task> {
         let mut col: Vec<&Task> = self
             .tasks
             .values()
-            .filter(|t| t.status == status && !t.is_deleted() && filter.matches(t))
+            .filter(|t| t.status == status && t.is_live() && filter.matches(t))
             .collect();
         col.sort_by(|a, b| a.position.cmp(&b.position).then(a.id.cmp(&b.id)));
         col
@@ -232,9 +281,9 @@ impl Board {
                 status,
                 placement,
             } => {
-                let (old_status, old_position) = {
+                let (old_status, old_position, old_completed) = {
                     let t = self.task_mut(id)?;
-                    (t.status, t.position.clone())
+                    (t.status, t.position.clone(), t.completed_at)
                 };
                 let position = self.position_for(status, Some(id), &placement)?;
                 let task = self.task_mut(id)?;
@@ -246,11 +295,34 @@ impl Board {
                 }
                 Ok(Applied {
                     changed: vec![id],
-                    inverse: Command::Move {
+                    inverse: Command::Reposition {
                         id,
                         status: old_status,
-                        placement: Placement::Key(old_position),
+                        position: old_position,
+                        completed_at: old_completed,
                     },
+                })
+            }
+            Command::Reposition {
+                id,
+                status,
+                position,
+                completed_at,
+            } => {
+                let task = self.task_mut(id)?;
+                let inverse = Command::Reposition {
+                    id,
+                    status: task.status,
+                    position: task.position.clone(),
+                    completed_at: task.completed_at,
+                };
+                task.status = status;
+                task.position = position;
+                task.completed_at = completed_at;
+                task.updated_at = now;
+                Ok(Applied {
+                    changed: vec![id],
+                    inverse,
                 })
             }
             Command::Delete { id } => {
@@ -269,6 +341,24 @@ impl Board {
                 Ok(Applied {
                     changed: vec![id],
                     inverse: Command::Delete { id },
+                })
+            }
+            Command::Archive { id } => {
+                let task = self.task_mut(id)?;
+                task.archived_at = Some(now);
+                task.updated_at = now;
+                Ok(Applied {
+                    changed: vec![id],
+                    inverse: Command::Unarchive { id },
+                })
+            }
+            Command::Unarchive { id } => {
+                let task = self.task_mut(id)?;
+                task.archived_at = None;
+                task.updated_at = now;
+                Ok(Applied {
+                    changed: vec![id],
+                    inverse: Command::Archive { id },
                 })
             }
             Command::Batch(cmds) => {
@@ -352,6 +442,12 @@ pub struct History {
 impl History {
     const LIMIT: usize = 200;
 
+    /// Forgets all undo and redo steps (after tasks were dropped for good).
+    pub fn clear(&mut self) {
+        self.undo.clear();
+        self.redo.clear();
+    }
+
     /// Applies a user command and records it for undo.
     pub fn execute(
         &mut self,
@@ -359,7 +455,17 @@ impl History {
         cmd: Command,
         now: Timestamp,
     ) -> Result<Applied, BoardError> {
+        let coalesce = matches!(
+            (&cmd, self.undo.last()),
+            (Command::SetNotes { id, .. }, Some(Command::SetNotes { id: last, .. })) if id == last
+        ) && self.redo.is_empty();
         let applied = board.apply(cmd, now)?;
+        if coalesce {
+            // Typing in the notes is one undo step, not one per debounce:
+            // keep the oldest inverse.
+            self.redo.clear();
+            return Ok(applied);
+        }
         self.undo.push(applied.inverse.clone());
         if self.undo.len() > Self::LIMIT {
             self.undo.remove(0);
@@ -373,10 +479,12 @@ impl History {
         board: &mut Board,
         now: Timestamp,
     ) -> Result<Option<Applied>, BoardError> {
-        let Some(cmd) = self.undo.pop() else {
+        // Pop only after the step applied, so a failure does not lose it.
+        let Some(cmd) = self.undo.last().cloned() else {
             return Ok(None);
         };
         let applied = board.apply(cmd, now)?;
+        self.undo.pop();
         self.redo.push(applied.inverse.clone());
         Ok(Some(applied))
     }
@@ -386,10 +494,11 @@ impl History {
         board: &mut Board,
         now: Timestamp,
     ) -> Result<Option<Applied>, BoardError> {
-        let Some(cmd) = self.redo.pop() else {
+        let Some(cmd) = self.redo.last().cloned() else {
             return Ok(None);
         };
         let applied = board.apply(cmd, now)?;
+        self.redo.pop();
         self.undo.push(applied.inverse.clone());
         Ok(Some(applied))
     }
@@ -497,6 +606,62 @@ mod tests {
     }
 
     #[test]
+    fn undo_keeps_original_completion_date() {
+        let (mut b, mut h) = (Board::default(), History::default());
+        let a = create(&mut b, &mut h, "a");
+        let t0 = now();
+        let t1 = Timestamp::from_second(1_800_100_000).unwrap();
+        let done = Command::Move {
+            id: a,
+            status: Status::Done,
+            placement: Placement::Top,
+        };
+        h.execute(&mut b, done, t0).unwrap();
+        h.execute(
+            &mut b,
+            Command::Move {
+                id: a,
+                status: Status::Backlog,
+                placement: Placement::Top,
+            },
+            t0,
+        )
+        .unwrap();
+        h.undo(&mut b, t1).unwrap();
+        assert_eq!(b.get(a).unwrap().completed_at, Some(t0));
+    }
+
+    #[test]
+    fn notes_edits_are_one_undo_step_and_failed_undo_keeps_step() {
+        let (mut b, mut h) = (Board::default(), History::default());
+        let a = create(&mut b, &mut h, "a");
+        for n in ["x", "xy", "xyz"] {
+            h.execute(
+                &mut b,
+                Command::SetNotes {
+                    id: a,
+                    notes: n.into(),
+                },
+                now(),
+            )
+            .unwrap();
+        }
+        h.undo(&mut b, now()).unwrap();
+        assert_eq!(b.get(a).unwrap().notes, "");
+        h.redo(&mut b, now()).unwrap();
+        assert_eq!(b.get(a).unwrap().notes, "xyz");
+
+        // A step that cannot apply stays on the stack.
+        let ghost = TaskId::new();
+        h.undo.push(Command::Rename {
+            id: ghost,
+            title: "z".into(),
+        });
+        assert!(h.undo(&mut b, now()).is_err());
+        assert!(h.can_undo());
+    }
+
+    #[test]
     fn delete_is_soft_and_undoable() {
         let (mut b, mut h) = (Board::default(), History::default());
         let a = create(&mut b, &mut h, "a");
@@ -504,6 +669,29 @@ mod tests {
         assert!(titles(&b, Status::Backlog).is_empty());
         h.undo(&mut b, now()).unwrap();
         assert_eq!(titles(&b, Status::Backlog), ["a"]);
+    }
+
+    #[test]
+    fn archive_hides_from_board_and_undoes() {
+        let (mut b, mut h) = (Board::default(), History::default());
+        let a = create(&mut b, &mut h, "a");
+        h.execute(&mut b, Command::Archive { id: a }, now())
+            .unwrap();
+        assert!(titles(&b, Status::Backlog).is_empty());
+        assert_eq!(b.archived().len(), 1);
+        h.undo(&mut b, now()).unwrap();
+        assert_eq!(titles(&b, Status::Backlog), ["a"]);
+        assert!(b.archived().is_empty());
+    }
+
+    #[test]
+    fn trash_lists_deleted_and_purges() {
+        let (mut b, mut h) = (Board::default(), History::default());
+        let a = create(&mut b, &mut h, "a");
+        h.execute(&mut b, Command::Delete { id: a }, now()).unwrap();
+        assert_eq!(b.trashed().len(), 1);
+        b.purge(&[a]);
+        assert!(b.trashed().is_empty() && b.get(a).is_none());
     }
 
     #[test]

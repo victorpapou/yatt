@@ -53,6 +53,10 @@ pub struct TimerSnap {
     /// The pomodoro's lengths, in minutes.
     pub work_min: u32,
     pub break_min: u32,
+    pub long_min: u32,
+    pub every: u32,
+    pub auto_breaks: bool,
+    pub auto_work: bool,
     /// For the menu bar.
     pub menu_bar: yatt_platform::MenuBarTimer,
 }
@@ -88,6 +92,14 @@ pub enum UiEvent {
     Rename(TaskId, String),
     SetNotes(TaskId, String),
     Delete(TaskId),
+    /// Done task into the archive.
+    Archive(TaskId),
+    /// Every done task on the board into the archive.
+    ArchiveDone,
+    /// A task back from the archive or the trash.
+    BringBack(TaskId),
+    /// The trash emptied for good.
+    EmptyTrash,
     /// The card's colour and icon (`None`: from its id).
     SetLook {
         id: TaskId,
@@ -101,11 +113,20 @@ pub enum UiEvent {
         items: Vec<(String, String)>,
         status: Status,
     },
+    /// The search text; empty clears the filter.
+    SetFilter(String),
     StartPause,
     /// The pomodoro's work and break lengths, in minutes.
     SetDurations {
         work_min: u32,
         break_min: u32,
+    },
+    /// Long break length, a long break every N works, the two auto-starts.
+    SetCycle {
+        long_min: u32,
+        every: u32,
+        auto_breaks: bool,
+        auto_work: bool,
     },
     StartStopwatch,
     Skip,

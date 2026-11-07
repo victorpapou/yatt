@@ -14,7 +14,7 @@ use objc2_app_kit::{
     NSTextFieldDelegate, NSTextView, NSToolbarDelegate, NSToolbarItem, NSTrackingArea,
     NSTrackingAreaOptions, NSView, NSWindow, NSWindowDelegate,
 };
-use objc2_foundation::{NSArray, NSNotification, NSPoint, NSRect, NSString};
+use objc2_foundation::{NSArray, NSPoint, NSRect, NSString};
 use objc2_web_kit::{WKScriptMessage, WKScriptMessageHandler, WKUserContentController};
 
 pub type KeyHandler = Box<dyn Fn(&NSEvent) -> bool>;
@@ -70,9 +70,12 @@ define_class!(
     unsafe impl NSObjectProtocol for WindowDelegate {}
 
     unsafe impl NSWindowDelegate for WindowDelegate {
-        #[unsafe(method(windowWillClose:))]
-        fn window_will_close(&self, _notification: &NSNotification) {
+        // The red button hides the window instead of closing it: the app, its
+        // timer and the menu-bar clock go on. Nothing here closes the window.
+        #[unsafe(method(windowShouldClose:))]
+        fn window_should_close(&self, _sender: &NSWindow) -> bool {
             (self.ivars().on_close)();
+            false
         }
     }
 );
@@ -220,6 +223,32 @@ pub struct RootIvars {
     pub on_key: RefCell<Option<KeyHandler>>,
     /// The window turned light or dark.
     pub on_appearance: RefCell<Option<Box<dyn Fn()>>>,
+}
+
+define_class!(
+    /// The board's three columns side by side with no divider of their own (the
+    /// board draws its fading lines) and nothing to drag.
+    // SAFETY: NSSplitView has no subclassing requirements; no Drop impl.
+    #[unsafe(super(objc2_app_kit::NSSplitView, NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    pub struct ColumnsSplit;
+
+    impl ColumnsSplit {
+        #[unsafe(method(dividerThickness))]
+        fn divider_thickness(&self) -> f64 {
+            0.0
+        }
+
+        #[unsafe(method(drawDividerInRect:))]
+        fn draw_divider(&self, _rect: NSRect) {}
+    }
+);
+
+impl ColumnsSplit {
+    pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(());
+        unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] }
+    }
 }
 
 define_class!(
@@ -377,6 +406,8 @@ define_class!(
             let Some(layer) = self.layer() else { return };
             let fill = self.ivars().fill.get();
             let color = match fill {
+                // Over the system glass the colour is the glass's own tint.
+                Fill::Card { .. } if crate::style::real_glass() => NSColor::clearColor(),
                 Fill::Card { hue, .. } => crate::style::fill(hue),
                 Fill::Chip(i) => crate::style::column_color(i).colorWithAlphaComponent(0.14),
                 Fill::Separator => NSColor::separatorColor(),
@@ -508,6 +539,11 @@ pub enum CanvasMsg {
     Scroll(Scroll),
     /// The pointer moved over the canvas, or left it (`None`).
     Hover(Option<NSPoint>),
+    /// A right-click (or ctrl-click): the context menu, shown in `view`.
+    Context {
+        at: NSPoint,
+        view: Retained<NSView>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -518,6 +554,21 @@ pub struct Scroll {
     /// How far the fingers (or the wheel) move down, in points (negative: up),
     /// the same whatever the natural-scrolling setting.
     pub down: f64,
+    /// Where in a trackpad gesture this step is.
+    pub touch: Touch,
+}
+
+/// Where a scroll step sits in a gesture.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Touch {
+    /// A mouse wheel (no gesture): each step on its own.
+    Wheel,
+    /// Fingers on the trackpad, moving or resting.
+    Hold,
+    /// The fingers just lifted (or the system cancelled the gesture).
+    Release,
+    /// The system's momentum after the fingers lifted.
+    Coast,
 }
 
 pub struct CanvasIvars {
@@ -606,6 +657,14 @@ define_class!(
             });
         }
 
+        #[unsafe(method(rightMouseDown:))]
+        fn right_mouse_down(&self, event: &NSEvent) {
+            self.send(CanvasMsg::Context {
+                at: self.local(event),
+                view: Retained::into_super(self.retain()),
+            });
+        }
+
         #[unsafe(method(mouseDragged:))]
         fn mouse_dragged(&self, event: &NSEvent) {
             self.send(CanvasMsg::Dragged(self.local(event)));
@@ -626,6 +685,19 @@ define_class!(
                     event.scrollingDeltaY() * k,
                     event.isDirectionInvertedFromDevice(),
                 ),
+                touch: {
+                    use objc2_app_kit::NSEventPhase as P;
+                    let (phase, coast) = (event.phase(), event.momentumPhase());
+                    if coast != P::None {
+                        Touch::Coast
+                    } else if phase.intersects(P::Ended | P::Cancelled) {
+                        Touch::Release
+                    } else if phase != P::None {
+                        Touch::Hold
+                    } else {
+                        Touch::Wheel
+                    }
+                },
             }));
         }
     }
@@ -701,6 +773,101 @@ define_class!(
 );
 
 impl PassView {
+    pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(NoIvars);
+        unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] }
+    }
+}
+
+define_class!(
+    // SAFETY: NSView has no subclassing requirements; no Drop impl.
+    #[unsafe(super(NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = NoIvars]
+    /// A column divider: the separator colour, fading in from nothing at the
+    /// top to full by half its height. Drawn, so it follows the appearance.
+    pub struct FadeLine;
+
+    impl FadeLine {
+        #[unsafe(method(isFlipped))]
+        fn is_flipped(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(drawRect:))]
+        fn draw_rect(&self, _dirty: NSRect) {
+            let b = self.bounds();
+            let line = NSColor::separatorColor();
+            let Some(gradient) = objc2_app_kit::NSGradient::initWithStartingColor_endingColor(
+                objc2_app_kit::NSGradient::alloc(),
+                &line.colorWithAlphaComponent(0.0),
+                &line,
+            ) else {
+                return;
+            };
+            // y runs down here: clear at the top, full at half the height and on.
+            // The gradient fills whatever is clipped, so clip it to the line.
+            objc2_app_kit::NSBezierPath::bezierPathWithRect(b).addClip();
+            let half = b.size.height / 2.0;
+            gradient.drawFromPoint_toPoint_options(
+                NSPoint::new(b.origin.x, b.origin.y),
+                NSPoint::new(b.origin.x, b.origin.y + half),
+                objc2_app_kit::NSGradientDrawingOptions::DrawsAfterEndingLocation,
+            );
+        }
+    }
+);
+
+define_class!(
+    // SAFETY: NSView has no subclassing requirements; no Drop impl.
+    #[unsafe(super(NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = NoIvars]
+    /// The board's bottom edge: the window's background fading in from clear at
+    /// the top to nearly solid at the bottom, so the cards fade out under the
+    /// new-task capsule. Drawn, so it follows the appearance; clicks go through.
+    pub struct BottomFade;
+
+    impl BottomFade {
+        #[unsafe(method(isFlipped))]
+        fn is_flipped(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method_id(hitTest:))]
+        fn hit_test(&self, _point: NSPoint) -> Option<Retained<NSView>> {
+            None
+        }
+
+        #[unsafe(method(drawRect:))]
+        fn draw_rect(&self, _dirty: NSRect) {
+            let b = self.bounds();
+            let bg = NSColor::textBackgroundColor();
+            let Some(gradient) = objc2_app_kit::NSGradient::initWithStartingColor_endingColor(
+                objc2_app_kit::NSGradient::alloc(),
+                &bg.colorWithAlphaComponent(0.0),
+                &bg.colorWithAlphaComponent(0.92),
+            ) else {
+                return;
+            };
+            objc2_app_kit::NSBezierPath::bezierPathWithRect(b).addClip();
+            gradient.drawFromPoint_toPoint_options(
+                NSPoint::new(b.origin.x, b.origin.y),
+                NSPoint::new(b.origin.x, b.origin.y + b.size.height),
+                objc2_app_kit::NSGradientDrawingOptions::empty(),
+            );
+        }
+    }
+);
+
+impl BottomFade {
+    pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(NoIvars);
+        unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] }
+    }
+}
+
+impl FadeLine {
     pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(NoIvars);
         unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] }
