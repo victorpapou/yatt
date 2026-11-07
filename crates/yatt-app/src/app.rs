@@ -11,6 +11,7 @@ use yatt_engine::Engine;
 use yatt_macos::{MainThreadMarker, MainWindow, UiEvent};
 use yatt_store::Store;
 
+use crate::crashlog;
 use crate::demo;
 use crate::workspace::Workspace;
 
@@ -81,6 +82,7 @@ fn open_board() -> anyhow::Result<(std::fs::File, Engine)> {
 }
 
 pub fn run() -> anyhow::Result<()> {
+    crashlog::log("opening board");
     let (_lock, engine) = match open_board() {
         Ok(opened) => opened,
         Err(e) => {
@@ -92,6 +94,7 @@ pub fn run() -> anyhow::Result<()> {
     };
 
     // The window, once it exists, for the Dock icon to bring back.
+    crashlog::log("board open, starting GPUI");
     let shown: Rc<std::cell::RefCell<Option<Rc<MainWindow>>>> = Rc::default();
     let app = Application::new();
     {
@@ -104,6 +107,7 @@ pub fn run() -> anyhow::Result<()> {
         });
     }
     app.run(move |cx: &mut App| {
+        crashlog::log("finish_launching: creating window");
         let mtm = MainThreadMarker::new().expect("GPUI runs the app on the main thread");
         let workspace = cx.new(|_| Workspace::new(engine));
 
@@ -123,7 +127,11 @@ pub fn run() -> anyhow::Result<()> {
                     .cloned()
                     .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
                     .unwrap_or_default();
-                yatt_macos::alert(mtm, "yatt не смог создать окно", &why);
+                crashlog::log(format!("window creation panicked: {why}"));
+                let log = crashlog::path()
+                    .map(|p| format!("\n\nЛог: {}", p.display()))
+                    .unwrap_or_default();
+                yatt_macos::alert(mtm, "yatt не смог создать окно", &format!("{why}{log}"));
                 std::process::exit(1);
             }
         };
@@ -179,12 +187,14 @@ pub fn run() -> anyhow::Result<()> {
         })
         .detach();
 
+        crashlog::log("window created, installing menus");
         install_menus(cx, &window, &sink);
         if let Ok(dir) = std::env::var("YATT_DEMO") {
             demo::start(cx, dir, workspace.clone(), window.clone(), sink.clone());
         }
         // The observer and the menu actions hold the window for the rest of the run.
         cx.activate(true);
+        crashlog::log("launch complete");
     });
     Ok(())
 }

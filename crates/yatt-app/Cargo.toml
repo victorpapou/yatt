@@ -23,3 +23,6 @@ anyhow.workspace = true
 # not full Xcode. Release builds can switch to precompiled shaders later.
 gpui = { workspace = true, features = ["runtime_shaders"] }
 jiff.workspace = true
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
