@@ -7,6 +7,7 @@
 //! through the same channel; messages keep their order, and every notes message is
 //! filed under the key posted before it.
 
+use objc2_foundation::NSObjectProtocol as _;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 

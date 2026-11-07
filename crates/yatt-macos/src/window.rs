@@ -12,6 +12,7 @@
 //! A click on a card opens the task modal (`modal.rs`); minimal mode hides the
 //! toolbar and shrinks the window to the timer row alone, at a larger size.
 
+use objc2_foundation::NSObjectProtocol as _;
 use std::cell::{Cell, RefCell};
 use std::ptr::NonNull;
 use std::rc::Rc;
