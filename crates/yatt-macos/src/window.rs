@@ -299,20 +299,20 @@ impl MainWindow {
             let block = block2::RcBlock::new(
                 move |e: std::ptr::NonNull<objc2_app_kit::NSEvent>| -> *mut objc2_app_kit::NSEvent {
                     let e = unsafe { e.as_ref() };
-                    if let Some(w) = field.window() {
-                        if field.currentEditor().is_some() {
-                            let r = field.convertRect_toView(field.bounds(), None);
-                            let p = e.locationInWindow();
-                            let inside = p.x >= r.origin.x
-                                && p.x <= r.origin.x + r.size.width
-                                && p.y >= r.origin.y
-                                && p.y <= r.origin.y + r.size.height;
-                            if !inside {
-                                let empty = field.stringValue().to_string().is_empty();
-                                w.makeFirstResponder(None);
-                                if empty {
-                                    item.endSearchInteraction();
-                                }
+                    if let Some(w) = field.window()
+                        && field.currentEditor().is_some()
+                    {
+                        let r = field.convertRect_toView(field.bounds(), None);
+                        let p = e.locationInWindow();
+                        let inside = p.x >= r.origin.x
+                            && p.x <= r.origin.x + r.size.width
+                            && p.y >= r.origin.y
+                            && p.y <= r.origin.y + r.size.height;
+                        if !inside {
+                            let empty = field.stringValue().to_string().is_empty();
+                            w.makeFirstResponder(None);
+                            if empty {
+                                item.endSearchInteraction();
                             }
                         }
                     }

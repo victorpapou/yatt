@@ -14,7 +14,7 @@ use std::rc::Rc;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{MainThreadMarker, MainThreadOnly};
-use objc2_foundation::{NSNumber, NSObjectNSKeyValueCoding, NSRect, NSString, ns_string};
+use objc2_foundation::{NSRect, NSString, ns_string};
 use objc2_web_kit::{WKWebView, WKWebViewConfiguration};
 
 use crate::classes::ScriptHandler;
