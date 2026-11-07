@@ -2206,6 +2206,19 @@ pub(crate) fn animate_with_completion(secs: f64, changes: impl Fn(), done: impl 
     NSAnimationContext::runAnimationGroup_completionHandler(&block, Some(&done));
 }
 
+const STACKS_KEY: &str = "yatt.stacked";
+
+/// Whether the board was in stack mode when the app last ran.
+fn stacks_saved() -> bool {
+    objc2_foundation::NSUserDefaults::standardUserDefaults()
+        .boolForKey(&NSString::from_str(STACKS_KEY))
+}
+
+fn save_stacks(on: bool) {
+    objc2_foundation::NSUserDefaults::standardUserDefaults()
+        .setBool_forKey(on, &NSString::from_str(STACKS_KEY));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2236,17 +2249,4 @@ mod tests {
         assert_eq!(f.origin.y, 44.0);
         const { assert!(CHIP_H <= 16.0 && CHIP_PAD <= 6.0 && CHIP_GAP <= 3.0) };
     }
-}
-
-const STACKS_KEY: &str = "yatt.stacked";
-
-/// Whether the board was in stack mode when the app last ran.
-fn stacks_saved() -> bool {
-    objc2_foundation::NSUserDefaults::standardUserDefaults()
-        .boolForKey(&NSString::from_str(STACKS_KEY))
-}
-
-fn save_stacks(on: bool) {
-    objc2_foundation::NSUserDefaults::standardUserDefaults()
-        .setBool_forKey(on, &NSString::from_str(STACKS_KEY));
 }
