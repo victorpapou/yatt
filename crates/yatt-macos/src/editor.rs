@@ -85,10 +85,9 @@ impl NotesEditor {
                 ns_string!("yatt"),
             );
             // Let the panel behind show through.
-            view.setValue_forKey(
-                Some(&NSNumber::new_bool(false)),
-                ns_string!("drawsBackground"),
-            );
+            if view.respondsToSelector(objc2::sel!(_setDrawsBackground:)) {
+                let _: () = objc2::msg_send![&*view, _setDrawsBackground: false];
+            }
         }
         let html = format!(
             "<!doctype html><html><head><meta charset=\"utf-8\"></head>\

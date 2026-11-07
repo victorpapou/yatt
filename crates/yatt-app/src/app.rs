@@ -111,7 +111,22 @@ pub fn run() -> anyhow::Result<()> {
         let sink: yatt_macos::Sink = Rc::new(move |event| {
             let _ = tx.unbounded_send(event);
         });
-        let window = Rc::new(MainWindow::new(mtm, sink.clone()));
+        // A panic here would unwind into AppKit's launch callback and abort with
+        // no explanation; show the reason instead.
+        let window = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            MainWindow::new(mtm, sink.clone())
+        })) {
+            Ok(w) => Rc::new(w),
+            Err(e) => {
+                let why = e
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
+                    .unwrap_or_default();
+                yatt_macos::alert(mtm, "yatt не смог создать окно", &why);
+                std::process::exit(1);
+            }
+        };
         window.render(&workspace.read(cx).snapshot());
         *shown.borrow_mut() = Some(window.clone());
 

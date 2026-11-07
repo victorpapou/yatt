@@ -283,8 +283,12 @@ impl MainWindow {
         search_item.setResignsFirstResponderWithCancel(true);
         // AppKit's own switch (no header, found on the class at run time): the
         // item shows as a magnifier and expands on click / beginSearchInteraction.
-        unsafe {
-            let _: () = objc2::msg_send![&*search_item, setPrefersCompactRepresentation: true];
+        // Not on every system release: an unknown selector would abort the launch.
+        let compact = objc2::sel!(setPrefersCompactRepresentation:);
+        if search_item.respondsToSelector(compact) {
+            unsafe {
+                let _: () = objc2::msg_send![&*search_item, setPrefersCompactRepresentation: true];
+            }
         }
         retained.push(Retained::into_super(Retained::into_super(search_target)));
         // A click outside the open search field ends editing, and an empty
