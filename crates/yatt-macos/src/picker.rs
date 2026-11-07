@@ -9,7 +9,8 @@ use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_app_kit::{
-    NSButton, NSImage, NSPopover, NSPopoverBehavior, NSSegmentedControl, NSView, NSViewController,
+    NSButton, NSImage, NSPopover, NSPopoverBehavior, NSSearchField, NSSegmentedControl,
+    NSTextField, NSView, NSViewController,
 };
 use objc2_foundation::{NSPoint, NSRect, NSRectEdge, NSSize, NSString};
 use yatt_core::{Status, TaskId};
@@ -19,9 +20,26 @@ use crate::model::UiEvent;
 use crate::style;
 use crate::window::Sink;
 
-const CELL: f64 = 34.0;
-const PER_ROW: usize = 6;
-const PAD: f64 = 12.0;
+const CELL: f64 = 32.0;
+const PER_ROW: usize = 8;
+const SWATCH_CELL: f64 = 28.0;
+const SWATCH_PER_ROW: usize = 10;
+const PAD: f64 = 15.0;
+const STATUS_Y: f64 = PAD + SWATCH_CELL * 2.0 + 18.0;
+const SEARCH_Y: f64 = STATUS_Y + 42.0;
+const SYMBOLS_Y: f64 = SEARCH_Y + 48.0;
+const ICONS_Y: f64 = SYMBOLS_Y + 22.0;
+const HUE_SWATCH_ORDER: [usize; style::HUE_COUNT] =
+    [6, 7, 8, 3, 4, 10, 11, 0, 13, 2, 14, 1, 5, 9, 12];
+
+fn icon_at(slot: usize, y0: f64) -> NSPoint {
+    let inner_width = PAD * 2.0 + SWATCH_CELL * SWATCH_PER_ROW as f64 - 2.0 * PAD;
+    let step = (inner_width - CELL) / (PER_ROW - 1) as f64;
+    NSPoint::new(
+        PAD + (slot % PER_ROW) as f64 * step,
+        y0 + (slot / PER_ROW) as f64 * CELL,
+    )
+}
 
 /// What the open task looks like now: its colour and icon as chosen (`None`:
 /// from its id) and its status.
@@ -40,7 +58,9 @@ pub struct Picker {
     popover: Retained<NSPopover>,
     swatches: Vec<Retained<NSButton>>,
     icons: Vec<Retained<NSButton>>,
+    icon_names: Vec<&'static str>,
     status: Retained<NSSegmentedControl>,
+    search: Retained<NSSearchField>,
     current: Rc<RefCell<Current>>,
     _retained: Vec<Retained<AnyObject>>,
 }
@@ -72,10 +92,10 @@ impl Picker {
     pub fn new(mtm: MainThreadMarker, sink: &Sink) -> Self {
         let current: Rc<RefCell<Current>> = Rc::default();
         let mut retained: Vec<Retained<AnyObject>> = Vec::new();
-        let width = PAD * 2.0 + CELL * PER_ROW as f64;
+        let width = PAD * 2.0 + SWATCH_CELL * SWATCH_PER_ROW as f64;
         let rows = |n: usize| n.div_ceil(PER_ROW) as f64 * CELL;
-        let icons_y = PAD + rows(style::HUE_COUNT) + 44.0;
-        let height = icons_y + rows(style::ICONS.len()) + 44.0;
+        // Match the native symbol chooser's compact 310×468 pt footprint.
+        let height = ICONS_Y + rows(style::ICONS.len()) + 75.0;
         let view = FlippedView::new(mtm, NSRect::new(NSPoint::ZERO, NSSize::new(width, height)));
         let at = |i: usize, y0: f64| {
             NSPoint::new(
@@ -94,7 +114,7 @@ impl Picker {
         };
 
         let mut swatches = Vec::new();
-        for hue in 0..style::HUE_COUNT {
+        for (slot, hue) in HUE_SWATCH_ORDER.iter().copied().enumerate() {
             let t = send(Rc::new(move |c: &Current| {
                 Some(UiEvent::SetLook {
                     id: c.id?,
@@ -102,7 +122,22 @@ impl Picker {
                     icon: c.icon.clone(),
                 })
             }));
-            let b = cell_button(mtm, at(hue, PAD), &t, symbol("circle.fill").as_deref());
+            let b = cell_button(
+                mtm,
+                at(
+                    slot % SWATCH_PER_ROW,
+                    PAD + (slot / SWATCH_PER_ROW) as f64 * SWATCH_CELL,
+                ),
+                &t,
+                symbol("circle.fill").as_deref(),
+            );
+            b.setFrame(NSRect::new(
+                NSPoint::new(
+                    PAD + (slot % SWATCH_PER_ROW) as f64 * SWATCH_CELL,
+                    PAD + (slot / SWATCH_PER_ROW) as f64 * SWATCH_CELL,
+                ),
+                NSSize::new(SWATCH_CELL, SWATCH_CELL),
+            ));
             b.setContentTintColor(Some(&style::swatch(hue)));
             b.setToolTip(Some(&NSString::from_str("Цвет")));
             view.addSubview(&b);
@@ -145,15 +180,28 @@ impl Picker {
         };
         status_target.1.set(Some(status.clone()));
         status.setFrame(NSRect::new(
-            NSPoint::new(PAD, PAD + rows(style::HUE_COUNT) + 10.0),
-            NSSize::new(width - 2.0 * PAD, 24.0),
+            NSPoint::new(PAD, STATUS_Y),
+            NSSize::new(width - 2.0 * PAD, 28.0),
         ));
         view.addSubview(&status);
         retained.push(Retained::into_super(Retained::into_super(status_target.0)));
 
+        let symbols_label = NSTextField::labelWithString(&NSString::from_str("SYMBOLS"), mtm);
+        symbols_label.setFrame(NSRect::new(
+            NSPoint::new(PAD + 6.0, SYMBOLS_Y),
+            NSSize::new(width - 2.0 * PAD, 18.0),
+        ));
+        symbols_label.setTextColor(Some(&objc2_app_kit::NSColor::secondaryLabelColor()));
+        view.addSubview(&symbols_label);
+
         let mut icons = Vec::new();
-        for (i, name) in style::ICONS.iter().enumerate() {
+        let mut icon_names = Vec::new();
+        for name in style::ICONS.iter() {
             let name = *name;
+            let Some(image) = symbol(name) else {
+                continue;
+            };
+            let slot = icons.len();
             let t = send(Rc::new(move |c: &Current| {
                 Some(UiEvent::SetLook {
                     id: c.id?,
@@ -161,11 +209,48 @@ impl Picker {
                     icon: Some(name.to_string()),
                 })
             }));
-            let b = cell_button(mtm, at(i, icons_y), &t, symbol(name).as_deref());
+            let b = cell_button(mtm, icon_at(slot, ICONS_Y), &t, Some(&image));
+            b.setToolTip(Some(&NSString::from_str(name)));
             view.addSubview(&b);
             icons.push(b);
+            icon_names.push(name);
             retained.push(Retained::into_super(Retained::into_super(t)));
         }
+
+        let search = NSSearchField::new(mtm);
+        search.setFrame(NSRect::new(
+            NSPoint::new(PAD, SEARCH_Y),
+            NSSize::new(width - 2.0 * PAD, 34.0),
+        ));
+        search.setPlaceholderString(Some(&NSString::from_str("Search Symbols")));
+        search.setSendsSearchStringImmediately(true);
+        view.addSubview(&search);
+        let search_target = {
+            let search = search.clone();
+            let icons = icons.clone();
+            let names = icon_names.clone();
+            ActionTarget::new(mtm, move || {
+                let query = search.stringValue().to_string().to_lowercase();
+                let mut visible = 0;
+                for (button, name) in icons.iter().zip(&names) {
+                    let matches = query.is_empty() || name.to_lowercase().contains(&query);
+                    button.setHidden(!matches);
+                    if matches {
+                        button.setFrame(NSRect::new(
+                            icon_at(visible, ICONS_Y),
+                            NSSize::new(CELL, CELL),
+                        ));
+                        visible += 1;
+                    }
+                }
+            })
+        };
+        unsafe {
+            let target: &AnyObject = &search_target;
+            search.setTarget(Some(target));
+            search.setAction(Some(ActionTarget::sel()));
+        }
+        retained.push(Retained::into_super(Retained::into_super(search_target)));
 
         let popover = NSPopover::new(mtm);
         let delete = {
@@ -189,8 +274,8 @@ impl Picker {
         del.setBordered(false);
         del.setContentTintColor(Some(&objc2_app_kit::NSColor::systemRedColor()));
         del.setFrame(NSRect::new(
-            NSPoint::new(PAD, height - 36.0),
-            NSSize::new(width - 2.0 * PAD, 24.0),
+            NSPoint::new(PAD, height - 42.0),
+            NSSize::new(width - 2.0 * PAD, 30.0),
         ));
         view.addSubview(&del);
         retained.push(Retained::into_super(Retained::into_super(delete)));
@@ -204,7 +289,9 @@ impl Picker {
             popover,
             swatches,
             icons,
+            icon_names,
             status,
+            search,
             current,
             _retained: retained,
         }
@@ -214,8 +301,10 @@ impl Picker {
     pub fn show_task(&self, c: Current) {
         let hue = c.id.map(style::hue_of);
         let glyph = c.id.map(style::glyph_of);
-        for (i, b) in self.swatches.iter().enumerate() {
-            let on = hue == Some(i);
+        for (slot, b) in self.swatches.iter().enumerate() {
+            let color = HUE_SWATCH_ORDER[slot];
+            let on = hue == Some(color);
+            b.setContentTintColor(Some(&style::swatch(color)));
             b.setImage(
                 symbol(if on {
                     "checkmark.circle.fill"
@@ -225,13 +314,18 @@ impl Picker {
                 .as_deref(),
             );
         }
-        for (b, name) in self.icons.iter().zip(style::ICONS) {
-            let tint = if glyph == Some(name) {
+        for (i, (b, name)) in self.icons.iter().zip(&self.icon_names).enumerate() {
+            let tint = if glyph == Some(*name) {
                 objc2_app_kit::NSColor::controlAccentColor()
             } else {
                 objc2_app_kit::NSColor::secondaryLabelColor()
             };
             b.setContentTintColor(Some(&tint));
+            b.setFrame(NSRect::new(icon_at(i, ICONS_Y), NSSize::new(CELL, CELL)));
+        }
+        self.search.setStringValue(&NSString::from_str(""));
+        for b in &self.icons {
+            b.setHidden(false);
         }
         if let Some(i) = c
             .status

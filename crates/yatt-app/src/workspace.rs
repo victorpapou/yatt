@@ -10,7 +10,9 @@ use yatt_platform::MenuBarTimer;
 
 /// How many time entries the expanded card lists.
 /// Every entry of the open task, for copying.
-const ENTRIES_SHOWN: usize = usize::MAX;
+const ENTRIES_SHOWN: usize = 50;
+/// A paste creates at most this many cards at once.
+const MAX_PASTED: usize = 50;
 
 pub struct Workspace {
     pub engine: Engine,
@@ -50,7 +52,10 @@ impl Workspace {
                     Some(id)
                 };
             }
-            UiEvent::Rename(id, title) => e.execute(Command::Rename { id, title }),
+            UiEvent::Rename(id, title) => {
+                yatt_macos::eventlog::log(format!("workspace rename {id:?} {title:?}"));
+                e.execute(Command::Rename { id, title })
+            }
             UiEvent::SetNotes(id, notes) => e.execute(Command::SetNotes { id, notes }),
             UiEvent::SetLook { id, color, icon } => e.execute(Command::SetLook { id, color, icon }),
             UiEvent::Paste { .. } | UiEvent::Group(_) => {
@@ -74,11 +79,37 @@ impl Workspace {
                     self.expanded = None;
                 }
             }
+            UiEvent::SetFilter(text) => {
+                let text = text.trim();
+                e.filter.text = (!text.is_empty()).then(|| text.to_string());
+            }
+            UiEvent::Archive(id) => {
+                e.archive_task(id);
+                if self.expanded == Some(id) {
+                    self.expanded = None;
+                }
+            }
+            UiEvent::ArchiveDone => {
+                if let Some(open) = self.expanded
+                    && e.board.done_ids().contains(&open)
+                {
+                    self.expanded = None;
+                }
+                e.archive_done();
+            }
+            UiEvent::BringBack(id) => e.bring_back(id),
+            UiEvent::EmptyTrash => e.empty_trash(),
             UiEvent::StartPause => e.start_or_pause(Mode::Pomodoro),
             UiEvent::SetDurations {
                 work_min,
                 break_min,
             } => e.set_durations(work_min, break_min),
+            UiEvent::SetCycle {
+                long_min,
+                every,
+                auto_breaks,
+                auto_work,
+            } => e.set_cycle(long_min, every, auto_breaks, auto_work),
             UiEvent::StartStopwatch => e.start_or_pause(Mode::Stopwatch),
             UiEvent::Skip => e.skip(),
             UiEvent::Stop => e.stop(),
@@ -183,6 +214,10 @@ impl Workspace {
             running: t.is_running(),
             work_min: t.settings.work_secs / 60,
             break_min: t.settings.short_break_secs / 60,
+            long_min: t.settings.long_break_secs / 60,
+            every: t.settings.long_break_every,
+            auto_breaks: t.settings.auto_start_breaks,
+            auto_work: t.settings.auto_start_work,
             menu_bar: match (t.phase, t.planned_secs()) {
                 (Phase::Idle, _) => MenuBarTimer::Idle,
                 (_, Some(p)) => MenuBarTimer::Pomodoro {
@@ -236,7 +271,7 @@ fn board_commands(event: UiEvent, out: &mut Vec<Command>) {
         }),
         UiEvent::Delete(id) => out.push(Command::Delete { id }),
         UiEvent::Paste { items, status } => {
-            for (title, notes) in items.into_iter().rev() {
+            for (title, notes) in items.into_iter().take(MAX_PASTED).rev() {
                 let id = TaskId::new();
                 out.push(Command::Create {
                     id,
@@ -316,5 +351,18 @@ mod tests {
         ws.handle(UiEvent::Undo);
         assert_eq!(ws.snapshot().columns[1].cards[0].title, "План");
         assert!(!ws.handle(UiEvent::Quit));
+    }
+
+    #[test]
+    fn archive_done_clears_the_column_and_undo_returns_it() {
+        let mut ws = workspace();
+        ws.handle(UiEvent::NewTask {
+            title: "готово".into(),
+            status: Status::Done,
+        });
+        ws.handle(UiEvent::ArchiveDone);
+        assert!(ws.snapshot().columns.iter().all(|c| c.cards.is_empty()));
+        ws.handle(UiEvent::Undo);
+        assert_eq!(ws.snapshot().columns[2].cards.len(), 1);
     }
 }

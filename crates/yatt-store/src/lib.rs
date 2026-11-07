@@ -49,12 +49,30 @@ pub struct Store {
 }
 
 impl Store {
+    /// Opens (or creates) the database at `path`. Every commit is on disk before
+    /// it returns, and an existing database is first copied to `backups/` next to
+    /// it, once a day, so neither a bad migration nor a bad day loses the board.
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| StoreError::Corrupt(e.to_string()))?;
+            std::fs::create_dir_all(dir).map_err(io)?;
         }
+        let existed = path.metadata().is_ok_and(|m| m.len() > 0);
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
+        // FULL: a commit survives a crash or power loss, not only the app quitting.
+        conn.pragma_update(None, "synchronous", "FULL")?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        if existed {
+            let check: String = conn.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
+            if check != "ok" {
+                return Err(StoreError::Corrupt(format!(
+                    "{}: {check}; backups are in {}",
+                    path.display(),
+                    backup_dir(path).display()
+                )));
+            }
+            backup_daily(&conn, path)?;
+        }
         Self::init(conn)
     }
 
@@ -73,7 +91,7 @@ impl Store {
     pub fn load_tasks(&self) -> Result<Vec<Task>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, title, notes, status, position, project_id, priority, due_at, estimate_pomodoros,
-                    created_at, updated_at, completed_at, deleted_at, color, icon
+                    created_at, updated_at, completed_at, deleted_at, color, icon, archived_at
              FROM tasks",
         )?;
         let rows = stmt.query_map([], task_from_row)?;
@@ -87,6 +105,24 @@ impl Store {
     pub fn save_tasks<'a>(&mut self, tasks: impl IntoIterator<Item = &'a Task>) -> Result<()> {
         let tx = self.conn.transaction()?;
         tasks.into_iter().try_for_each(|t| save_task(&tx, t))?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Drops tasks for good (emptying the trash). Their tracked time stays in
+    /// the stats, just without a task.
+    pub fn purge_tasks(&mut self, ids: &[TaskId]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        for id in ids {
+            let id = id.0.to_string();
+            tx.execute(
+                "UPDATE time_entries SET task_id = NULL WHERE task_id = ?1",
+                [&id],
+            )?;
+            tx.execute("DELETE FROM subtasks WHERE task_id = ?1", [&id])?;
+            tx.execute("DELETE FROM task_tags WHERE task_id = ?1", [&id])?;
+            tx.execute("DELETE FROM tasks WHERE id = ?1", [&id])?;
+        }
         tx.commit()?;
         Ok(())
     }
@@ -185,11 +221,14 @@ impl Store {
             params![id, now, day],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
+        // A pomodoro counts for a task only if it was in work for at least a minute of it.
         let pomodoros: u32 = self.conn.query_row(
-            "SELECT COUNT(DISTINCT s.id) FROM focus_sessions s
+            "SELECT COUNT(*) FROM (SELECT s.id FROM focus_sessions s
              JOIN time_entries e ON e.session_id = s.id
-             WHERE e.task_id = ?1 AND s.kind = 'work' AND s.outcome = 'completed'",
-            [&id],
+             WHERE e.task_id = ?1 AND s.kind = 'work' AND s.outcome = 'completed'
+             GROUP BY s.id
+             HAVING SUM(COALESCE(e.ended_at, ?2) - e.started_at) >= 60000)",
+            params![id, now],
             |r| r.get(0),
         )?;
         Ok(TaskTime {
@@ -232,6 +271,55 @@ impl Store {
     }
 }
 
+/// How many daily copies `backups/` keeps.
+const BACKUPS_KEPT: usize = 14;
+
+fn backup_dir(db: &Path) -> std::path::PathBuf {
+    db.with_file_name("backups")
+}
+
+/// Copies the database to `backups/<name>-<date>.sqlite` unless today's copy is
+/// there already, and drops the oldest beyond [`BACKUPS_KEPT`].
+fn backup_daily(conn: &Connection, db: &Path) -> Result<()> {
+    let dir = backup_dir(db);
+    std::fs::create_dir_all(&dir).map_err(io)?;
+    let stem = db.file_stem().and_then(|s| s.to_str()).unwrap_or("yatt");
+    let today = Timestamp::now()
+        .to_zoned(jiff::tz::TimeZone::system())
+        .date();
+    let target = dir.join(format!("{stem}-{today}.sqlite"));
+    if !target.exists() {
+        // A consistent copy of a live database, WAL included, written to a
+        // temporary name first so a half-written copy never passes for a backup.
+        let tmp = target.with_extension("sqlite-tmp");
+        let _ = std::fs::remove_file(&tmp);
+        conn.execute("VACUUM INTO ?1", [tmp.to_string_lossy()])?;
+        std::fs::rename(&tmp, &target).map_err(io)?;
+    }
+    let prefix = format!("{stem}-");
+    let mut copies: Vec<_> = std::fs::read_dir(&dir)
+        .map_err(io)?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.extension().is_some_and(|x| x == "sqlite")
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with(&prefix))
+        })
+        .collect();
+    // Dates sort as text.
+    copies.sort();
+    let extra = copies.len().saturating_sub(BACKUPS_KEPT);
+    for old in &copies[..extra] {
+        let _ = std::fs::remove_file(old);
+    }
+    Ok(())
+}
+
+fn io(e: std::io::Error) -> StoreError {
+    StoreError::Corrupt(e.to_string())
+}
+
 fn merged_len(sorted: Vec<(i64, i64)>) -> i64 {
     let mut total = 0;
     let mut cur: Option<(i64, i64)> = None;
@@ -251,14 +339,15 @@ fn merged_len(sorted: Vec<(i64, i64)>) -> i64 {
 fn save_task(conn: &Connection, t: &Task) -> Result<()> {
     conn.execute(
         "INSERT INTO tasks (id, title, notes, status, position, project_id, priority, due_at, estimate_pomodoros,
-                            created_at, updated_at, completed_at, deleted_at, color, icon)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                            created_at, updated_at, completed_at, deleted_at, color, icon, archived_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
          ON CONFLICT(id) DO UPDATE SET
             title = excluded.title, notes = excluded.notes, status = excluded.status,
             position = excluded.position, project_id = excluded.project_id, priority = excluded.priority,
             due_at = excluded.due_at, estimate_pomodoros = excluded.estimate_pomodoros,
             updated_at = excluded.updated_at, completed_at = excluded.completed_at,
-            deleted_at = excluded.deleted_at, color = excluded.color, icon = excluded.icon",
+            deleted_at = excluded.deleted_at, color = excluded.color, icon = excluded.icon,
+            archived_at = excluded.archived_at",
         params![
             t.id.0.to_string(),
             t.title,
@@ -275,6 +364,7 @@ fn save_task(conn: &Connection, t: &Task) -> Result<()> {
             t.deleted_at.map(ms),
             t.color,
             t.icon,
+            t.archived_at.map(ms),
         ],
     )?;
     Ok(())
@@ -317,6 +407,7 @@ fn task_from_row(r: &Row<'_>) -> rusqlite::Result<Result<Task>> {
         deleted_at: r.get::<_, Option<i64>>(12)?.map(ts).transpose()?,
         color: r.get(13)?,
         icon: r.get(14)?,
+        archived_at: r.get::<_, Option<i64>>(15)?.map(ts).transpose()?,
     }))
 }
 
@@ -327,6 +418,17 @@ mod tests {
 
     fn t(secs: i64) -> Timestamp {
         Timestamp::from_second(1_800_000_000 + secs).unwrap()
+    }
+
+    #[test]
+    fn archive_and_purge_roundtrip() {
+        let mut store = Store::open_in_memory().unwrap();
+        let mut task = Task::new(TaskId::new(), "x", Status::Done, "a0".into(), t(0));
+        task.archived_at = Some(t(5));
+        store.save_task(&task).unwrap();
+        assert_eq!(store.load_tasks().unwrap()[0].archived_at, Some(t(5)));
+        store.purge_tasks(&[task.id]).unwrap();
+        assert!(store.load_tasks().unwrap().is_empty());
     }
 
     #[test]
@@ -454,6 +556,50 @@ mod tests {
                 ended_at: None
             }]
         );
+    }
+
+    #[test]
+    fn reopening_keeps_tasks_and_backs_up_once_a_day() {
+        let dir = std::env::temp_dir().join(format!("yatt-store-{}", Uuid::now_v7()));
+        let db = dir.join("yatt.sqlite");
+        let mut board = Board::default();
+        let id = TaskId::new();
+        board
+            .apply(
+                Command::Create {
+                    id,
+                    title: "a".into(),
+                    status: Status::Backlog,
+                    placement: Placement::Bottom,
+                },
+                t(0),
+            )
+            .unwrap();
+        board
+            .apply(
+                Command::SetNotes {
+                    id,
+                    notes: "заметка".into(),
+                },
+                t(1),
+            )
+            .unwrap();
+        {
+            let store = Store::open(&db).unwrap();
+            store.save_task(board.get(id).unwrap()).unwrap();
+            // A fresh database has nothing to back up.
+            assert!(!backup_dir(&db).exists());
+        }
+        for _ in 0..2 {
+            let store = Store::open(&db).unwrap();
+            assert_eq!(store.load_tasks().unwrap()[0].notes, "заметка");
+        }
+        let backups: Vec<_> = std::fs::read_dir(backup_dir(&db)).unwrap().collect();
+        assert_eq!(backups.len(), 1);
+        let copy = Store::open(&backups[0].as_ref().unwrap().path()).unwrap();
+        assert_eq!(copy.load_tasks().unwrap()[0].notes, "заметка");
+        drop(copy);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

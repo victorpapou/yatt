@@ -131,6 +131,10 @@ pub struct Timer {
     /// Work phases completed since the last long break.
     pub completed_work: u32,
     pub active_tasks: BTreeSet<TaskId>,
+    /// Last moment the app saw the clock while running. A big jump past it means
+    /// the Mac slept or the app was closed, and that gap is not work time.
+    #[serde(default)]
+    pub last_seen: Option<Timestamp>,
 }
 
 impl Default for Timer {
@@ -150,6 +154,7 @@ impl Timer {
             banked_ms: 0,
             completed_work: 0,
             active_tasks: BTreeSet::new(),
+            last_seen: None,
         }
     }
 
@@ -216,7 +221,9 @@ impl Timer {
         let Some(since) = self.running_since.take() else {
             return Vec::new();
         };
-        self.banked_ms += (ms(now) - ms(since)).max(0);
+        let now = now.max(since);
+        self.banked_ms += ms(now) - ms(since);
+        self.last_seen = None;
         let mut fx = Vec::new();
         self.close_entries(now, &mut fx);
         fx
@@ -312,11 +319,40 @@ impl Timer {
         for _ in 0..64 {
             match self.deadline() {
                 Some(deadline) if deadline <= now => {
-                    self.finish_phase(deadline, Outcome::Completed, &mut fx)
+                    // A shortened phase can have its deadline before this run began;
+                    // never end an entry before it started.
+                    let at = deadline.max(self.running_since.unwrap_or(deadline));
+                    self.finish_phase(at, Outcome::Completed, &mut fx)
                 }
                 _ => break,
             }
         }
+        fx
+    }
+
+    /// Call on every clock tick. If more than `max_gap_ms` passed since the last
+    /// call while running, the Mac slept or the app was closed: the timer is
+    /// cut at the last moment it was seen and left paused, so the gap is not counted.
+    pub fn heartbeat(&mut self, now: Timestamp, max_gap_ms: i64) -> Vec<Effect> {
+        if !self.is_running() {
+            self.last_seen = None;
+            return Vec::new();
+        }
+        let mut fx = Vec::new();
+        if let Some(seen) = self.last_seen
+            && ms(now) - ms(seen) > max_gap_ms
+        {
+            fx = self.interrupt(seen);
+        }
+        self.last_seen = self.is_running().then_some(now);
+        fx
+    }
+
+    /// The Mac is going to sleep (or the screen locked) at `at`: finishes what
+    /// ended before it, then pauses there.
+    pub fn interrupt(&mut self, at: Timestamp) -> Vec<Effect> {
+        let mut fx = self.tick(at);
+        fx.extend(self.pause(at));
         fx
     }
 
@@ -590,6 +626,45 @@ mod tests {
         assert_eq!(timer.phase, Phase::ShortBreak);
         assert!(timer.is_running());
         assert_eq!(timer.completed_work, 0);
+    }
+
+    #[test]
+    fn gap_after_sleep_is_not_counted() {
+        let a = TaskId::new();
+        let mut timer = Timer::new(TimerSettings::default());
+        timer.add_task(a, t(0));
+        timer.start(Mode::Stopwatch, t(0));
+        timer.heartbeat(t(1), 15_000);
+        timer.heartbeat(t(10), 15_000);
+        let fx = timer.heartbeat(t(30_000), 15_000);
+        assert_eq!(closed(&fx), [(a, t(10))]);
+        assert!(!timer.is_running());
+        assert_eq!(timer.elapsed_ms(t(40_000)), 10_000);
+    }
+
+    #[test]
+    fn sleep_through_pomodoro_end_finishes_it_at_deadline() {
+        let a = TaskId::new();
+        let mut timer = Timer::default();
+        timer.add_task(a, t(0));
+        timer.start(Mode::Pomodoro, t(0));
+        timer.heartbeat(t(1400), 15_000);
+        timer.heartbeat(t(1600), 15_000); // gap over the deadline: counted up to 1400 only
+        assert_eq!(timer.phase, Phase::Work);
+        assert_eq!(timer.elapsed_ms(t(9000)), 1_400_000);
+    }
+
+    #[test]
+    fn shortened_phase_never_makes_negative_entries() {
+        let a = TaskId::new();
+        let mut timer = Timer::default();
+        timer.add_task(a, t(0));
+        timer.start(Mode::Pomodoro, t(0));
+        timer.pause(t(1200));
+        timer.resume(t(2000));
+        timer.settings.work_secs = 10 * 60; // already banked 20 min
+        let fx = timer.tick(t(2001));
+        assert_eq!(closed(&fx), [(a, t(2000))]);
     }
 
     #[test]

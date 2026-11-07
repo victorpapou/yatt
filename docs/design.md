@@ -8,8 +8,20 @@ content and colour. Nothing is cross-faded or swapped for a separate view.
 - New task: the new-task capsule, typed text and all, grows into the card on its
   way to the column; the text becomes the card's title.
 - Card to modal: the panel is the card itself, one element (same frame, angle,
-  material, colour and text), growing on one quick, lightly damped spring (about
-  0.25 s). Its coloured face stays on top and eases from the card's height to the
+  material, colour and text), growing and shrinking back on one critically
+  damped spring (most of the way in about 0.25 s, still in about 0.5 s), so it
+  never overshoots or dips under the card before the card takes over. The
+  angle rides the same spring from the card's own (a fanned card at −70° turns
+  upright all the way, no snap). The dim follows that same progress, so the
+  board and panel settle together. The notes editor's view follows the panel,
+  never bigger than what shows, but its page keeps the open width (`--page`),
+  so the notes do not reflow. The face and the white body sit in one clip of
+  the card's shape, so the corners are the card's at every size; the face
+  covers the whole card until the body starts to show, so no white strip is
+  left under it as it closes. `YATT_DEMO_MODAL=flat` opens an upright card and
+  captures every frame of the close: from the hand-over on, the pixels are the
+  card's own. `YATT_DEMO_MODAL=1` logs the frame,
+  angle and alphas every frame and captures the layers. Its coloured face stays on top and eases from the card's height to the
   header's; below it the same card shows its white body, growing downward as the
   card grows (none of it at card size), so the editor is the card's own content
   area, not a plate that comes in. The title and the editor stay at the card's
@@ -23,9 +35,19 @@ content and colour. Nothing is cross-faded or swapped for a separate view.
 
 ## Header
 
-The timer row is a native `NSToolbar`, unified with the titlebar: the progress
-ring and the digits as plain text (an item that tells AppKit it wants no glass,
-`glassBehavior` 0), then … [🍅 / ⏸ / ▶] [▶ stopwatch] [⏭ skip] [■ stop] (icons with tooltips) [view
+The timer row is a native `NSToolbar`, unified with the titlebar, over the
+system's titlebar material (`NSVisualEffectView`, `.titlebar`, within-window,
+so the blur is live on every frame; the opaque titlebar's own scroll-edge blur
+caught up a beat late), no separator line: the board runs under it from the
+window's top, so cards scrolled up go under the bar and it blurs them, and the
+list, chips and dividers start below it (`top`). At the bottom the cards fade
+out under the new-task capsule: the background from clear to 92% over 72 pt
+(drawn per appearance, clicks pass through). The
+digits alone, no ring, in SF Rounded (medium, tabular; case-sensitive forms
+on, so the colon, a label of its own, sits on the figures' middle, not low), as plain text (an item that
+tells AppKit it wants no glass, `glassBehavior` 0) and a centred item, so the
+clock stands in the window's middle at any width (`YATT_DEMO_TOOLBAR` checks
+it at 900, 1200 and 1600 pt); then on the right [🍅 / ⏸ / ▶] [▶ stopwatch] [⏭ skip] [■ stop] (icons with tooltips) [view
 icons, sharing one bubble]. The toolbar puts neighbouring items into one shared
 bubble, so fixed spaces separate them. A changed digit does the system's numeric
 transition: the old glyph shrinks to 0.8, blurs to 4 pt and fades up, the new
@@ -49,7 +71,7 @@ glow, no layer shadow.
 
 1. Outside, the outline: a black shadow at 50%, 1 pt blur, no offset, only
    outside the card.
-2. Inside, a soft white glow along the edge: 51% white at the edge, fading out
+2. Inside, a soft white glow along the edge: 61% white at the edge, fading out
    on an ease-out curve over 3.75 pt, only inside the card, over the tint and
    under the text.
 
@@ -121,8 +143,11 @@ tabular digits, tracked +0.15, at 50%.
   fixed by its id, `FAN_JITTER`); out of the stack each card starts up to 60 ms
   late, on its own spring (±28%), launched up to 9° off and ±20% faster, and the
   blob leans to one side (`FAN_SPILL_VARY`). Nothing fades: hidden cards are
-  whole from the first frame under the pile; folding (critically damped, about
-  0.3 s) they fly back under it and only then leave the render tree.
+  whole from the first frame under the pile; folding, they are gathered back
+  under it the way they spilled out (about 0.3 s, a hint of settle, no
+  bounce): each card on its own spring off `FAN_FOLD`, up to 60 ms late, with
+  a quarter of the spill's uneven push (`gather_spring`, `gather_launch`),
+  and only then leave the render tree.
 - Scrolling down over a stack fans it out, scrolling up folds it, and the blob
   follows the fingers: 140 pt of scroll for all the way, each card on the
   straight way from its pile place to its fan place (springs on top, so it
@@ -175,8 +200,11 @@ interval p95 of about 16–18 ms on the plain blur.
 ## Columns
 
 Each column's title and count sit in a small glass chip: the cards' backdrop
-(4 pt blur, saturation 1.5) under a light tint of the column's colour, 10 pt at
-the ends, the count 6 pt after the title and a little dimmer. The colours:
+(4 pt blur, saturation 1.5) under a light tint of the column's colour, 16 pt
+tall, 4 pt under the toolbar, centred on its column (the cards' centre line),
+4 pt at the ends and 1 pt before the count (the labels' own 2 pt inset on top),
+the count a little dimmer (`chip_frame`, tested). No rule under the toolbar; the dividers between columns
+fade in from clear at the top to the separator colour by half their height. The colours:
 «Бэклог» grey, «В работе» yellow, «Готово» green; the grey card is denser than
 the colours (85%), or its pale tint over other cards reads as a white halo round
 the card in front; the drop highlight over a
@@ -188,17 +216,31 @@ The app follows the system appearance live (`viewDidChangeEffectiveAppearance`
 on the root view): the board, chips, dividers and the panel's body use system
 colours; the cards switch palette. In dark, each hue is a deep tint of itself
 (denser, +0.2 alpha) with a pale text of the same hue, and the white inner edge
-is fainter (20% instead of 51%) so it does not read as a frame. Card glyphs are
-cached per appearance. Changed fills ease over (`motion::soften`).
+is fainter (20% instead of 61%) so it does not read as a frame. Card glyphs are
+cached per appearance; the tracked title and time are rebuilt in the new ink
+(their colour lives in an attributed string). Changed fills ease over
+(`motion::soften`). The light palette's first six are the original ones,
+unchanged; a task with no colour of its own takes one of those six, picked by a
+mixed hash of its id (a UUIDv7's low tail bits are a counter, so taken plainly
+most new tasks came out the same grey). `YATT_DEMO_FLIP=1` captures a board made
+in dark, turned light and back.
 `YATT_APPEARANCE=dark|light` pins one for the demo's captures.
 
 ## The task panel
 
+The notes editor fills the body between the header's rule and the footer's,
+edge to edge; the 24 pt margins round the notes are the page's own padding,
+inside what scrolls, so the scroller sits at the panel's edge, the text lines up
+with the title and scrolls away under the rules. Opening puts the caret at the end
+without scrolling the notes.
+
 No Done or Delete buttons: the panel closes by Esc or a click outside, as
-before. A palette button at the header's right opens a native popover
+before. A palette button at the header's right (its icon a bitmap like the
+cards' glyphs, in the task's ink, aspect kept: the button's own image layer
+stretched) opens a native popover
 (transient, closes on a click outside): the card colours as swatches, the
-status (the three columns, a segmented control), a grid of icons (24 SF
-Symbols, six a row; more icons are more rows) and «Удалить задачу». Colour and
+status (the three columns, a segmented control), a searchable grid of icons
+(48 SF Symbols, eight a row) and «Удалить задачу». Colour and
 icon are stored on the task (`color`, `icon`, migration 2), undoable, and every
 card follows them at once. The time entries are one quiet line (the latest and
 how many); a click opens a menu with «Скопировать всё» and every entry, each
@@ -218,7 +260,7 @@ tested): a pomodoro (work or break) shows its time left as a small pie, a
 template image so it follows the menu bar's light or dark look, over a faint
 disc for the time gone, no outline and no text. The stopwatch has no end, so
 no pie: only its minutes as text («<1 мин», «12 мин», «1 ч 05 мин»), never
-seconds, so it does not tick. Idle: a still three-quarter pie, dimmed; paused
+seconds, so it does not tick. Idle: a still whole disc, dimmed (a three-quarter pie read as a quarter already gone); paused
 dims too. It is drawn again only when a degree of the pie, the minutes or the
 state change. Its menu: the timer to the second at the top, then the tasks it
 counts for (or, with nothing counted, those «В работе»), each with its colour
@@ -249,5 +291,5 @@ random targets, fans, kicks and 2 s frames.
 
 ## Card ↔ panel
 
-The panel grows out of the card with a little jelly: one soft give past its
-size (about 4%, `MORPH_GIVE`) and back; it shrinks back lighter (under 1%).
+The panel grows out of the card and back on a critically damped spring, the
+way a card comes to rest: no give, no jelly (`physics::MORPH`).
