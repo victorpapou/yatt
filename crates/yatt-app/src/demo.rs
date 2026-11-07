@@ -345,6 +345,25 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             eprintln!("demo: finished");
             return;
         }
+        if std::env::var_os("YATT_DEMO_SPLIT").is_some() {
+            // Long lists in all three columns, scrolled under the toolbar.
+            for i in 0..27 {
+                sink(UiEvent::NewTask {
+                    title: format!("Задача {}", i + 1),
+                    status: [Status::Backlog, Status::InProgress, Status::Done][i % 3],
+                });
+            }
+            wait(1500).await;
+            shot("split-top");
+            for c in 0..3 {
+                window.demo_scroll(c, 160.0);
+            }
+            wait(700).await;
+            shot("split-scrolled");
+            eprintln!("demo: layer capture {}", window.capture_layers_png(&format!("{dir}/split-layers.png")));
+            eprintln!("demo: finished");
+            return;
+        }
         if std::env::var_os("YATT_DEMO_TOOLBAR").is_some() {
             // Just the window as it opens, for a look at the toolbar.
             for i in 0..4 {

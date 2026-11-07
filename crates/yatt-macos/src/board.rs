@@ -406,7 +406,12 @@ impl Board {
             scroll.setAutomaticallyAdjustsContentInsets(true);
             let doc = FlippedView::new(mtm, NSRect::ZERO);
             scroll.setDocumentView(Some(&doc));
-            canvas.addSubview(&scroll);
+            // The scroll view's home is a split-view item of the window (see
+            // `scroll_view`); the canvas lies over it and forwards the scrolls.
+            scroll.setAutoresizingMask(
+                NSAutoresizingMaskOptions::ViewWidthSizable
+                    | NSAutoresizingMaskOptions::ViewHeightSizable,
+            );
             Column { scroll, doc }
         });
         let board = Rc::new(Self {
@@ -511,6 +516,12 @@ impl Board {
         }
     }
 
+    /// A column's native scroll view, for the window to put into the column's
+    /// split-view item.
+    pub fn scroll_view(&self, ci: usize) -> &NSScrollView {
+        &self.cols[ci].scroll
+    }
+
     /// Where the list starts: below the toolbar and the chips.
     fn list_top(&self) -> f64 {
         LIST_TOP + self.top.get()
@@ -535,12 +546,6 @@ impl Board {
         self.geom.set(geom);
         self.height.set(height);
         self.overlay_dy.set(overlay_dy);
-        for (c, g) in self.cols.iter().zip(geom) {
-            c.scroll.setFrame(NSRect::new(
-                NSPoint::new(g.x, 0.0),
-                NSSize::new(g.w, height),
-            ));
-        }
         self.retarget();
         // A resize moves the columns under the cards: put the cards there now
         // instead of letting them spring after.
@@ -1238,8 +1243,10 @@ impl Board {
                     let x = self.list_x(ci);
                     // The document is as tall as the list (room for the gap included).
                     let slots = n + gap.map_or(0, |(_, k)| k);
-                    let doc_h = (self.doc_top() + slots as f64 * PITCH + LIST_BOTTOM)
-                        .max(self.height.get() - self.cols[ci].scroll.contentInsets().top.max(self.top.get()));
+                    let doc_h = (self.doc_top() + slots as f64 * PITCH + LIST_BOTTOM).max(
+                        self.height.get()
+                            - self.cols[ci].scroll.contentInsets().top.max(self.top.get()),
+                    );
                     let doc = &self.cols[ci].doc;
                     if doc.frame().size.height != doc_h
                         || doc.frame().size.width != self.geom.get()[ci].w
@@ -1447,15 +1454,7 @@ impl Board {
             Space::Overlay,
         ];
         for space in spaces {
-            // The columns' scroll views stay at the bottom of the canvas.
-            let mut views: Vec<Retained<NSView>> = if space == Space::Canvas {
-                self.cols
-                    .iter()
-                    .map(|c| Retained::into_super(c.scroll.clone()))
-                    .collect()
-            } else {
-                Vec::new()
-            };
+            let mut views: Vec<Retained<NSView>> = Vec::new();
             views.extend(
                 sorted
                     .iter()

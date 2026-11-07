@@ -226,6 +226,32 @@ pub struct RootIvars {
 }
 
 define_class!(
+    /// The board's three columns side by side with no divider of their own (the
+    /// board draws its fading lines) and nothing to drag.
+    // SAFETY: NSSplitView has no subclassing requirements; no Drop impl.
+    #[unsafe(super(objc2_app_kit::NSSplitView, NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    pub struct ColumnsSplit;
+
+    impl ColumnsSplit {
+        #[unsafe(method(dividerThickness))]
+        fn divider_thickness(&self) -> f64 {
+            0.0
+        }
+
+        #[unsafe(method(drawDividerInRect:))]
+        fn draw_divider(&self, _rect: NSRect) {}
+    }
+);
+
+impl ColumnsSplit {
+    pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(());
+        unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] }
+    }
+}
+
+define_class!(
     // SAFETY: NSView has no subclassing requirements; no Drop impl.
     #[unsafe(super(NSView, NSResponder, NSObject))]
     #[thread_kind = MainThreadOnly]

@@ -29,8 +29,8 @@ use objc2_app_kit::{
     NSFontWeightMedium, NSFontWeightRegular, NSImage, NSLineBreakMode, NSNormalWindowLevel,
     NSPasteboard, NSPasteboardTypeString, NSSearchField, NSSearchToolbarItem, NSTextAlignment,
     NSTextField, NSToolbar, NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier,
-    NSToolbarItem, NSToolbarSpaceItemIdentifier, NSView, NSWindow,
-    NSWindowOrderingMode, NSWindowStyleMask, NSWindowTitleVisibility, NSWindowToolbarStyle,
+    NSToolbarItem, NSToolbarSpaceItemIdentifier, NSView, NSWindow, NSWindowOrderingMode,
+    NSWindowStyleMask, NSWindowTitleVisibility, NSWindowToolbarStyle,
 };
 use objc2_core_graphics::CGMutablePath;
 use objc2_foundation::{NSArray, NSNumber, NSObjectNSKeyValueCoding, NSValue};
@@ -107,6 +107,8 @@ struct Ui {
     mtm: MainThreadMarker,
     window: Retained<NSWindow>,
     root: Retained<RootView>,
+    /// The columns' split view, under the board's other layers.
+    split_view: Retained<crate::classes::ColumnsSplit>,
     sink: Sink,
     header: Header,
     /// The timer in the system's menu bar.
@@ -171,6 +173,8 @@ struct Column {
     title: Retained<NSTextField>,
     count: Retained<NSTextField>,
     highlighted: Cell<bool>,
+    /// The column's middle on the board, set by the layout.
+    middle: Cell<f64>,
 }
 
 impl MainWindow {
@@ -194,9 +198,9 @@ impl MainWindow {
         };
         unsafe { window.setReleasedWhenClosed(false) };
         window.setTitle(ns_string!("yatt"));
-        // The board runs under the toolbar; the bar's material is a view of its
-        // own over it (`bar_material`), live from the first frame: the system's
-        // scroll-edge blur of an opaque titlebar caught up a beat late.
+        // The board runs under the toolbar; the system softens the edge where
+        // each column's rows go under it (the columns are split-view items, so
+        // all three get the same effect).
         window.setTitlebarAppearsTransparent(false);
         // No line under it: the columns start right there.
         window.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::None);
@@ -212,7 +216,11 @@ impl MainWindow {
             NSAutoresizingMaskOptions::ViewWidthSizable
                 | NSAutoresizingMaskOptions::ViewHeightSizable,
         );
-        window.setContentView(Some(&root));
+        // The content comes from a view controller: the columns are the items of
+        // a split-view controller, as in Finder.
+        let root_vc = objc2_app_kit::NSViewController::new(mtm);
+        root_vc.setView(&root);
+        window.setContentViewController(Some(&root_vc));
 
         let mut retained: Vec<Retained<AnyObject>> = Vec::new();
         retained.extend(crate::eventlog::install());
@@ -376,22 +384,20 @@ impl MainWindow {
         window.setToolbarStyle(NSWindowToolbarStyle::Unified);
         retained.push(Retained::into_super(Retained::into_super(toolbar_delegate)));
 
-        let board = FlippedView::new(mtm, NSRect::ZERO);
-        root.addSubview(&board);
-
-        let columns = [0, 1, 2].map(|i| Column::new(mtm, i));
-        for c in &columns {
-            board.addSubview(&c.view);
-        }
-        let dividers = [FadeLine::new(mtm), FadeLine::new(mtm)];
-        for d in &dividers {
-            board.addSubview(d);
-        }
         // The board tints the column under a dragged card through a weak handle,
         // filled in once `Ui` exists.
         let tint_target: Rc<RefCell<Option<std::rc::Weak<Ui>>>> = Rc::new(RefCell::new(None));
+        let tint_target_for_board = tint_target.clone();
+        let columns = [0, 1, 2].map(|i| Column::new(mtm, i));
+        let split_view = crate::classes::ColumnsSplit::new(mtm);
+        split_view.setVertical(true);
+        split_view.setDividerStyle(objc2_app_kit::NSSplitViewDividerStyle::Thin);
+        let split_vc = objc2_app_kit::NSSplitViewController::new(mtm);
+        split_vc.setSplitView(&split_view);
+        // Created before its cards: each column's scroll view goes into the
+        // column's own view controller (the canvas and the chips float over them).
         let cards = {
-            let tint_target = tint_target.clone();
+            let tint_target = tint_target_for_board.clone();
             Board::new(mtm, sink.clone(), move |col| {
                 if let Some(ui) = tint_target.borrow().as_ref().and_then(|w| w.upgrade()) {
                     for i in 0..3 {
@@ -400,6 +406,33 @@ impl MainWindow {
                 }
             })
         };
+        for (i, c) in columns.iter().enumerate() {
+            let scroll = cards.scroll_view(i);
+            scroll.setFrame(c.view.bounds());
+            c.view.addSubview(scroll);
+            let vc = objc2_app_kit::NSViewController::new(mtm);
+            vc.setView(&c.view);
+            let item = objc2_app_kit::NSSplitViewItem::splitViewItemWithViewController(&vc);
+            item.setCanCollapse(false);
+            item.setMinimumThickness(120.0);
+            split_vc.addSplitViewItem(&item);
+        }
+        root_vc.addChildViewController(&split_vc);
+        // The items' views join the split view once the controller's view loads.
+        let _ = split_vc.view();
+        split_vc.view().layoutSubtreeIfNeeded();
+        root.addSubview(&split_view);
+        unsafe {
+            retained.push(Retained::cast_unchecked::<AnyObject>(root_vc.clone()));
+            retained.push(Retained::cast_unchecked::<AnyObject>(split_vc.clone()));
+        }
+
+        let board = FlippedView::new(mtm, NSRect::ZERO);
+        root.addSubview(&board);
+        let dividers = [FadeLine::new(mtm), FadeLine::new(mtm)];
+        for d in &dividers {
+            board.addSubview(d);
+        }
         board.addSubview(&cards.canvas);
         let heads = PassView::new(mtm);
         for c in &columns {
@@ -446,6 +479,7 @@ impl MainWindow {
             mtm,
             window,
             root,
+            split_view,
             sink: sink.clone(),
             header,
             status,
@@ -772,10 +806,7 @@ impl MainWindow {
         self.ui
             .columns
             .iter()
-            .map(|c| {
-                let f = c.view.frame();
-                (c.chip.frame(), f.origin.x + f.size.width / 2.0)
-            })
+            .map(|c| (c.chip.frame(), c.middle.get()))
             .collect()
     }
 
@@ -1185,14 +1216,19 @@ impl Ui {
             NSPoint::new(20.0, ((CAPSULE_H - field_h) / 2.0).round()),
             NSSize::new(cw - 40.0, field_h),
         ));
+        // Three equal columns: the split view lays its items out (the
+        // dividers have no width and nowhere to go).
+        self.split_view.setFrame(full);
+        self.split_view.layoutSubtreeIfNeeded();
         let col_w = (size.width / 3.0).floor();
         let mut geom = [ColumnGeom::default(); 3];
         for (i, c) in self.columns.iter().enumerate() {
+            // The items share the width equally, give or take half a point.
             let x = i as f64 * col_w;
             let w = if i == 2 { size.width - x } else { col_w };
-            c.view
-                .setFrame(NSRect::new(NSPoint::new(x, 0.0), NSSize::new(w, board_h)));
-            c.tint.setFrame(c.view.bounds());
+            c.tint
+                .setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(w, board_h)));
+            c.middle.set(x + w / 2.0);
             c.layout_chip(x + w / 2.0, top + CHIP_TOP);
             if i < 2 {
                 // From under the toolbar, fading in to full by half way down.
@@ -1322,11 +1358,7 @@ impl Ui {
                 motion::soften(&c.chip);
                 c.count.setStringValue(&NSString::from_str(&count));
             }
-            let f = c.view.frame();
-            c.layout_chip(
-                f.origin.x + f.size.width / 2.0,
-                self.top_inset.get() + CHIP_TOP,
-            );
+            c.layout_chip(c.middle.get(), self.top_inset.get() + CHIP_TOP);
         }
         self.cards.render(&snap.columns);
         self.sync_modal(snap);
@@ -2013,6 +2045,7 @@ impl Column {
             title,
             count,
             highlighted: Cell::new(false),
+            middle: Cell::new(0.0),
         }
     }
 
