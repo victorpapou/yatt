@@ -7,13 +7,20 @@
 #[cfg(target_os = "macos")]
 mod app;
 #[cfg(target_os = "macos")]
+mod crashlog;
+#[cfg(target_os = "macos")]
 mod demo;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod workspace;
 
 #[cfg(target_os = "macos")]
 fn main() -> anyhow::Result<()> {
-    app::run()
+    crashlog::init();
+    let result = app::run();
+    if let Err(e) = &result {
+        crashlog::log(format!("exit with error: {e:#}"));
+    }
+    result
 }
 
 #[cfg(not(target_os = "macos"))]

@@ -7,13 +7,14 @@
 //! through the same channel; messages keep their order, and every notes message is
 //! filed under the key posted before it.
 
+use objc2_foundation::NSObjectProtocol as _;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{MainThreadMarker, MainThreadOnly};
-use objc2_foundation::{NSNumber, NSObjectNSKeyValueCoding, NSRect, NSString, ns_string};
+use objc2_foundation::{NSRect, NSString, ns_string};
 use objc2_web_kit::{WKWebView, WKWebViewConfiguration};
 
 use crate::classes::ScriptHandler;
@@ -85,10 +86,9 @@ impl NotesEditor {
                 ns_string!("yatt"),
             );
             // Let the panel behind show through.
-            view.setValue_forKey(
-                Some(&NSNumber::new_bool(false)),
-                ns_string!("drawsBackground"),
-            );
+            if view.respondsToSelector(objc2::sel!(_setDrawsBackground:)) {
+                let _: () = objc2::msg_send![&*view, _setDrawsBackground: false];
+            }
         }
         let html = format!(
             "<!doctype html><html><head><meta charset=\"utf-8\"></head>\

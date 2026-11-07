@@ -12,6 +12,7 @@
 //! A click on a card opens the task modal (`modal.rs`); minimal mode hides the
 //! toolbar and shrinks the window to the timer row alone, at a larger size.
 
+use objc2_foundation::NSObjectProtocol as _;
 use std::cell::{Cell, RefCell};
 use std::ptr::NonNull;
 use std::rc::Rc;
@@ -29,8 +30,8 @@ use objc2_app_kit::{
     NSFontWeightMedium, NSFontWeightRegular, NSImage, NSLineBreakMode, NSNormalWindowLevel,
     NSPasteboard, NSPasteboardTypeString, NSSearchField, NSSearchToolbarItem, NSTextAlignment,
     NSTextField, NSToolbar, NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier,
-    NSToolbarItem, NSToolbarSpaceItemIdentifier, NSView, NSWindow,
-    NSWindowOrderingMode, NSWindowStyleMask, NSWindowTitleVisibility, NSWindowToolbarStyle,
+    NSToolbarItem, NSToolbarSpaceItemIdentifier, NSView, NSWindow, NSWindowOrderingMode,
+    NSWindowStyleMask, NSWindowTitleVisibility, NSWindowToolbarStyle,
 };
 use objc2_core_graphics::CGMutablePath;
 use objc2_foundation::{NSArray, NSNumber, NSObjectNSKeyValueCoding, NSValue};
@@ -283,8 +284,12 @@ impl MainWindow {
         search_item.setResignsFirstResponderWithCancel(true);
         // AppKit's own switch (no header, found on the class at run time): the
         // item shows as a magnifier and expands on click / beginSearchInteraction.
-        unsafe {
-            let _: () = objc2::msg_send![&*search_item, setPrefersCompactRepresentation: true];
+        // Not on every system release: an unknown selector would abort the launch.
+        let compact = objc2::sel!(setPrefersCompactRepresentation:);
+        if search_item.respondsToSelector(compact) {
+            unsafe {
+                let _: () = objc2::msg_send![&*search_item, setPrefersCompactRepresentation: true];
+            }
         }
         retained.push(Retained::into_super(Retained::into_super(search_target)));
         // A click outside the open search field ends editing, and an empty
@@ -294,20 +299,20 @@ impl MainWindow {
             let block = block2::RcBlock::new(
                 move |e: std::ptr::NonNull<objc2_app_kit::NSEvent>| -> *mut objc2_app_kit::NSEvent {
                     let e = unsafe { e.as_ref() };
-                    if let Some(w) = field.window() {
-                        if field.currentEditor().is_some() {
-                            let r = field.convertRect_toView(field.bounds(), None);
-                            let p = e.locationInWindow();
-                            let inside = p.x >= r.origin.x
-                                && p.x <= r.origin.x + r.size.width
-                                && p.y >= r.origin.y
-                                && p.y <= r.origin.y + r.size.height;
-                            if !inside {
-                                let empty = field.stringValue().to_string().is_empty();
-                                w.makeFirstResponder(None);
-                                if empty {
-                                    item.endSearchInteraction();
-                                }
+                    if let Some(w) = field.window()
+                        && field.currentEditor().is_some()
+                    {
+                        let r = field.convertRect_toView(field.bounds(), None);
+                        let p = e.locationInWindow();
+                        let inside = p.x >= r.origin.x
+                            && p.x <= r.origin.x + r.size.width
+                            && p.y >= r.origin.y
+                            && p.y <= r.origin.y + r.size.height;
+                        if !inside {
+                            let empty = field.stringValue().to_string().is_empty();
+                            w.makeFirstResponder(None);
+                            if empty {
+                                item.endSearchInteraction();
                             }
                         }
                     }
@@ -2201,6 +2206,19 @@ pub(crate) fn animate_with_completion(secs: f64, changes: impl Fn(), done: impl 
     NSAnimationContext::runAnimationGroup_completionHandler(&block, Some(&done));
 }
 
+const STACKS_KEY: &str = "yatt.stacked";
+
+/// Whether the board was in stack mode when the app last ran.
+fn stacks_saved() -> bool {
+    objc2_foundation::NSUserDefaults::standardUserDefaults()
+        .boolForKey(&NSString::from_str(STACKS_KEY))
+}
+
+fn save_stacks(on: bool) {
+    objc2_foundation::NSUserDefaults::standardUserDefaults()
+        .setBool_forKey(on, &NSString::from_str(STACKS_KEY));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2231,17 +2249,4 @@ mod tests {
         assert_eq!(f.origin.y, 44.0);
         const { assert!(CHIP_H <= 16.0 && CHIP_PAD <= 6.0 && CHIP_GAP <= 3.0) };
     }
-}
-
-const STACKS_KEY: &str = "yatt.stacked";
-
-/// Whether the board was in stack mode when the app last ran.
-fn stacks_saved() -> bool {
-    objc2_foundation::NSUserDefaults::standardUserDefaults()
-        .boolForKey(&NSString::from_str(STACKS_KEY))
-}
-
-fn save_stacks(on: bool) {
-    objc2_foundation::NSUserDefaults::standardUserDefaults()
-        .setBool_forKey(on, &NSString::from_str(STACKS_KEY));
 }

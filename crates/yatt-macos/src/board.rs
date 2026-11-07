@@ -1238,8 +1238,10 @@ impl Board {
                     let x = self.list_x(ci);
                     // The document is as tall as the list (room for the gap included).
                     let slots = n + gap.map_or(0, |(_, k)| k);
-                    let doc_h = (self.doc_top() + slots as f64 * PITCH + LIST_BOTTOM)
-                        .max(self.height.get() - self.cols[ci].scroll.contentInsets().top.max(self.top.get()));
+                    let doc_h = (self.doc_top() + slots as f64 * PITCH + LIST_BOTTOM).max(
+                        self.height.get()
+                            - self.cols[ci].scroll.contentInsets().top.max(self.top.get()),
+                    );
                     let doc = &self.cols[ci].doc;
                     if doc.frame().size.height != doc_h
                         || doc.frame().size.width != self.geom.get()[ci].w
@@ -1524,11 +1526,10 @@ impl Board {
         if std::env::var_os("YATT_DUMP").is_some()
             && now - self.started.get() > 2.0
             && !self.dumped.replace(true)
+            && let Some(layer) = cards.values().next().and_then(|c| c.parts[0].layer())
         {
-            if let Some(layer) = cards.values().next().and_then(|c| c.parts[0].layer()) {
-                eprintln!("glass layers after first display:");
-                style::dump_layers(&layer, 0);
-            }
+            eprintln!("glass layers after first display:");
+            style::dump_layers(&layer, 0);
         }
 
         if let Some(drag) = self.drag.borrow_mut().as_mut() {

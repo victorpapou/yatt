@@ -1137,7 +1137,7 @@ mod tests {
             let (x, y) = (rnd() * 1500.0, rnd() * 1000.0);
             match (rnd() * 5.0) as u32 {
                 0 => cards[i].target(x, y, rnd() * 60.0 - 30.0),
-                1 | 2 | 3 => {
+                1..=3 => {
                     let a = rnd() * std::f64::consts::TAU;
                     let r = [0.0, 0.5, 40.0 + rnd() * 120.0][(rnd() * 3.0) as usize % 3];
                     let (dx, dy) = (r * a.cos(), r * a.sin());
