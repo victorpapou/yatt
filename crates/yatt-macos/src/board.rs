@@ -2357,6 +2357,16 @@ impl Board {
                 (self.sink)(UiEvent::Group(moves));
             }
         }
+        // Let go at speed, the cards were carrying a lot of it (a chain on stiff
+        // springs): bound it so they settle in with a little give instead of
+        // flying past their places and crawling back.
+        if let Ok(mut cards) = self.cards.try_borrow_mut() {
+            for id in &drag.ids {
+                if let Some(c) = cards.get_mut(id) {
+                    c.body.limit_speed(physics::RELEASE_SPEED);
+                }
+            }
+        }
         self.retarget();
         self.kick();
     }
