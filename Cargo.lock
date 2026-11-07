@@ -7151,6 +7151,8 @@ dependencies = [
  "futures",
  "gpui",
  "jiff",
+ "objc2",
+ "objc2-foundation",
  "yatt-core",
  "yatt-engine",
  "yatt-macos",
