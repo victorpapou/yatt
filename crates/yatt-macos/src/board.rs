@@ -368,6 +368,8 @@ pub struct Board {
     sink: Sink,
     cols: [Column; COLS],
     grouping: Cell<Grouping>,
+    /// The scroll view round all the columns (they scroll sideways in it).
+    outer: RefCell<Option<Retained<NSScrollView>>>,
     /// Per column, per slot: the title of the group that starts there.
     group_starts: RefCell<[Vec<Option<String>>; COLS]>,
     /// Scroll observers of the columns, kept for as long as the board.
@@ -474,6 +476,7 @@ impl Board {
             sink,
             cols,
             grouping: Cell::new(Grouping::None),
+            outer: RefCell::new(None),
             group_starts: RefCell::new(Default::default()),
             observers: RefCell::new(Vec::new()),
             statuses: Status::ALL,
@@ -577,6 +580,11 @@ impl Board {
 
     /// A column's native scroll view, for the window to put into the column's
     /// split-view item.
+    /// The board's horizontal scroll view, to pass sideways scrolls to.
+    pub fn set_outer_scroll(&self, s: Retained<NSScrollView>) {
+        *self.outer.borrow_mut() = Some(s);
+    }
+
     pub fn scroll_view(&self, ci: usize) -> &NSScrollView {
         &self.cols[ci].scroll
     }
@@ -2385,6 +2393,14 @@ impl Board {
 
     /// Hands a trackpad or wheel event to a column's native scroll view.
     fn forward(&self, ci: Option<usize>, event: Option<&NSEvent>) {
+        // A sideways scroll belongs to the board's own horizontal scroll view.
+        if let Some(event) = event
+            && event.scrollingDeltaX().abs() > event.scrollingDeltaY().abs()
+            && let Some(outer) = self.outer.borrow().as_ref()
+        {
+            outer.scrollWheel(event);
+            return;
+        }
         if let (Some(ci), Some(event)) = (ci, event)
             && self.layouts.get()[ci] == Layout::List
         {

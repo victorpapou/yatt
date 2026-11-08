@@ -73,8 +73,11 @@ const RING_D_MINI: f64 = 34.0;
 const RING_LINE: f64 = 3.0;
 const PAD: f64 = 16.0;
 const GROUPING_KEY: &str = "grouping";
-/// A column never gets narrower than this; the window grows for the inspector.
+/// A column is never narrower than this: four fit when the board is four times
+/// this wide, otherwise three do and the rest scroll in.
 const COLUMN_MIN_W: f64 = 240.0;
+/// The board's least width: three columns of the least width.
+const MIN_BOARD_W: f64 = 3.0 * COLUMN_MIN_W;
 /// The inspector's width.
 const INSPECTOR_W: f64 = 340.0;
 /// Column chips: height and distance from the top of the board.
@@ -112,6 +115,10 @@ struct Ui {
     mtm: MainThreadMarker,
     window: Retained<NSWindow>,
     root: Retained<RootView>,
+    /// The board's horizontal scroll view, its document, and what stays put over it.
+    hscroll: Retained<objc2_app_kit::NSScrollView>,
+    strip: Retained<FlippedView>,
+    pinned: Retained<PassView>,
     /// The columns' split view, under the board's other layers.
     _split_view: Retained<crate::classes::ColumnsSplit>,
     sink: Sink,
@@ -497,9 +504,6 @@ impl MainWindow {
             id(&items[3]),
             space.clone(),
             id(&items[4]),
-            id(&items[9]),
-            flexible.clone(),
-            id(&items[13]),
             flexible,
             id(&items[5]),
             space2,
@@ -550,20 +554,34 @@ impl MainWindow {
                 }
             })
         };
+        // The columns' scroll views go into the column views, which lie side by
+        // side in `strip`, the document of one horizontal scroll view: the board's
+        // own split-view item, with the inspector the other.
         for (i, c) in columns.iter().enumerate() {
             let scroll = cards.scroll_view(i);
-            let vc = objc2_app_kit::NSViewController::new(mtm);
             scroll.setFrame(c.view.bounds());
             c.view.addSubview(scroll);
-            vc.setView(&c.view);
+        }
+        let hscroll = objc2_app_kit::NSScrollView::new(mtm);
+        hscroll.setDrawsBackground(false);
+        hscroll.setHasHorizontalScroller(false);
+        hscroll.setHasVerticalScroller(false);
+        hscroll.setHorizontalScrollElasticity(objc2_app_kit::NSScrollElasticity::Automatic);
+        hscroll.setVerticalScrollElasticity(objc2_app_kit::NSScrollElasticity::None);
+        // The columns run under the toolbar themselves; this one adds no inset.
+        hscroll.setAutomaticallyAdjustsContentInsets(false);
+        let strip = FlippedView::new(mtm, NSRect::ZERO);
+        hscroll.setDocumentView(Some(&strip));
+        cards.set_outer_scroll(hscroll.clone());
+        {
+            let vc = objc2_app_kit::NSViewController::new(mtm);
+            vc.setView(&hscroll);
             let item = objc2_app_kit::NSSplitViewItem::splitViewItemWithViewController(&vc);
             item.setCanCollapse(false);
-            item.setMinimumThickness(COLUMN_MIN_W);
-            item.setPreferredThicknessFraction(1.0 / COLS as f64);
-            // No hairline under the toolbar of any column: it shows only the scroll
-            // edge effect, never a line over empty space.
+            item.setMinimumThickness(MIN_BOARD_W);
             item.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::None);
             split_vc.addSplitViewItem(&item);
+            unsafe { retained.push(Retained::cast_unchecked::<AnyObject>(vc)) };
         }
         // The open task lives in an inspector pane on the right, as in Calendar:
         // collapsed until a card is opened.
@@ -593,25 +611,12 @@ impl MainWindow {
         window.setToolbarStyle(NSWindowToolbarStyle::Unified);
         window.setContentViewController(Some(&split_vc));
         split_vc.view().layoutSubtreeIfNeeded();
-        // The three columns always share the board equally: equal widths, firmer
-        // than the split view's own holding priorities.
-        for i in 1..COLS {
-            let c = unsafe {
-                objc2_app_kit::NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
-                    &columns[i].view,
-                    objc2_app_kit::NSLayoutAttribute::Width,
-                    objc2_app_kit::NSLayoutRelation::Equal,
-                    Some(&columns[0].view),
-                    objc2_app_kit::NSLayoutAttribute::Width,
-                    1.0,
-                    0.0,
-                )
-            };
-            c.setPriority(900.0);
-            c.setActive(true);
+        // The board layers (cards, chips, drops) lie over the columns in the same
+        // strip, so they scroll sideways with them.
+        for c in &columns {
+            root.addSubview(&c.view);
         }
-        root.setFrame(split_view.bounds());
-        split_view.addSubview(&root);
+        strip.addSubview(&root);
         unsafe {
             retained.push(Retained::cast_unchecked::<AnyObject>(root_vc.clone()));
             retained.push(Retained::cast_unchecked::<AnyObject>(split_vc.clone()));
@@ -619,6 +624,9 @@ impl MainWindow {
 
         let board = FlippedView::new(mtm, NSRect::ZERO);
         root.addSubview(&board);
+        // The capsule and the fade under it stay put over the scrolling columns.
+        let pinned = PassView::new(mtm);
+        split_view.addSubview(&pinned);
         let dividers: [Retained<FadeLine>; COLS - 1] = std::array::from_fn(|_| FadeLine::new(mtm));
         board.addSubview(&cards.canvas);
         let heads = PassView::new(mtm);
@@ -652,8 +660,8 @@ impl MainWindow {
         // z), so nothing added in a hurry ends up over them.
         let bottom_fade = BottomFade::new(mtm);
         bottom_fade.setWantsLayer(true);
-        board.addSubview(&bottom_fade);
-        board.addSubview(&capsule);
+        pinned.addSubview(&bottom_fade);
+        pinned.addSubview(&capsule);
         for (v, z) in [
             (&*cards.overlay as &NSView, crate::board::OVERLAY_Z),
             (&bottom_fade, 20.0),
@@ -715,6 +723,9 @@ impl MainWindow {
             mtm,
             window,
             root,
+            hscroll,
+            strip,
+            pinned,
             _split_view: split_view,
             sink: sink.clone(),
             header,
@@ -1055,7 +1066,7 @@ impl MainWindow {
     /// Development aid: whether the bottom fade is shown and stands above every
     /// other view on the board (subview order and layer z).
     pub fn demo_fade_on_top(&self) -> bool {
-        let views = self.ui.board.subviews();
+        let views = self.ui.pinned.subviews();
         let fade: &NSView = &self.ui.bottom_fade;
         let Some(i) = views.iter().position(|v| std::ptr::eq(&*v, fade)) else {
             return false;
@@ -1373,7 +1384,7 @@ impl Ui {
         let at = self
             .cards
             .canvas
-            .convertRect_fromView(self.capsule.frame(), Some(&self.board));
+            .convertRect_fromView(self.capsule.frame(), Some(&self.pinned));
         self.cards.spawn_from(at, status);
         (self.sink)(UiEvent::NewTask {
             title: title.to_string(),
@@ -1608,14 +1619,16 @@ impl Ui {
         let full = NSRect::new(NSPoint::ZERO, NSSize::new(size.width, board_h));
         self.cards.overlay.setFrame(full);
         self.heads.setFrame(full);
+        // The capsule and the fade are as wide as what shows of the board.
+        let view_w = self.hscroll.bounds().size.width;
         self.bottom_fade.setFrame(NSRect::new(
             NSPoint::new(0.0, board_h - BOTTOM_FADE_H),
-            NSSize::new(size.width, BOTTOM_FADE_H),
+            NSSize::new(view_w, BOTTOM_FADE_H),
         ));
-        let cw = (size.width - 80.0).min(CAPSULE_MAX_W);
+        let cw = (view_w - 80.0).min(CAPSULE_MAX_W);
         self.capsule.setFrame(NSRect::new(
             NSPoint::new(
-                ((size.width - cw) / 2.0).round(),
+                ((view_w - cw) / 2.0).round(),
                 board_h - CAPSULE_BOTTOM - CAPSULE_H,
             ),
             NSSize::new(cw, CAPSULE_H),
@@ -1638,6 +1651,8 @@ impl Ui {
             // The items share the width equally, give or take half a point.
             let x = i as f64 * col_w;
             let w = if i == COLS - 1 { size.width - x } else { col_w };
+            c.view
+                .setFrame(NSRect::new(NSPoint::new(x, 0.0), NSSize::new(w, board_h)));
             c.tint
                 .setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(w, board_h)));
             c.middle.set(x + w / 2.0);
@@ -1842,11 +1857,11 @@ impl Ui {
         let frame = self.window.frame();
         let mut target = frame;
         if show {
-            let need = COLS as f64 * COLUMN_MIN_W + INSPECTOR_W + COLS as f64;
+            let need = MIN_BOARD_W + INSPECTOR_W;
             target.size.width = target.size.width.max(need);
         }
         let min = if show {
-            (COLS as f64 * COLUMN_MIN_W + INSPECTOR_W + COLS as f64).max(760.0)
+            (MIN_BOARD_W + INSPECTOR_W).max(760.0)
         } else {
             760.0
         };
@@ -1877,22 +1892,31 @@ impl Ui {
 
     /// The board is what is left of the split view left of the inspector.
     fn fit_root(&self) {
-        let split = self._split_view.bounds().size;
-        // The pane's view sits in a wrapper of the split item: its place is read
-        // in the split view's own coordinates.
-        let on_screen = unsafe { self.modal.panel.superview() }.is_some()
-            && !self.modal.panel.isHidden();
-        let w = if on_screen {
-            let r = self
-                ._split_view
-                .convertRect_fromView(self.modal.panel.bounds(), Some(&self.modal.panel));
-            r.origin.x.clamp(0.0, split.width)
+        // The board's viewport is the scroll view's: what the inspector leaves.
+        let viewport = self.hscroll.bounds().size;
+        let vw = viewport.width.max(1.0);
+        // Four columns when they fit at their least width, else three, the rest
+        // scrolling in; always whole columns across the viewport.
+        let visible = if vw >= COLS as f64 * COLUMN_MIN_W { COLS } else { 3 };
+        let col_w = (vw / visible as f64).floor().max(COLUMN_MIN_W.min(vw));
+        let strip_w = if self.minimal.get() || visible == COLS {
+            vw
         } else {
-            split.width
+            col_w * COLS as f64
         };
-        let frame = NSRect::new(NSPoint::ZERO, NSSize::new(w.round(), split.height));
-        if self.root.frame() != frame {
-            self.root.setFrame(frame);
+        let strip = NSRect::new(NSPoint::ZERO, NSSize::new(strip_w, viewport.height));
+        if self.strip.frame() != strip {
+            self.strip.setFrame(strip);
+        }
+        if self.root.frame() != strip {
+            self.root.setFrame(strip);
+        }
+        // What stays put over the scrolling columns: the capsule and its fade.
+        let pinned = self
+            ._split_view
+            .convertRect_fromView(self.hscroll.bounds(), Some(&self.hscroll));
+        if self.pinned.frame() != pinned {
+            self.pinned.setFrame(pinned);
         }
     }
 
