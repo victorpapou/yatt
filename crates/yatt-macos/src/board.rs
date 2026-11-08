@@ -726,21 +726,38 @@ impl Board {
     /// A title strip (blur band, hairline, grey semibold label), hidden.
     fn new_head(&self, doc: &FlippedView) -> Head {
         let strip = FlippedView::new(self.mtm, NSRect::ZERO);
-        // The band under a held title is the system's Liquid Glass (as in the
-        // toolbar and Finder's headers), square-edged; the blur material only where
-        // the system has no glass.
-        let material: Retained<NSView> =
-            if objc2::runtime::AnyClass::get(c"NSGlassEffectView").is_some() {
-                let glass = objc2_app_kit::NSGlassEffectView::new(self.mtm);
-                glass.setCornerRadius(0.0);
-                Retained::into_super(glass)
-            } else {
-                let blur = objc2_app_kit::NSVisualEffectView::new(self.mtm);
-                blur.setMaterial(objc2_app_kit::NSVisualEffectMaterial::HeaderView);
-                blur.setBlendingMode(objc2_app_kit::NSVisualEffectBlendingMode::WithinWindow);
-                blur.setState(objc2_app_kit::NSVisualEffectState::Active);
-                Retained::into_super(blur)
-            };
+        // The band under a held title: the system's header blur, fading out towards
+        // its lower edge like the scroll edge effect under a toolbar (the system has
+        // no public view for that on a column's own scroll view; its soft edge is
+        // only offered to split-item and titlebar accessories). A glass view looked
+        // like a muddy slab here.
+        let material: Retained<NSView> = {
+            let blur = objc2_app_kit::NSVisualEffectView::new(self.mtm);
+            blur.setMaterial(objc2_app_kit::NSVisualEffectMaterial::HeaderView);
+            blur.setBlendingMode(objc2_app_kit::NSVisualEffectBlendingMode::WithinWindow);
+            blur.setState(objc2_app_kit::NSVisualEffectState::Active);
+            use objc2::AnyThread;
+            let block = block2::RcBlock::new(|rect: NSRect| {
+                let from = objc2_app_kit::NSColor::clearColor();
+                let to = objc2_app_kit::NSColor::blackColor();
+                if let Some(g) = objc2_app_kit::NSGradient::initWithStartingColor_endingColor(
+                    objc2_app_kit::NSGradient::alloc(),
+                    &from,
+                    &to,
+                ) {
+                    // Solid at the top, clear at the bottom.
+                    g.drawInRect_angle(rect, 90.0);
+                }
+                objc2::runtime::Bool::YES
+            });
+            let mask = objc2_app_kit::NSImage::imageWithSize_flipped_drawingHandler(
+                NSSize::new(8.0, 64.0),
+                false,
+                &block,
+            );
+            blur.setMaskImage(Some(&mask));
+            Retained::into_super(blur)
+        };
         material.setAlphaValue(0.0);
         let line = FillView::new(self.mtm, Fill::Separator);
         line.setAlphaValue(0.0);
@@ -824,8 +841,9 @@ impl Board {
             }
             h.strip
                 .setFrame(NSRect::new(NSPoint::new(0.0, y), NSSize::new(width, HEAD_H)));
+            // Taller than the title's row: the fade runs out below it.
             h.material
-                .setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(width, HEAD_H)));
+                .setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(width, HEAD_H + 18.0)));
             h.line.setFrame(NSRect::new(
                 NSPoint::new(0.0, HEAD_H - 1.0),
                 NSSize::new(width, 1.0),
