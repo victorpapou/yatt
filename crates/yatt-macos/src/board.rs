@@ -2277,17 +2277,40 @@ impl Board {
         }
     }
 
-    /// Shows or hides the hover checkbox of a card.
-    fn set_check_hover(&self, id: Option<TaskId>, on: bool) {
+    /// Shows or hides the hover checkbox of a card. It goes away a little after the
+    /// pointer has left (about 0.3 s, unless the pointer is back on the card by then).
+    fn set_check_hover(self: &Rc<Self>, id: Option<TaskId>, on: bool) {
         let Some(id) = id else { return };
         let done = self
             .order
             .borrow()
             .get(COLS - 1)
             .is_some_and(|col| col.contains(&id));
-        if let Some(card) = self.cards.borrow_mut().get_mut(&id) {
-            card.set_hover(on, done);
+        if on {
+            if let Some(card) = self.cards.borrow_mut().get_mut(&id) {
+                card.set_hover(true, done);
+            }
+            return;
         }
+        let weak = Rc::downgrade(self);
+        let block = RcBlock::new(move |_: NonNull<objc2_foundation::NSTimer>| {
+            let Some(board) = weak.upgrade() else { return };
+            // Back on the card meanwhile (or dragging it): it stays.
+            if board.hover.get() == Some(id) {
+                return;
+            }
+            let done = board
+                .order
+                .borrow()
+                .get(COLS - 1)
+                .is_some_and(|col| col.contains(&id));
+            if let Some(card) = board.cards.borrow_mut().get_mut(&id) {
+                card.set_hover(false, done);
+            }
+        });
+        let _ = unsafe {
+            objc2_foundation::NSTimer::scheduledTimerWithTimeInterval_repeats_block(0.3, false, &block)
+        };
     }
 
     /// Whether `at` is on the hover checkbox of the card under the pointer.

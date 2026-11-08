@@ -440,7 +440,19 @@ impl NotesEditor {
         };
         unsafe { lm.ensureLayoutForTextContainer(&container) };
         let used = unsafe { lm.usedRectForTextContainer(&container) };
-        used.size.height + 2.0 * self.text.textContainerInset().height
+        // A trailing newline leaves an empty last line, which `used` leaves out.
+        let extra = unsafe { lm.extraLineFragmentRect() };
+        let bottom = (used.origin.y + used.size.height).max(extra.origin.y + extra.size.height);
+        bottom + 2.0 * self.text.textContainerInset().height
+    }
+
+    /// When the text fits the height `h`, shows it from its top (the scroll view
+    /// may have moved while the frame was still growing).
+    pub fn keep_in_view(&self, h: f64) {
+        if self.content_height() <= h + 0.5 {
+            self.view.contentView().scrollToPoint(NSPoint::ZERO);
+            self.view.reflectScrolledClipView(&self.view.contentView());
+        }
     }
 
     /// The text's margins inside the view (the lines start flush with them).
@@ -741,8 +753,8 @@ fn restyle(st: &Rc<State>) {
                 collapse(&storage, &string, sp.start, sp.end, BOX_W);
                 // A line of its own fixed height: the checkbox sits in the middle.
                 let lp = NSMutableParagraphStyle::new();
-                lp.setLineSpacing(3.0);
-                lp.setParagraphSpacing(4.0);
+                lp.setLineSpacing(if st.compact.get() { 0.0 } else { 3.0 });
+                lp.setParagraphSpacing(if st.compact.get() { 0.0 } else { 4.0 });
                 lp.setMinimumLineHeight(BOX_LINE);
                 lp.setMaximumLineHeight(BOX_LINE);
                 let (ls, le) = line_range(&string, sp.start);

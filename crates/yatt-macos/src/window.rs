@@ -95,7 +95,7 @@ const BOTTOM_BAR_H: f64 = 52.0;
 /// The colour swatch in the capsule's end: its size and its distance from the edge.
 const SWATCH_D: f64 = 24.0;
 /// The text's margin from the capsule's left end (and above and below one line).
-const CAPSULE_INSET: f64 = 14.0;
+const CAPSULE_INSET: f64 = 12.0;
 const SWATCH_INSET: f64 = 6.0;
 const CAPSULE_BOTTOM: f64 = (BOTTOM_BAR_H - CAPSULE_H) / 2.0;
 /// The fade under the capsule: from clear to the background over this height.
@@ -1539,10 +1539,13 @@ impl Ui {
             NSSize::new(28.0, 28.0),
         );
         if animated {
-            let (c, f, b) = (self.capsule.clone(), self.new_task.view.clone(), self.palette_button.clone());
+            // The editor takes its final size at once (so the text never overflows a
+            // frame that is still growing and scrolls away); the capsule and the
+            // colour button follow in the animation.
+            self.new_task.view.setFrame(field);
+            let (c, b) = (self.capsule.clone(), self.palette_button.clone());
             animate(true, 0.22, move || {
                 c.animator().setFrame(capsule);
-                f.animator().setFrame(field);
                 b.animator().setFrame(button);
             });
         } else {
@@ -1560,12 +1563,17 @@ impl Ui {
             CAPSULE_H
         } else {
             // Up to six lines, then it scrolls inside.
-            self.new_task.content_height().clamp(CAPSULE_H, 6.0 * 17.0 + 19.0)
+            // As tall as the text, whatever it is; only a sane share of the window
+            // is the limit (then it scrolls inside).
+            let max = (self.board.frame().size.height * 0.6).max(CAPSULE_H);
+            self.new_task.content_height().clamp(CAPSULE_H, max)
         };
         if (want - self.capsule_h.get()).abs() > 0.5 {
             self.capsule_h.set(want);
             self.place_capsule(true);
         }
+        // What fits shows from its top; the editor scrolls only when it must.
+        self.new_task.keep_in_view(want);
     }
 
     /// The capsule's colour for the next new card.
