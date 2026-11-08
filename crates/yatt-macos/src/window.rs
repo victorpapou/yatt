@@ -2074,11 +2074,6 @@ impl Ui {
                 self.toolbar
                     .insertItemWithItemIdentifier_atIndex(id, (present + k) as isize);
             }
-        } else if !show && present > self.base_toolbar_len.get() {
-            for _ in 0..present - self.base_toolbar_len.get() {
-                self.toolbar
-                    .removeItemAtIndex(self.toolbar.items().len() as isize - 1);
-            }
         }
         let item = self.inspector.clone();
         let window = self.window.clone();
@@ -2088,6 +2083,25 @@ impl Ui {
             }
             item.animator().setCollapsed(!show);
         });
+        // Closing: the inspector's own section stays in the toolbar until the pane
+        // has gone, so the toolbar over it stays transparent through the animation
+        // (taking the items away first lets the bar's own background show there).
+        if !show && present > self.base_toolbar_len.get() {
+            let toolbar = self.toolbar.clone();
+            let base = self.base_toolbar_len.get();
+            let inspector = self.inspector.clone();
+            let block = RcBlock::new(move |_: NonNull<objc2_foundation::NSTimer>| {
+                // Opened again meanwhile: leave it.
+                if inspector.isCollapsed() {
+                    while toolbar.items().len() > base {
+                        toolbar.removeItemAtIndex(toolbar.items().len() as isize - 1);
+                    }
+                }
+            });
+            let _ = unsafe {
+                objc2_foundation::NSTimer::scheduledTimerWithTimeInterval_repeats_block(0.34, false, &block)
+            };
+        }
     }
 
     /// The board is what is left of the split view left of the inspector.
