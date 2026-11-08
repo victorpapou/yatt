@@ -107,6 +107,9 @@ pub enum UiEvent {
         index: usize,
     },
     ToggleExpand(TaskId),
+    /// Opens that task in a window of its own, whatever the setting (a double
+    /// click, or the card's context menu).
+    OpenInWindow(TaskId),
     /// Opens that task's panel, whatever was open (from the menu bar).
     OpenTask(TaskId),
     Rename(TaskId, String),

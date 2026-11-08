@@ -156,6 +156,8 @@ struct Ui {
     inspector_vc: Retained<objc2_app_kit::NSViewController>,
     /// Whether the pane is in the task window now (not in the inspector).
     in_window: Cell<bool>,
+    /// The open task goes to its own window whatever the setting (a double click).
+    force_window: Rc<Cell<bool>>,
     new_color: Cell<usize>,
     /// How many items the toolbar has without the inspector's section.
     base_toolbar_len: Cell<usize>,
@@ -213,6 +215,20 @@ struct Column {
 
 impl MainWindow {
     pub fn new(mtm: MainThreadMarker, sink: Sink) -> Self {
+        // A double click (or the context menu) opens a task in a window of its own
+        // whatever the setting: noted here, then it is an ordinary open.
+        let force_window = Rc::new(Cell::new(false));
+        let sink: Sink = {
+            let (real, flag) = (sink, force_window.clone());
+            Rc::new(move |e| {
+                if let UiEvent::OpenInWindow(id) = e {
+                    flag.set(true);
+                    real(UiEvent::OpenTask(id));
+                } else {
+                    real(e);
+                }
+            })
+        };
         // Room for three columns of cards, no more; the system keeps the size the
         // window had last time.
         let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(980.0, 640.0));
@@ -752,6 +768,7 @@ impl MainWindow {
             task_window,
             inspector_vc,
             in_window: Cell::new(false),
+            force_window,
             new_color: Cell::new(crate::settings::default_color()),
             inspector_ids,
             base_toolbar_len: Cell::new(0),
@@ -1436,7 +1453,7 @@ impl Ui {
 
     /// Shows or hides the open task, in the inspector or in a window of its own.
     fn present(self: &Rc<Self>, show: bool) {
-        let want_window = crate::settings::open_in_window();
+        let want_window = crate::settings::open_in_window() || self.force_window.get();
         if show {
             if want_window {
                 if !self.inspector.isCollapsed() {
@@ -1451,10 +1468,13 @@ impl Ui {
                 }
                 self.set_inspector(true);
             }
-        } else if self.in_window.replace(false) {
-            self.leave_window();
         } else {
-            self.set_inspector(false);
+            self.force_window.set(false);
+            if self.in_window.replace(false) {
+                self.leave_window();
+            } else {
+                self.set_inspector(false);
+            }
         }
     }
 
@@ -1468,7 +1488,7 @@ impl Ui {
     fn apply_settings(self: &Rc<Self>) {
         self.set_new_color(crate::settings::default_color());
         // Where an open task shows follows the setting at once.
-        if self.modal.open_task().is_some() && self.in_window.get() != crate::settings::open_in_window() {
+        if self.modal.open_task().is_some() && self.in_window.get() != (crate::settings::open_in_window() || self.force_window.get()) {
             if self.in_window.get() {
                 self.in_window.set(false);
                 self.leave_window();
@@ -1829,6 +1849,10 @@ impl Ui {
         if open == want {
             if let Some((card, status)) = want.and_then(find) {
                 self.modal.update(&card, status);
+                // Double-clicked while it is open in the inspector: to the window.
+                if self.force_window.get() && !self.in_window.get() {
+                    self.present(true);
+                }
             }
             return;
         }

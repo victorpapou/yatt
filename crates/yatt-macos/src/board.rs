@@ -2181,6 +2181,8 @@ impl Board {
         }
         let mut ids: Vec<TaskId> = self.selected.borrow().iter().copied().collect();
         ids.sort();
+        let single = ids.len() == 1;
+        let pressed = id;
         let mtm = MainThreadMarker::new().expect("main thread");
         let title = if ids.len() > 1 {
             format!("Удалить ({})", ids.len())
@@ -2206,6 +2208,24 @@ impl Board {
         };
         unsafe { item.setTarget(Some(&target)) };
         let menu = objc2_app_kit::NSMenu::new(mtm);
+        // «Открыть в отдельном окне» for the one card pressed (not for a selection).
+        let open_target = {
+            let sink = self.sink.clone();
+            crate::classes::ActionTarget::new(mtm, move || sink(UiEvent::OpenInWindow(pressed)))
+        };
+        if single {
+            let open_item = unsafe {
+                objc2_app_kit::NSMenuItem::initWithTitle_action_keyEquivalent(
+                    objc2_app_kit::NSMenuItem::alloc(mtm),
+                    &objc2_foundation::NSString::from_str("Открыть в отдельном окне"),
+                    Some(crate::classes::ActionTarget::sel()),
+                    &objc2_foundation::NSString::from_str(""),
+                )
+            };
+            unsafe { open_item.setTarget(Some(&open_target)) };
+            menu.addItem(&open_item);
+            menu.addItem(&objc2_app_kit::NSMenuItem::separatorItem(mtm));
+        }
         menu.addItem(&item);
         // Blocks until the menu closes, so the target outlives the click.
         menu.popUpMenuPositioningItem_atLocation_inView(None, at, Some(view));
@@ -2282,7 +2302,7 @@ impl Board {
     /// A plain click: fan a folded stack, open a card, or clear on empty board.
     /// A plain click: opens the card (a stack's or a fan's too: the fan is only a
     /// way of looking at the stack), or clears the selection on empty board.
-    fn click(self: &Rc<Self>, id: Option<TaskId>, _clicks: isize) {
+    fn click(self: &Rc<Self>, id: Option<TaskId>, clicks: isize) {
         let Some(id) = id else {
             self.clear_selection();
             return;
@@ -2290,7 +2310,13 @@ impl Board {
         self.selected.borrow_mut().clear();
         self.anchor.set(Some(id));
         self.retarget();
-        (self.sink)(UiEvent::ToggleExpand(id));
+        // The second click of a double-click takes the task to a window of its own
+        // (the first already opened it as usual: no waiting for a second click).
+        if clicks >= 2 {
+            (self.sink)(UiEvent::OpenInWindow(id));
+        } else {
+            (self.sink)(UiEvent::ToggleExpand(id));
+        }
     }
 
     /// How open column `ci`'s stack should be: fanned 1, folded 0, part open
