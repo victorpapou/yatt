@@ -343,6 +343,10 @@ impl Modal {
         self.editor.debug_type(notes);
     }
 
+    pub fn debug_click_box(&self, k: usize, shift: bool) {
+        self.editor.debug_click_box(k, shift);
+    }
+
     pub fn debug_print_editor(&self) {
         self.editor.debug_print_html();
     }

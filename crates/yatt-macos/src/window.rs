@@ -1152,6 +1152,10 @@ impl MainWindow {
     }
 
     /// Development aid: prints the notes editor's rendered HTML to stderr.
+    pub fn demo_click_box(&self, k: usize, shift: bool) {
+        self.ui.modal.debug_click_box(k, shift);
+    }
+
     pub fn debug_print_editor(&self) {
         self.ui.modal.debug_print_editor();
     }

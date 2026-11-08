@@ -297,6 +297,20 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             }
             window.demo_editor_geometry();
             wait(300).await;
+            // `YATT_DEMO_CLICK=k,k:shift,…`: clicks on checkboxes, as the mouse would.
+            if let Ok(clicks) = std::env::var("YATT_DEMO_CLICK") {
+                for c in clicks.split(',') {
+                    let (k, shift) = match c.split_once(':') {
+                        Some((k, _)) => (k, true),
+                        None => (c, false),
+                    };
+                    if let Ok(k) = k.parse::<usize>() {
+                        window.demo_click_box(k, shift);
+                        wait(300).await;
+                    }
+                }
+                window.debug_print_editor();
+            }
             shot("modal-open");
             sink(UiEvent::ToggleExpand(backlog[0]));
             for f in 0..36 {

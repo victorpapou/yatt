@@ -58,6 +58,10 @@ pub struct State {
     image_slots: RefCell<Vec<(usize, String, f64, f64)>>,
     /// Where each shown checkbox is, and the index of its state character.
     hits: RefCell<Vec<(NSRect, usize)>>,
+    /// The checkbox clicked last (for a Shift-click range).
+    last_box: Cell<Option<usize>>,
+    /// Our own edit in progress: the guard of the atomic markers stands aside.
+    internal: Cell<bool>,
 }
 
 /// One checkbox's layers: ring, accent fill and the tick drawn as a path.
@@ -130,6 +134,9 @@ define_class!(
             range: NSRange,
             _with: Option<&NSString>,
         ) -> Bool {
+            if self.ivars().state.internal.get() {
+                return Bool::YES;
+            }
             // An edit that touches part of a checkbox takes all of it (a Backspace
             // after the circle turns the line plain).
             let (rs, re) = (range.location, range.location + range.length);
@@ -172,7 +179,7 @@ define_class!(
 
 pub struct TextIvars {
     on_layout: RefCell<Option<Box<dyn Fn()>>>,
-    on_click: RefCell<Option<Box<dyn Fn(NSPoint) -> bool>>>,
+    on_click: RefCell<Option<Box<dyn Fn(NSPoint, bool) -> bool>>>,
 }
 
 define_class!(
@@ -199,7 +206,7 @@ define_class!(
                 .on_click
                 .borrow()
                 .as_ref()
-                .is_some_and(|f| f(p));
+                .is_some_and(|f| f(p, event.modifierFlags().contains(objc2_app_kit::NSEventModifierFlags::Shift)));
             if !hit {
                 let _: () = unsafe { msg_send![super(self), mouseDown: event] };
             }
@@ -241,6 +248,8 @@ impl NotesEditor {
             bullet_layers: RefCell::default(),
             image_slots: RefCell::default(),
             hits: RefCell::default(),
+            last_box: Cell::new(None),
+            internal: Cell::new(false),
         });
         let scroll = NSScrollView::new(mtm);
         scroll.setDrawsBackground(false);
@@ -288,8 +297,8 @@ impl NotesEditor {
                 }
             }));
             let weak = Rc::downgrade(&state);
-            *text.ivars().on_click.borrow_mut() = Some(Box::new(move |p| {
-                weak.upgrade().is_some_and(|st| click_box(&st, p))
+            *text.ivars().on_click.borrow_mut() = Some(Box::new(move |p, shift| {
+                weak.upgrade().is_some_and(|st| click_box(&st, p, shift))
             }));
         }
         Self {
@@ -370,6 +379,17 @@ impl NotesEditor {
         self.text.setSelectedRange(NSRange::new(end, 0));
         if let Some(w) = self.text.window() {
             w.makeFirstResponder(Some(&self.text));
+        }
+    }
+
+    /// Development aid: clicks the centre of checkbox `k`, as the mouse would.
+    pub fn debug_click_box(&self, k: usize, shift: bool) {
+        let hit = self.state.hits.borrow().get(k).map(|(r, _)| *r);
+        if let Some(r) = hit {
+            let c = NSPoint::new(r.origin.x + r.size.width / 2.0, r.origin.y + r.size.height / 2.0);
+            eprintln!("editor: click box {k} at {:.0},{:.0}: {}", c.x, c.y, click_box(&self.state, c, shift));
+        } else {
+            eprintln!("editor: no box {k} ({} boxes)", self.state.hits.borrow().len());
         }
     }
 
@@ -868,25 +888,44 @@ fn animate_box(bl: &BoxLayer, checked: bool) {
 }
 
 /// A click on a checkbox ticks or unticks its line (an edit of the text, so undoable).
-fn click_box(st: &Rc<State>, p: NSPoint) -> bool {
-    let hit = st
-        .hits
-        .borrow()
-        .iter()
-        .find(|(r, _)| {
-            p.x >= r.origin.x - 4.0
-                && p.x <= r.origin.x + r.size.width + 4.0
-                && p.y >= r.origin.y - 4.0
-                && p.y <= r.origin.y + r.size.height + 4.0
-        })
-        .map(|(_, i)| *i);
-    let (Some(idx), Some(text)) = (hit, st.text.borrow().clone()) else {
+/// With Shift, every checkbox from the last one clicked to this one takes the new
+/// state, in one edit.
+fn click_box(st: &Rc<State>, p: NSPoint, shift: bool) -> bool {
+    let hit = st.hits.borrow().iter().position(|(r, _)| {
+        p.x >= r.origin.x - 4.0
+            && p.x <= r.origin.x + r.size.width + 4.0
+            && p.y >= r.origin.y - 4.0
+            && p.y <= r.origin.y + r.size.height + 4.0
+    });
+    let (Some(k), Some(text)) = (hit, st.text.borrow().clone()) else {
         return false;
     };
-    let current: Vec<u16> = text.string().to_string().encode_utf16().collect();
-    let was_checked = current.get(idx).is_some_and(|u| *u != b' ' as u16);
-    replace_range(&text, NSRange::new(idx, 1), if was_checked { " " } else { "x" });
+    toggle_boxes(st, &text, k, shift);
     true
+}
+
+/// Ticks or unticks checkbox `k` (and, with `shift`, the ones between it and the
+/// last one clicked) as one edit.
+fn toggle_boxes(st: &Rc<State>, text: &NSTextView, k: usize, shift: bool) {
+    let idxs: Vec<usize> = st.hits.borrow().iter().map(|(_, i)| *i).collect();
+    let Some(&idx) = idxs.get(k) else { return };
+    let units: Vec<u16> = text.string().to_string().encode_utf16().collect();
+    let checked_at = |i: usize| units.get(i).is_some_and(|u| *u != b' ' as u16);
+    let target = !checked_at(idx);
+    let from = if shift { st.last_box.get().unwrap_or(k) } else { k };
+    st.last_box.set(Some(k));
+    let (lo, hi) = (from.min(k), from.max(k));
+    let (first, last) = (idxs[lo], idxs[hi]);
+    let mut new: Vec<u16> = units[first..=last].to_vec();
+    for &i in &idxs[lo..=hi] {
+        new[i - first] = if target { b'x' as u16 } else { b' ' as u16 };
+    }
+    let changed = new != units[first..=last];
+    if changed {
+        st.internal.set(true);
+        replace_range(text, NSRange::new(first, last - first + 1), &String::from_utf16_lossy(&new));
+        st.internal.set(false);
+    }
 }
 
 /// Replaces `range` with `with` as an edit the user made (undo, change notifications).
@@ -1201,6 +1240,11 @@ impl AnyEditor {
         match self {
             Self::Native(e) => e.focus(),
             Self::Web(e) => e.focus(),
+        }
+    }
+    pub fn debug_click_box(&self, k: usize, shift: bool) {
+        if let Self::Native(e) = self {
+            e.debug_click_box(k, shift);
         }
     }
     pub fn debug_print_html(&self) {
