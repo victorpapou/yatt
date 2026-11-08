@@ -275,7 +275,7 @@ impl MainWindow {
         window.setTitlebarAppearsTransparent(false);
         // The system's own separator, as in Finder: the line shows when content has
         // gone under the toolbar and not before.
-        window.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::Line);
+        window.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::Automatic);
         eprintln!(
             "window titlebar separator style: {:?}, titlebar transparent: {}",
             window.titlebarSeparatorStyle(),
@@ -626,7 +626,7 @@ impl MainWindow {
             let item = objc2_app_kit::NSSplitViewItem::splitViewItemWithViewController(&vc);
             item.setCanCollapse(false);
             item.setMinimumThickness(MIN_BOARD_W);
-            item.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::Line);
+            item.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::Automatic);
             split_vc.addSplitViewItem(&item);
             unsafe { retained.push(Retained::cast_unchecked::<AnyObject>(vc)) };
         }
@@ -641,7 +641,7 @@ impl MainWindow {
             item.setPreferredThicknessFraction(0.0);
             item.setCanCollapse(true);
             item.setCollapsed(true);
-            item.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::Line);
+            item.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::Automatic);
             split_vc.addSplitViewItem(&item);
             let vc_keep = vc.clone();
             unsafe { retained.push(Retained::cast_unchecked::<AnyObject>(vc)) };
