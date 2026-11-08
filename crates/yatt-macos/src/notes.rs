@@ -14,14 +14,21 @@ use objc2::{
 };
 use objc2_app_kit::{
     NSBackgroundColorAttributeName, NSColor, NSFont, NSFontAttributeName,
-    NSForegroundColorAttributeName, NSMutableParagraphStyle, NSObliquenessAttributeName,
+    NSForegroundColorAttributeName, NSKernAttributeName, NSMutableParagraphStyle, NSObliquenessAttributeName,
     NSParagraphStyleAttributeName, NSScrollView, NSStrikethroughStyleAttributeName, NSTextDelegate,
     NSTextView, NSTextViewDelegate, NSView,
 };
+use objc2_core_graphics::CGMutablePath;
 use objc2_foundation::{
     NSAttributedStringKey, NSDictionary, NSNotification, NSNumber, NSPoint, NSRange, NSRect,
     NSSize, NSString, NSTimer,
 };
+
+use objc2_quartz_core::{
+    CABasicAnimation, CALayer, CAMediaTiming, CAMediaTimingFunction, CAShapeLayer,
+    kCALineCapRound, kCAMediaTimingFunctionEaseOut,
+};
+use objc2_foundation::ns_string;
 
 use crate::editor::EditorMsg;
 use crate::mdspans::{Kind, parse};
@@ -40,8 +47,29 @@ pub struct State {
     ink: RefCell<Retained<NSColor>>,
     tag_colors: RefCell<HashMap<String, (u8, u8, u8)>>,
     timer: RefCell<Option<Retained<NSTimer>>>,
-    text: RefCell<Option<Retained<NSTextView>>>,
+    text: RefCell<Option<Retained<NotesTextView>>>,
+    boxes: RefCell<Vec<BoxLayer>>,
+    /// Decoded images by their URL (None: not decodable).
+    images: RefCell<HashMap<String, Option<Retained<objc2_app_kit::NSImage>>>>,
+    image_layers: RefCell<Vec<Retained<CALayer>>>,
+    /// The images shown: where their text starts, the URL and the size they take.
+    image_slots: RefCell<Vec<(usize, String, f64, f64)>>,
+    /// Where each shown checkbox is, and the index of its state character.
+    hits: RefCell<Vec<(NSRect, usize)>>,
 }
+
+/// One checkbox's layers: ring, accent fill and the tick drawn as a path.
+struct BoxLayer {
+    root: Retained<CALayer>,
+    fill: Retained<CALayer>,
+    ring: Retained<CAShapeLayer>,
+    tick: Retained<CAShapeLayer>,
+    checked: Cell<bool>,
+}
+
+const BOX: f64 = 16.0;
+/// What a collapsed `- [ ] ` takes in the line.
+const BOX_W: f64 = 24.0;
 
 pub struct DelegateIvars {
     state: Rc<State>,
@@ -66,6 +94,14 @@ define_class!(
             schedule(st);
         }
 
+        #[unsafe(method(textViewDidChangeSelection:))]
+        fn selection_changed(&self, _note: &NSNotification) {
+            let st = &self.ivars().state;
+            if !st.applying.get() {
+                restyle(st);
+            }
+        }
+
         #[unsafe(method(textView:doCommandBySelector:))]
         fn do_command(&self, view: &NSTextView, sel: Sel) -> Bool {
             if sel == sel!(insertNewline:) {
@@ -85,9 +121,57 @@ define_class!(
     unsafe impl NSTextViewDelegate for NotesDelegate {}
 );
 
+
+pub struct TextIvars {
+    on_layout: RefCell<Option<Box<dyn Fn()>>>,
+    on_click: RefCell<Option<Box<dyn Fn(NSPoint) -> bool>>>,
+}
+
+define_class!(
+    // SAFETY: NSTextView has no extra subclassing requirements; no Drop impl.
+    #[unsafe(super(NSTextView, objc2_app_kit::NSText, NSView, objc2_app_kit::NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = TextIvars]
+    pub struct NotesTextView;
+
+    impl NotesTextView {
+        #[unsafe(method(layout))]
+        fn layout(&self) {
+            let _: () = unsafe { msg_send![super(self), layout] };
+            if let Some(f) = self.ivars().on_layout.borrow().as_ref() {
+                f();
+            }
+        }
+
+        #[unsafe(method(mouseDown:))]
+        fn mouse_down(&self, event: &objc2_app_kit::NSEvent) {
+            let p = self.convertPoint_fromView(event.locationInWindow(), None);
+            let hit = self
+                .ivars()
+                .on_click
+                .borrow()
+                .as_ref()
+                .is_some_and(|f| f(p));
+            if !hit {
+                let _: () = unsafe { msg_send![super(self), mouseDown: event] };
+            }
+        }
+    }
+);
+
+impl NotesTextView {
+    fn new(mtm: MainThreadMarker, frame: NSRect) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(TextIvars {
+            on_layout: RefCell::default(),
+            on_click: RefCell::default(),
+        });
+        unsafe { msg_send![super(this), initWithFrame: frame] }
+    }
+}
+
 pub struct NotesEditor {
     pub view: Retained<NSScrollView>,
-    text: Retained<NSTextView>,
+    text: Retained<NotesTextView>,
     state: Rc<State>,
     _delegate: Retained<NotesDelegate>,
 }
@@ -103,15 +187,21 @@ impl NotesEditor {
             tag_colors: RefCell::default(),
             timer: RefCell::default(),
             text: RefCell::default(),
+            boxes: RefCell::default(),
+            images: RefCell::default(),
+            image_layers: RefCell::default(),
+            image_slots: RefCell::default(),
+            hits: RefCell::default(),
         });
         let scroll = NSScrollView::new(mtm);
         scroll.setDrawsBackground(false);
         scroll.setHasVerticalScroller(true);
         scroll.setAutohidesScrollers(true);
-        let text = NSTextView::initWithFrame(
-            NSTextView::alloc(mtm),
+        let text = NotesTextView::new(
+            mtm,
             NSRect::new(NSPoint::ZERO, NSSize::new(300.0, 300.0)),
         );
+        text.setWantsLayer(true);
         text.setDrawsBackground(false);
         text.setRichText(true);
         text.setImportsGraphics(false);
@@ -141,6 +231,18 @@ impl NotesEditor {
         text.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
         scroll.setDocumentView(Some(&text));
         *state.text.borrow_mut() = Some(text.clone());
+        {
+            let weak = Rc::downgrade(&state);
+            *text.ivars().on_layout.borrow_mut() = Some(Box::new(move || {
+                if let Some(st) = weak.upgrade() {
+                    place_boxes(&st);
+                }
+            }));
+            let weak = Rc::downgrade(&state);
+            *text.ivars().on_click.borrow_mut() = Some(Box::new(move |p| {
+                weak.upgrade().is_some_and(|st| click_box(&st, p))
+            }));
+        }
         Self {
             view: scroll,
             text,
@@ -290,6 +392,9 @@ fn restyle(st: &Rc<State>) {
     let ink = st.ink.borrow().clone();
     let dim = ink.colorWithAlphaComponent(0.35);
     let colors = st.tag_colors.borrow();
+    // The caret's line shows its raw `- [ ] `; the others collapse it to a box.
+    let sel = text.selectedRange();
+    let caret_line = line_range(&string, sel.location);
     let para = NSMutableParagraphStyle::new();
     para.setLineSpacing(3.0);
     para.setParagraphSpacing(4.0);
@@ -307,6 +412,7 @@ fn restyle(st: &Rc<State>) {
             unsafe { storage.addAttribute_value_range(name, value, ns_range(s, e)) };
         }
     };
+    let mut slots: Vec<(usize, String, f64, f64)> = Vec::new();
     for sp in parse(&string) {
         match sp.kind {
             Kind::Marker => unsafe { set(NSForegroundColorAttributeName, &dim, sp.start, sp.end) },
@@ -354,15 +460,50 @@ fn restyle(st: &Rc<State>) {
                 }
             }
             Kind::Box { .. } => {
-                // The marker, muted; the circle checkbox is drawn over it (later).
-                unsafe { set(NSForegroundColorAttributeName, &dim, sp.start, sp.end) };
+                if sp.start >= caret_line.0 && sp.start <= caret_line.1 {
+                    unsafe { set(NSForegroundColorAttributeName, &dim, sp.start, sp.end) };
+                } else {
+                    // Collapsed to the width of the checkbox drawn in its place.
+                    let tiny = NSFont::systemFontOfSize(1.0);
+                    let clear = NSColor::clearColor();
+                    let kern = NSNumber::new_f64(BOX_W - 3.0);
+                    unsafe {
+                        set(NSFontAttributeName, &tiny, sp.start, sp.end);
+                        set(NSForegroundColorAttributeName, &clear, sp.start, sp.end);
+                        set(NSKernAttributeName, &kern, sp.end - 1, sp.end);
+                    }
+                }
             }
             Kind::Image => {
-                let f = NSFont::systemFontOfSize(6.0);
-                let c = ink.colorWithAlphaComponent(0.25);
-                unsafe {
-                    set(NSFontAttributeName, &f, sp.start, sp.end);
-                    set(NSForegroundColorAttributeName, &c, sp.start, sp.end);
+                let raw = utf16_slice(&string, sp.start, sp.end);
+                let on_caret = sel.location >= sp.start && sel.location <= sp.end;
+                let shown = (!on_caret)
+                    .then(|| url_of(&raw))
+                    .flatten()
+                    .and_then(|url| image_size(st, &text, &url).map(|(w, h)| (url, w, h)));
+                if let Some((url, w, h)) = shown {
+                    // The text collapses; its line is as tall as the picture, which
+                    // is drawn over it.
+                    let tiny = NSFont::systemFontOfSize(1.0);
+                    let clear = NSColor::clearColor();
+                    let p = NSMutableParagraphStyle::new();
+                    p.setLineBreakMode(objc2_app_kit::NSLineBreakMode::ByClipping);
+                    p.setMinimumLineHeight(h + 8.0);
+                    p.setMaximumLineHeight(h + 8.0);
+                    p.setParagraphSpacing(4.0);
+                    unsafe {
+                        set(NSFontAttributeName, &tiny, sp.start, sp.end);
+                        set(NSForegroundColorAttributeName, &clear, sp.start, sp.end);
+                        set(NSParagraphStyleAttributeName, &p, sp.start, sp.end);
+                    }
+                    slots.push((sp.start, url, w, h));
+                } else {
+                    let f = NSFont::systemFontOfSize(6.0);
+                    let c = ink.colorWithAlphaComponent(0.25);
+                    unsafe {
+                        set(NSFontAttributeName, &f, sp.start, sp.end);
+                        set(NSForegroundColorAttributeName, &c, sp.start, sp.end);
+                    }
                 }
             }
             Kind::Tag(name) => {
@@ -390,6 +531,9 @@ fn restyle(st: &Rc<State>) {
         }
     }
     storage.endEditing();
+    *st.image_slots.borrow_mut() = slots;
+    drop(colors);
+    place_boxes(st);
     // What is typed next starts plain, not in the style of the text before it.
     let keys: [&NSAttributedStringKey; 3] = unsafe {
         [
@@ -437,15 +581,7 @@ fn continue_list(view: &NSTextView) -> bool {
     if caret < end {
         return false;
     }
-    let replace = |range: NSRange, with: &str| {
-        let ns = NSString::from_str(with);
-        if view.shouldChangeTextInRange_replacementString(range, Some(&ns)) {
-            if let Some(storage) = unsafe { view.textStorage() } {
-                storage.replaceCharactersInRange_withString(range, &ns);
-            }
-            view.didChangeText();
-        }
-    };
+    let replace = |range: NSRange, with: &str| replace_range(view, range, with);
     if rest.trim().is_empty() {
         // An empty item: the marker goes, the list ends.
         replace(NSRange::new(start, end - start), "");
@@ -477,6 +613,301 @@ fn list_marker(line: &str) -> Option<(String, String)> {
         }
     }
     None
+}
+
+
+/// The UTF-16 range (start, end) of the line holding `loc`.
+fn line_range(string: &str, loc: usize) -> (usize, usize) {
+    let units: Vec<u16> = string.encode_utf16().collect();
+    let loc = loc.min(units.len());
+    let start = units[..loc].iter().rposition(|u| *u == b'\n' as u16).map_or(0, |i| i + 1);
+    let end = units[loc..]
+        .iter()
+        .position(|u| *u == b'\n' as u16)
+        .map_or(units.len(), |i| loc + i);
+    (start, end)
+}
+
+/// Lays the checkbox layers over the collapsed markers.
+fn place_boxes(st: &Rc<State>) {
+    let Some(text) = st.text.borrow().clone() else {
+        return;
+    };
+    let (Some(lm), Some(container)) = (unsafe { text.layoutManager() }, unsafe { text.textContainer() })
+    else {
+        return;
+    };
+    let string = text.string().to_string();
+    let caret = line_range(&string, text.selectedRange().location);
+    let boxes: Vec<(usize, bool)> = parse(&string)
+        .into_iter()
+        .filter_map(|s| match s.kind {
+            Kind::Box { checked } if !(s.start >= caret.0 && s.start <= caret.1) => {
+                Some((s.start, checked))
+            }
+            _ => None,
+        })
+        .collect();
+    let origin = text.textContainerOrigin();
+    let Some(layer) = text.layer() else { return };
+    let ink = st.ink.borrow().clone();
+    let mut layers = st.boxes.borrow_mut();
+    while layers.len() < boxes.len() {
+        layers.push(make_box());
+        layer.addSublayer(&layers.last().unwrap().root);
+    }
+    let mut hits = Vec::new();
+    unsafe { lm.ensureLayoutForTextContainer(&container) };
+    for (k, bl) in layers.iter().enumerate() {
+        let Some((start, checked)) = boxes.get(k).copied() else {
+            bl.root.setHidden(true);
+            continue;
+        };
+        let glyphs = unsafe {
+            lm.glyphRangeForCharacterRange_actualCharacterRange(
+                NSRange::new(start, 6),
+                std::ptr::null_mut(),
+            )
+        };
+        let used = unsafe {
+            lm.lineFragmentUsedRectForGlyphAtIndex_effectiveRange(
+                glyphs.location,
+                std::ptr::null_mut(),
+            )
+        };
+        let rect = lm.boundingRectForGlyphRange_inTextContainer(glyphs, &container);
+        let frame = NSRect::new(
+            NSPoint::new(
+                (origin.x + rect.origin.x).round(),
+                (origin.y + used.origin.y + (used.size.height - BOX) / 2.0).round(),
+            ),
+            NSSize::new(BOX, BOX),
+        );
+        bl.root.setHidden(false);
+        crate::motion::quietly(|| bl.root.setFrame(frame));
+        bl.ring.setStrokeColor(Some(&ink.colorWithAlphaComponent(0.4).CGColor()));
+        bl.fill
+            .setBackgroundColor(Some(&NSColor::controlAccentColor().CGColor()));
+        if bl.checked.replace(checked) != checked {
+            animate_box(bl, checked);
+        } else {
+            crate::motion::quietly(|| {
+                bl.fill.setOpacity(if checked { 1.0 } else { 0.0 });
+                bl.tick.setStrokeEnd(if checked { 1.0 } else { 0.0 });
+            });
+        }
+        hits.push((frame, start + 3));
+    }
+    *st.hits.borrow_mut() = hits;
+    drop(layers);
+    place_images(st, &text, &lm, &container, origin);
+}
+
+fn make_box() -> BoxLayer {
+    let root = CALayer::new();
+    root.setBounds(NSRect::new(NSPoint::ZERO, NSSize::new(BOX, BOX)));
+    let fill = CALayer::new();
+    fill.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(BOX, BOX)));
+    fill.setCornerRadius(BOX / 2.0);
+    fill.setOpacity(0.0);
+    let ring = CAShapeLayer::new();
+    ring.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(BOX, BOX)));
+    ring.setFillColor(None);
+    ring.setLineWidth(1.5);
+    let circle = CGMutablePath::new();
+    unsafe {
+        CGMutablePath::add_ellipse_in_rect(
+            Some(&circle),
+            std::ptr::null(),
+            NSRect::new(NSPoint::new(0.75, 0.75), NSSize::new(BOX - 1.5, BOX - 1.5)),
+        );
+    }
+    ring.setPath(Some(&circle));
+    let tick = CAShapeLayer::new();
+    tick.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(BOX, BOX)));
+    tick.setFillColor(None);
+    tick.setStrokeColor(Some(&NSColor::whiteColor().CGColor()));
+    tick.setLineWidth(1.7);
+    unsafe { tick.setLineCap(kCALineCapRound) };
+    tick.setLineJoin(unsafe { objc2_quartz_core::kCALineJoinRound });
+    let path = CGMutablePath::new();
+    unsafe {
+        CGMutablePath::move_to_point(Some(&path), std::ptr::null(), 4.6, 8.4);
+        CGMutablePath::add_line_to_point(Some(&path), std::ptr::null(), 7.0, 10.8);
+        CGMutablePath::add_line_to_point(Some(&path), std::ptr::null(), 11.6, 5.6);
+    }
+    tick.setPath(Some(&path));
+    tick.setStrokeEnd(0.0);
+    root.addSublayer(&ring);
+    root.addSublayer(&fill);
+    root.addSublayer(&tick);
+    BoxLayer {
+        root,
+        fill,
+        ring,
+        tick,
+        checked: Cell::new(false),
+    }
+}
+
+/// The fill comes in, and the tick runs along its path (0.25 s, ease-out); or back.
+fn animate_box(bl: &BoxLayer, checked: bool) {
+    let timing = CAMediaTimingFunction::functionWithName(unsafe { kCAMediaTimingFunctionEaseOut });
+    let (from_end, to_end) = if checked { (0.0, 1.0) } else { (1.0, 0.0) };
+    let (from_op, to_op) = if checked { (0.0, 1.0) } else { (1.0, 0.0) };
+    crate::motion::quietly(|| {
+        bl.tick.setStrokeEnd(to_end);
+        bl.fill.setOpacity(to_op as f32);
+    });
+    let a = unsafe { CABasicAnimation::animationWithKeyPath(Some(ns_string!("strokeEnd"))) };
+    unsafe {
+        a.setFromValue(Some(&NSNumber::new_f64(from_end)));
+        a.setToValue(Some(&NSNumber::new_f64(to_end)));
+    }
+    a.setDuration(0.25);
+    a.setTimingFunction(Some(&timing));
+    bl.tick.addAnimation_forKey(&a, Some(ns_string!("tick")));
+    let b = unsafe { CABasicAnimation::animationWithKeyPath(Some(ns_string!("opacity"))) };
+    unsafe {
+        b.setFromValue(Some(&NSNumber::new_f64(from_op)));
+        b.setToValue(Some(&NSNumber::new_f64(to_op)));
+    }
+    b.setDuration(0.2);
+    b.setTimingFunction(Some(&timing));
+    bl.fill.addAnimation_forKey(&b, Some(ns_string!("fill")));
+}
+
+/// A click on a checkbox ticks or unticks its line (an edit of the text, so undoable).
+fn click_box(st: &Rc<State>, p: NSPoint) -> bool {
+    let hit = st
+        .hits
+        .borrow()
+        .iter()
+        .find(|(r, _)| {
+            p.x >= r.origin.x - 4.0
+                && p.x <= r.origin.x + r.size.width + 4.0
+                && p.y >= r.origin.y - 4.0
+                && p.y <= r.origin.y + r.size.height + 4.0
+        })
+        .map(|(_, i)| *i);
+    let (Some(idx), Some(text)) = (hit, st.text.borrow().clone()) else {
+        return false;
+    };
+    let current: Vec<u16> = text.string().to_string().encode_utf16().collect();
+    let was_checked = current.get(idx).is_some_and(|u| *u != b' ' as u16);
+    replace_range(&text, NSRange::new(idx, 1), if was_checked { " " } else { "x" });
+    true
+}
+
+/// Replaces `range` with `with` as an edit the user made (undo, change notifications).
+fn replace_range(view: &NSTextView, range: NSRange, with: &str) {
+    let ns = NSString::from_str(with);
+    if view.shouldChangeTextInRange_replacementString(range, Some(&ns)) {
+        if let Some(storage) = unsafe { view.textStorage() } {
+            storage.replaceCharactersInRange_withString(range, &ns);
+        }
+        view.didChangeText();
+    }
+}
+
+/// The UTF-16 slice [s, e) of `string`.
+fn utf16_slice(string: &str, s: usize, e: usize) -> String {
+    let units: Vec<u16> = string.encode_utf16().collect();
+    String::from_utf16_lossy(&units[s.min(units.len())..e.min(units.len())])
+}
+
+/// `![alt](url)` to its url.
+fn url_of(raw: &str) -> Option<String> {
+    let i = raw.find("](")? + 2;
+    let j = raw.rfind(')')?;
+    (j > i).then(|| raw[i..j].to_string())
+}
+
+/// The image of a `data:` URL (base64, or percent-encoded text such as SVG).
+fn decode_image(url: &str) -> Option<Retained<objc2_app_kit::NSImage>> {
+    let rest = url.strip_prefix("data:")?;
+    let (meta, payload) = rest.split_once(',')?;
+    let data = if meta.contains(";base64") {
+        objc2_foundation::NSData::initWithBase64EncodedString_options(
+            objc2_foundation::NSData::alloc(),
+            &NSString::from_str(payload),
+            objc2_foundation::NSDataBase64DecodingOptions::IgnoreUnknownCharacters,
+        )?
+    } else {
+        let text = NSString::from_str(payload).stringByRemovingPercentEncoding()?;
+        objc2_foundation::NSData::with_bytes(text.to_string().as_bytes())
+    };
+    objc2_app_kit::NSImage::initWithData(objc2_app_kit::NSImage::alloc(), &data)
+}
+
+/// The size an image takes in the text's width, if it can be shown.
+fn image_size(st: &Rc<State>, text: &NSTextView, url: &str) -> Option<(f64, f64)> {
+    let mut cache = st.images.borrow_mut();
+    let img = cache
+        .entry(url.to_string())
+        .or_insert_with(|| decode_image(url))
+        .clone()?;
+    let natural = img.size();
+    if natural.width <= 0.0 || natural.height <= 0.0 {
+        return None;
+    }
+    let avail = {
+        let w = text.frame().size.width - 2.0 * text.textContainerInset().width - 10.0;
+        if w > 40.0 { w } else { 300.0 }
+    };
+    let w = natural.width.min(avail);
+    let h = (w * natural.height / natural.width).min(360.0);
+    Some((w, h))
+}
+
+/// The pictures over their collapsed lines.
+fn place_images(
+    st: &Rc<State>,
+    text: &NSTextView,
+    lm: &objc2_app_kit::NSLayoutManager,
+    _container: &objc2_app_kit::NSTextContainer,
+    origin: NSPoint,
+) {
+    let Some(layer) = text.layer() else { return };
+    let slots = st.image_slots.borrow().clone();
+    let mut layers = st.image_layers.borrow_mut();
+    while layers.len() < slots.len() {
+        let l = CALayer::new();
+        l.setCornerRadius(12.0);
+        l.setMasksToBounds(true);
+        layer.addSublayer(&l);
+        layers.push(l);
+    }
+    for (k, l) in layers.iter().enumerate() {
+        let Some((start, url, w, h)) = slots.get(k) else {
+            l.setHidden(true);
+            continue;
+        };
+        let glyphs = unsafe {
+            lm.glyphRangeForCharacterRange_actualCharacterRange(
+                NSRange::new(*start, 1),
+                std::ptr::null_mut(),
+            )
+        };
+        let used = unsafe {
+            lm.lineFragmentUsedRectForGlyphAtIndex_effectiveRange(
+                glyphs.location,
+                std::ptr::null_mut(),
+            )
+        };
+        let frame = NSRect::new(
+            NSPoint::new(origin.x + 5.0, (origin.y + used.origin.y + 4.0).round()),
+            NSSize::new(*w, *h),
+        );
+        let img = st.images.borrow().get(url).cloned().flatten();
+        l.setHidden(false);
+        crate::motion::quietly(|| {
+            l.setFrame(frame);
+            if let Some(img) = img {
+                unsafe { l.setContents(Some(&img)) };
+            }
+        });
+    }
 }
 
 fn hex_color(css: &str) -> Option<Retained<NSColor>> {
@@ -574,7 +1005,7 @@ impl AnyEditor {
     /// What takes the keyboard.
     pub fn responder(&self) -> Retained<NSView> {
         match self {
-            Self::Native(e) => Retained::into_super(Retained::into_super(e.text.clone())),
+            Self::Native(e) => Retained::into_super(Retained::into_super(Retained::into_super(e.text.clone()))),
             Self::Web(e) => Retained::into_super(e.view.clone()),
         }
     }
