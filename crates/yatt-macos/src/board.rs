@@ -590,7 +590,13 @@ impl Board {
     /// scroll view's automatic top inset already keeps the list below the toolbar,
     /// so only the chips' room is left.
     fn doc_top(&self) -> f64 {
-        LIST_TOP
+        // Grouped, the first title sits right under the toolbar (its row is the
+        // gap); ungrouped, the first card keeps its breathing room.
+        if self.grouping.get() == Grouping::None {
+            LIST_TOP
+        } else {
+            0.0
+        }
     }
 
     /// `top`: how far the toolbar reaches over the board, which runs under it.
