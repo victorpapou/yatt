@@ -1487,6 +1487,19 @@ impl Ui {
 
     fn apply_settings(self: &Rc<Self>) {
         self.set_new_color(crate::settings::default_color());
+        // The board's grouping and stacks follow the settings (and the toolbar, the
+        // other way, writes the same preferences the window reads when it opens).
+        let g = match crate::settings::grouping() {
+            1 => crate::board::Grouping::Tag,
+            2 => crate::board::Grouping::Color,
+            _ => crate::board::Grouping::None,
+        };
+        if self.cards.grouping() != g {
+            self.set_grouping(g);
+        }
+        if self.cards.is_stacked() != crate::settings::stacked() {
+            self.toggle_stack();
+        }
         // Where an open task shows follows the setting at once.
         if self.modal.open_task().is_some() && self.in_window.get() != (crate::settings::open_in_window() || self.force_window.get()) {
             if self.in_window.get() {

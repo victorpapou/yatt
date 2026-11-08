@@ -656,6 +656,10 @@ impl Board {
         scroll.reflectScrolledClipView(&clip);
     }
 
+    pub fn grouping(&self) -> Grouping {
+        self.grouping.get()
+    }
+
     /// Groups the columns' cards (or not) from now on; the caller renders again.
     pub fn set_grouping(&self, g: Grouping) {
         self.grouping.set(g);
