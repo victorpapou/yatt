@@ -168,6 +168,19 @@ pub fn run() -> anyhow::Result<()> {
         if let Ok(dir) = std::env::var("YATT_DEMO") {
             demo::start(cx, dir, workspace.clone(), window.clone(), sink.clone());
         }
+        // Development aid: `YATT_SHOT=<file.png>` saves the real window (the real
+        // database, or the one in `YATT_DB`) after a moment and quits.
+        if let Ok(path) = std::env::var("YATT_SHOT") {
+            let (window, sink) = (window.clone(), sink.clone());
+            cx.spawn(async move |cx: &mut gpui::AsyncApp| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(3000))
+                    .await;
+                eprintln!("shot: {path}: {}", window.capture_png(&path));
+                sink(yatt_macos::UiEvent::Quit);
+            })
+            .detach();
+        }
         // The observer and the menu actions hold the window for the rest of the run.
         cx.activate(true);
     });

@@ -625,7 +625,11 @@ impl Board {
     pub fn demo_scroll_to(&self, ci: usize, y: f64) {
         let scroll = &self.cols[ci].scroll;
         let clip = scroll.contentView();
-        clip.scrollToPoint(NSPoint::new(0.0, y));
+        // As the user's scroll would be: held within what the clip view allows.
+        let want = NSRect::new(NSPoint::new(0.0, y), clip.bounds().size);
+        let at = clip.constrainBoundsRect(want).origin;
+        eprintln!("scroll: asked {y}, allowed {}", at.y);
+        clip.scrollToPoint(at);
         scroll.reflectScrolledClipView(&clip);
     }
 
@@ -1448,10 +1452,15 @@ impl Board {
                     // The document is as tall as the list (room for the gap included).
                     let slots = n + gap.map_or(0, |(_, k)| k);
                     let heads = self.group_starts.borrow()[ci].iter().filter(|g| g.is_some()).count();
-                    let doc_h = (self.doc_top() + slots as f64 * PITCH + heads as f64 * HEAD_H + LIST_BOTTOM).max(
-                        self.height.get()
-                            - self.cols[ci].scroll.contentInsets().top.max(self.top.get()),
-                    );
+                    // A short list must not scroll at all (card flush under the toolbar,
+                    // its group title stuck over it): the document is then no taller
+                    // than what shows below the toolbar, less one more inset's worth.
+                    let inset = self.cols[ci].scroll.contentInsets().top.max(self.top.get());
+                    let doc_h = (self.doc_top()
+                        + slots as f64 * PITCH
+                        + heads as f64 * HEAD_H
+                        + LIST_BOTTOM)
+                        .max(self.height.get() - 2.0 * inset);
                     let doc = &self.cols[ci].doc;
                     if doc.frame().size.height != doc_h
                         || doc.frame().size.width != self.geom.get()[ci].w
