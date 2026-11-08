@@ -945,6 +945,8 @@ impl FadeLine {
 pub struct FieldIvars {
     /// Gets each editing command (`insertNewline:` …); returns true when it handled it.
     on_command: Box<dyn Fn(Sel) -> bool>,
+    /// The text changed (typing, paste): the capsule may need another height.
+    pub on_change: RefCell<Option<Box<dyn Fn()>>>,
 }
 
 define_class!(
@@ -961,18 +963,30 @@ define_class!(
         fn do_command(&self, _control: &NSControl, _view: &NSTextView, sel: Sel) -> bool {
             (self.ivars().on_command)(sel)
         }
+
+        #[unsafe(method(controlTextDidChange:))]
+        fn text_did_change(&self, _note: &objc2_foundation::NSNotification) {
+            if let Some(f) = self.ivars().on_change.borrow().as_ref() {
+                f();
+            }
+        }
     }
 
     unsafe impl NSTextFieldDelegate for FieldDelegate {}
 );
 
 impl FieldDelegate {
+    pub fn set_on_change(&self, f: impl Fn() + 'static) {
+        *self.ivars().on_change.borrow_mut() = Some(Box::new(f));
+    }
+
     pub fn new(
         mtm: MainThreadMarker,
         on_command: impl Fn(Sel) -> bool + 'static,
     ) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(FieldIvars {
             on_command: Box::new(on_command),
+            on_change: RefCell::new(None),
         });
         unsafe { msg_send![super(this), init] }
     }

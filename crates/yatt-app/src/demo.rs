@@ -297,6 +297,10 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             }
             window.demo_editor_geometry();
             wait(300).await;
+            if let Ok(text) = std::env::var("YATT_DEMO_CAPSULE") {
+                window.demo_capsule_text(&text.replace("\\n", "\n"));
+                wait(500).await;
+            }
             // `YATT_DEMO_CLICK=k,k:shift,…`: clicks on checkboxes, as the mouse would.
             if let Ok(clicks) = std::env::var("YATT_DEMO_CLICK") {
                 for c in clicks.split(',') {

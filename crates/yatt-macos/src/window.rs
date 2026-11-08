@@ -161,6 +161,8 @@ struct Ui {
     /// The open task goes to its own window whatever the setting (a double click).
     force_window: Rc<Cell<bool>>,
     new_color: Cell<usize>,
+    /// The capsule's height now: one line, or taller while the text wraps.
+    capsule_h: Cell<f64>,
     /// How many items the toolbar has without the inspector's section.
     base_toolbar_len: Cell<usize>,
     /// Identifiers of that section (its tracking separator first), in the
@@ -668,6 +670,13 @@ impl MainWindow {
         )));
         new_task.setBordered(false);
         new_task.setBezeled(false);
+        // Long text wraps (up to five lines; the capsule grows with it).
+        if let Some(cell) = new_task.cell() {
+            cell.setWraps(true);
+            cell.setUsesSingleLineMode(false);
+        }
+        new_task.setMaximumNumberOfLines(5);
+        new_task.setLineBreakMode(objc2_app_kit::NSLineBreakMode::ByWordWrapping);
         new_task.setDrawsBackground(false);
         new_task.setFocusRingType(NSFocusRingType::None);
         new_task.setFont(Some(&NSFont::systemFontOfSize(14.0)));
@@ -805,6 +814,7 @@ impl MainWindow {
             in_window: Cell::new(false),
             force_window,
             new_color: Cell::new(crate::settings::default_color()),
+            capsule_h: Cell::new(CAPSULE_H),
             inspector_ids,
             base_toolbar_len: Cell::new(0),
             _inspector_ui: inspector_ui.clone(),
@@ -1155,6 +1165,11 @@ impl MainWindow {
     }
 
     /// Development aid: prints the notes editor's rendered HTML to stderr.
+    pub fn demo_capsule_text(&self, text: &str) {
+        self.ui.new_task.setStringValue(&NSString::from_str(text));
+        self.ui.update_capsule_height();
+    }
+
     pub fn demo_click_box(&self, k: usize, shift: bool) {
         self.ui.modal.debug_click_box(k, shift);
     }
@@ -1409,6 +1424,20 @@ impl Ui {
                 if !is_return || (command != sel!(insertNewline:) && command != sel!(noop:)) {
                     return false;
                 }
+                // ⇧↩ and ⌥↩ break the line, ↩ sends.
+                let flags = event.modifierFlags();
+                if flags.contains(NSEventModifierFlags::Shift)
+                    || flags.contains(NSEventModifierFlags::Option)
+                {
+                    if let Some(window) = app.keyWindow()
+                        && let Some(responder) = window.firstResponder()
+                        && let Some(text) = responder.downcast_ref::<objc2_app_kit::NSTextView>()
+                    {
+                        use objc2_app_kit::NSStandardKeyBindingResponding;
+                        unsafe { text.insertNewlineIgnoringFieldEditor(None) };
+                    }
+                    return true;
+                }
                 let cmd = event
                     .modifierFlags()
                     .contains(NSEventModifierFlags::Command);
@@ -1416,6 +1445,14 @@ impl Ui {
                 true
             }
         });
+        {
+            let weak = weak.clone();
+            delegate.set_on_change(move || {
+                if let Some(ui) = weak.upgrade() {
+                    ui.update_capsule_height();
+                }
+            });
+        }
         unsafe {
             this.new_task
                 .setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
@@ -1449,6 +1486,7 @@ impl Ui {
             color: Some(self.new_color.get() as u8),
         });
         self.new_task.setStringValue(ns_string!(""));
+        self.update_capsule_height();
     }
 
     /// Groups the board's cards by tag or colour, or not.
@@ -1469,6 +1507,60 @@ impl Ui {
         }
         if let Some(snap) = self.last.borrow().clone() {
             self.cards.render(&snap.columns);
+        }
+    }
+
+    /// Puts the capsule, its field and its colour button at the current height: the
+    /// bottom edge stays, so a taller capsule grows upwards. Animated, the frames
+    /// of all three go together.
+    fn place_capsule(&self, animated: bool) {
+        let view_w = self.hscroll.bounds().size.width;
+        let board_h = self.board.frame().size.height;
+        let cw = (view_w - 120.0).min(CAPSULE_MAX_W - 50.0);
+        let ch = self.capsule_h.get();
+        let capsule = NSRect::new(
+            NSPoint::new(
+                ((view_w - cw) / 2.0).round(),
+                board_h - (self.top_inset.get() - CAPSULE_H) / 2.0 - ch,
+            ),
+            NSSize::new(cw, ch),
+        );
+        let field_h = ch - 16.0;
+        let field = NSRect::new(NSPoint::new(20.0, 8.0), NSSize::new(cw - 40.0 - 36.0, field_h));
+        // The colour button stays by the last line (the bottom).
+        let button = NSRect::new(
+            NSPoint::new(cw - 20.0 - 28.0, ch - 4.0 - 28.0),
+            NSSize::new(28.0, 28.0),
+        );
+        if animated {
+            let (c, f, b) = (self.capsule.clone(), self.new_task.clone(), self.palette_button.clone());
+            animate(true, 0.22, move || {
+                c.animator().setFrame(capsule);
+                f.animator().setFrame(field);
+                b.animator().setFrame(button);
+            });
+        } else {
+            self.capsule.setFrame(capsule);
+            self.new_task.setFrame(field);
+            self.palette_button.setFrame(button);
+        }
+    }
+
+    /// The height the capsule needs for what is typed: a line, up to five.
+    fn update_capsule_height(&self) {
+        let field_w = self.capsule.frame().size.width - 40.0 - 36.0;
+        let want = if self.new_task.stringValue().is_empty() || field_w <= 0.0 {
+            CAPSULE_H
+        } else {
+            let text_h = self
+                .new_task
+                .cell()
+                .map_or(20.0, |c| c.cellSizeForBounds(NSRect::new(NSPoint::ZERO, NSSize::new(field_w, 10_000.0))).height);
+            (text_h.min(5.0 * 17.0).max(20.0) + 16.0).max(CAPSULE_H)
+        };
+        if (want - self.capsule_h.get()).abs() > 0.5 {
+            self.capsule_h.set(want);
+            self.place_capsule(true);
         }
     }
 
@@ -1739,23 +1831,7 @@ impl Ui {
             NSPoint::new(0.0, board_h - BOTTOM_FADE_H),
             NSSize::new(view_w, BOTTOM_FADE_H),
         ));
-        let cw = (view_w - 120.0).min(CAPSULE_MAX_W - 50.0);
-        self.capsule.setFrame(NSRect::new(
-            NSPoint::new(
-                ((view_w - cw) / 2.0).round(),
-                board_h - (self.top_inset.get() - CAPSULE_H) / 2.0 - CAPSULE_H,
-            ),
-            NSSize::new(cw, CAPSULE_H),
-        ));
-        let field_h = 20.0;
-        self.new_task.setFrame(NSRect::new(
-            NSPoint::new(20.0, ((CAPSULE_H - field_h) / 2.0).round()),
-            NSSize::new(cw - 40.0 - 36.0, field_h),
-        ));
-        self.palette_button.setFrame(NSRect::new(
-            NSPoint::new(cw - 20.0 - 28.0, ((CAPSULE_H - 28.0) / 2.0).round()),
-            NSSize::new(28.0, 28.0),
-        ));
+        self.place_capsule(false);
         self.set_new_color(self.new_color.get());
         // Three equal columns: the split view lays its items out (the
         // dividers have no width and nowhere to go).
