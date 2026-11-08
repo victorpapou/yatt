@@ -2245,8 +2245,8 @@ impl Board {
             CanvasMsg::Scroll(s) => self.on_scroll(s),
             CanvasMsg::Hover(p) => {
                 let id = p.and_then(|p| self.hit(p));
-                if p.is_some() {
-                    self.show_cursor(id);
+                if let Some(p) = p {
+                    self.show_cursor(id, p);
                 }
                 if self.drag.borrow().is_none() {
                     let old = self.hover.replace(id);
@@ -2274,22 +2274,24 @@ impl Board {
         }
     }
 
+    /// Whether `at` is on the hover checkbox of the card under the pointer.
+    fn on_check(&self, at: NSPoint) -> Option<TaskId> {
+        let id = self.hover.get()?;
+        let cards = self.cards.borrow();
+        let c = cards.get(&id)?;
+        if !c.hovered {
+            return None;
+        }
+        let (ox, oy) = self.offset(c.space);
+        let local = NSPoint::new(at.x - ox - c.body.x, at.y - oy - c.body.y);
+        (local.x >= TEXT_X - 6.0 && local.x <= TEXT_X + 28.0 && local.y >= 8.0 && local.y <= 42.0)
+            .then_some(id)
+    }
+
     /// A press on a card's checkbox (where the glyph is): done, or back to the
     /// backlog when it was done. Returns true when it was one.
     fn check_press(&self, at: NSPoint) -> bool {
-        let Some(id) = self.hover.get() else { return false };
-        let local = {
-            let cards = self.cards.borrow();
-            let Some(c) = cards.get(&id) else { return false };
-            let (ox, oy) = self.offset(c.space);
-            if !c.hovered {
-                return false;
-            }
-            NSPoint::new(at.x - ox - c.body.x, at.y - oy - c.body.y)
-        };
-        if !(local.x >= TEXT_X - 6.0 && local.x <= TEXT_X + 28.0 && local.y >= 8.0 && local.y <= 42.0) {
-            return false;
-        }
+        let Some(id) = self.on_check(at) else { return false };
         let order = self.order.borrow();
         let done = order.get(COLS - 1).is_some_and(|col| col.contains(&id));
         drop(order);
@@ -2516,9 +2518,12 @@ impl Board {
 
     /// The pointer over the canvas: an open hand over a card (it can be taken),
     /// closed while carrying one, the arrow elsewhere.
-    fn show_cursor(&self, over: Option<TaskId>) {
+    fn show_cursor(&self, over: Option<TaskId>, at: NSPoint) {
         let cursor = if self.drag.borrow().is_some() {
             NSCursor::closedHandCursor()
+        } else if self.on_check(at).is_some() {
+            // The checkbox is a button: an arrow, not the hand that drags the card.
+            NSCursor::arrowCursor()
         } else if over.is_some() {
             NSCursor::openHandCursor()
         } else {

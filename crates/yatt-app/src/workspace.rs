@@ -43,7 +43,15 @@ impl Workspace {
                 status,
                 color,
             } => {
-                e.create_task_coloured(title, status, color.unwrap_or(DEFAULT_COLOR));
+                // «#тег» typed in the title is a tag of the new task (written into its
+                // notes, as in the editor), not part of the name.
+                let (name, tags) = split_tags(&title);
+                let id = e.create_task_coloured(name, status, color.unwrap_or(DEFAULT_COLOR));
+                if !tags.is_empty() {
+                    let notes = tags.iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join(" ");
+                    e.execute(Command::SetNotes { id, notes });
+                    e.execute(Command::SetTags { id, tags });
+                }
             }
             UiEvent::SetTags { id, tags } => e.execute(Command::SetTags { id, tags }),
             UiEvent::SetSubtasks { id, subtasks } => e.execute(Command::SetSubtasks {
@@ -287,6 +295,30 @@ fn entry_label(start: Timestamp, end: Option<Timestamp>, now: Timestamp) -> Stri
 /// The board commands a UI event stands for, appended to `out`: moves, deletes
 /// and pasted copies (each pasted card lands on top, so the last goes in first
 /// to keep their order). Other events stand for none.
+/// A title without its «#тег» words, and the tags (each once, in order). A title
+/// that is only tags stays as it is.
+fn split_tags(title: &str) -> (String, Vec<String>) {
+    let mut tags: Vec<String> = Vec::new();
+    let mut words: Vec<&str> = Vec::new();
+    for word in title.split_whitespace() {
+        let tag = word
+            .strip_prefix('#')
+            .filter(|t| !t.is_empty() && t.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-'));
+        match tag {
+            Some(t) => {
+                if !tags.iter().any(|x| x == t) {
+                    tags.push(t.to_string());
+                }
+            }
+            None => words.push(word),
+        }
+    }
+    if words.is_empty() {
+        return (title.trim().to_string(), Vec::new());
+    }
+    (words.join(" "), tags)
+}
+
 fn board_commands(event: UiEvent, out: &mut Vec<Command>) {
     match event {
         UiEvent::Move { id, status, index } => out.push(Command::Move {
@@ -379,6 +411,13 @@ mod tests {
         ws.handle(UiEvent::Undo);
         assert_eq!(ws.snapshot().columns[1].cards[0].title, "План");
         assert!(!ws.handle(UiEvent::Quit));
+    }
+
+    #[test]
+    fn tags_typed_in_a_new_title_become_its_tags() {
+        assert_eq!(split_tags("Сверстать #дизайн доску #motion"), ("Сверстать доску".into(), vec!["дизайн".into(), "motion".into()]));
+        assert_eq!(split_tags("#only"), ("#only".into(), vec![]));
+        assert_eq!(split_tags("a#b c"), ("a#b c".into(), vec![]));
     }
 
     #[test]

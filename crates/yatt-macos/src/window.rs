@@ -92,6 +92,9 @@ const CAPSULE_H: f64 = 36.0;
 const CAPSULE_MAX_W: f64 = 460.0;
 /// The bottom bar's height, as the toolbar's; the capsule is centred in it.
 const BOTTOM_BAR_H: f64 = 52.0;
+/// The colour swatch in the capsule's end: its size and its distance from the edge.
+const SWATCH_D: f64 = 24.0;
+const SWATCH_INSET: f64 = 6.0;
 const CAPSULE_BOTTOM: f64 = (BOTTOM_BAR_H - CAPSULE_H) / 2.0;
 /// The fade under the capsule: from clear to the background over this height.
 const BOTTOM_FADE_H: f64 = 72.0;
@@ -1526,10 +1529,17 @@ impl Ui {
             NSSize::new(cw, ch),
         );
         let field_h = ch - 16.0;
-        let field = NSRect::new(NSPoint::new(20.0, 8.0), NSSize::new(cw - 40.0 - 36.0, field_h));
-        // The colour button stays by the last line (the bottom).
+        // The swatch is set concentric with the capsule's end: 6 pt from the right,
+        // the bottom and (one line) the top. The text keeps the end's radius from the
+        // left, and a gap before the swatch.
+        let field = NSRect::new(
+            NSPoint::new(18.0, 8.0),
+            NSSize::new(cw - 18.0 - (SWATCH_INSET + SWATCH_D + 10.0), field_h),
+        );
+        // The button is a little larger than the swatch it holds (its hover disc).
+        let pad = (28.0 - SWATCH_D) / 2.0;
         let button = NSRect::new(
-            NSPoint::new(cw - 20.0 - 28.0, ch - 4.0 - 28.0),
+            NSPoint::new(cw - SWATCH_INSET - SWATCH_D - pad, ch - SWATCH_INSET - SWATCH_D - pad),
             NSSize::new(28.0, 28.0),
         );
         if animated {
@@ -1546,9 +1556,58 @@ impl Ui {
         }
     }
 
+    /// The #tags typed in the field take the colour of their tag.
+    fn colour_capsule_tags(&self) {
+        use objc2_app_kit::{NSForegroundColorAttributeName, NSTextView};
+        let Some(editor) = self.new_task.currentEditor() else { return };
+        let Some(text) = editor.downcast_ref::<NSTextView>() else { return };
+        let Some(storage) = (unsafe { text.textStorage() }) else { return };
+        let string = storage.string().to_string();
+        let total = storage.length();
+        let units: Vec<u16> = string.encode_utf16().collect();
+        unsafe {
+            storage.addAttribute_value_range(
+                NSForegroundColorAttributeName,
+                &objc2_app_kit::NSColor::labelColor(),
+                objc2_foundation::NSRange::new(0, total),
+            );
+        }
+        // «#word» at the start or after a space.
+        let mut i = 0;
+        while i < units.len() {
+            let at_start = i == 0 || units[i - 1] == b' ' as u16 || units[i - 1] == b'\n' as u16;
+            if units[i] == b'#' as u16 && at_start {
+                let mut j = i + 1;
+                while j < units.len() {
+                    let c = char::from_u32(units[j] as u32).unwrap_or(' ');
+                    if c.is_alphanumeric() || c == '_' || c == '-' {
+                        j += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if j > i + 1 {
+                    let name = String::from_utf16_lossy(&units[i + 1..j]);
+                    let color = style::swatch(style::tag_hue(&name));
+                    unsafe {
+                        storage.addAttribute_value_range(
+                            NSForegroundColorAttributeName,
+                            &color,
+                            objc2_foundation::NSRange::new(i, j - i),
+                        );
+                    }
+                }
+                i = j.max(i + 1);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
     /// The height the capsule needs for what is typed: a line, up to five.
     fn update_capsule_height(&self) {
-        let field_w = self.capsule.frame().size.width - 40.0 - 36.0;
+        self.colour_capsule_tags();
+        let field_w = self.capsule.frame().size.width - 18.0 - (SWATCH_INSET + SWATCH_D + 10.0);
         let want = if self.new_task.stringValue().is_empty() || field_w <= 0.0 {
             CAPSULE_H
         } else {
@@ -1584,7 +1643,7 @@ impl Ui {
         if hues.is_empty() {
             hues.push(self.new_color.get());
         }
-        let image = crate::settings::pie_image(&hues[..hues.len().min(5)], 20.0);
+        let image = crate::settings::pie_image(&hues[..hues.len().min(5)], SWATCH_D);
         self.palette_button.setImage(Some(&image));
         self.palette_button.setContentTintColor(None);
         // One colour: ticked; several (mixed): none.
