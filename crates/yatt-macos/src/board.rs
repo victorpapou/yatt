@@ -765,8 +765,8 @@ impl Board {
         h.material.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(width, HEAD_H)));
         h.line.setFrame(NSRect::new(NSPoint::new(0.0, HEAD_H - 1.0), NSSize::new(width, 1.0)));
         h.label.setFrame(NSRect::new(
-            NSPoint::new(x + 2.0, HEAD_H - 20.0),
-            NSSize::new((width - x - 2.0).max(0.0), 16.0),
+            NSPoint::new(x - 2.0, HEAD_H - 20.0),
+            NSSize::new((width - x).max(0.0), 16.0),
         ));
         h.strip.setHidden(false);
         // Over the cards and the group titles, which are added later.
@@ -792,6 +792,9 @@ impl Board {
         let mut heads = col.heads.borrow_mut();
         while heads.len() < wanted.len() {
             let h = self.new_head(&col.doc);
+            h.label.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize_weight(11.0, unsafe {
+                objc2_app_kit::NSFontWeightMedium
+            })));
             heads.push(h);
             self.stacking.borrow_mut().clear();
         }
@@ -802,32 +805,11 @@ impl Board {
                 Some((i, title)) => {
                     h.label
                         .setStringValue(&objc2_foundation::NSString::from_str(title));
-                    // Its row in the list; held under the toolbar while its group
-                    // is in view and pushed up by the next title.
-                    let natural = self.list_y(ci, *i) - HEAD_H;
-                    // The top edge of what is seen below the toolbar, in document
-                    // coordinates: the clip's origin plus the inset the toolbar takes.
-                    let seen_top = col.scroll.contentView().bounds().origin.y
-                        + col.scroll.contentInsets().top
-                        + CHIP_STICK
-                        + HEAD_H;
-                    let mut y = natural.max(seen_top);
-                    if let Some((j, _)) = wanted.get(k + 1) {
-                        y = y.min(self.list_y(ci, *j) - HEAD_H - HEAD_H);
-                    } else {
-                        y = y.min(self.list_y(ci, starts.len().saturating_sub(1)) + CARD_H - HEAD_H);
-                    }
-                    // The blurred band and its hairline only while it holds over
-                    // cards going under it.
-                    let stuck = y > natural + 0.5;
-                    let want = if stuck { 1.0 } else { 0.0 };
-                    if (h.material.alphaValue() - want).abs() > 0.01 {
-                        let (m, l) = (h.material.clone(), h.line.clone());
-                        animate(true, 0.15, move || {
-                            m.animator().setAlphaValue(want);
-                            l.animator().setAlphaValue(want);
-                        });
-                    }
+                    // A light caption inside the list: scrolls with its cards, no
+                    // band, no line; only the column's own title sticks.
+                    let y = self.list_y(ci, *i) - HEAD_H;
+                    h.material.setAlphaValue(0.0);
+                    h.line.setAlphaValue(0.0);
                     let full = NSRect::new(NSPoint::new(0.0, y), NSSize::new(width, HEAD_H));
                     h.strip.setFrame(full);
                     h.material
@@ -838,8 +820,8 @@ impl Board {
                     ));
                     // The text at the cards' left edge, in the row's lower part.
                     h.label.setFrame(NSRect::new(
-                        NSPoint::new(x + 2.0, HEAD_H - 20.0),
-                        NSSize::new((width - x - 2.0).max(0.0), 16.0),
+                        NSPoint::new(x - 2.0, HEAD_H - 20.0),
+                        NSSize::new((width - x).max(0.0), 16.0),
                     ));
                     if h.strip.isHidden() {
                         // A title that appears (grouping switched on, a column
@@ -3170,6 +3152,43 @@ const META_KERN: f64 = 0.15;
 /// A card's title, tracked.
 pub(crate) fn set_title(label: &NSTextField, text: &str) {
     style::set_tracked(label, text, TITLE_KERN);
+    fit_title(label);
+}
+
+/// A long title wraps by words onto a second line (cut with an ellipsis after
+/// that), growing up from the same bottom edge; the meta line above it moves up
+/// by the same. One-line titles sit exactly where they always did.
+fn fit_title(label: &NSTextField) {
+    if let Some(cell) = label.cell() {
+        cell.setWraps(true);
+        cell.setUsesSingleLineMode(false);
+        cell.setTruncatesLastVisibleLine(true);
+    }
+    label.setMaximumNumberOfLines(2);
+    label.setLineBreakMode(NSLineBreakMode::ByWordWrapping);
+    let width = CARD_W - 2.0 * TEXT_X;
+    label.setPreferredMaxLayoutWidth(width);
+    style::refresh_tracked(label, TITLE_KERN);
+    let h = label.intrinsicContentSize().height;
+    let two = h > 24.0;
+    let lift = if two { 18.0 } else { 0.0 };
+    label.setFrame(NSRect::new(
+        NSPoint::new(TEXT_X, TITLE_Y - lift),
+        NSSize::new(width, 20.0 + lift),
+    ));
+    if let Some(parent) = unsafe { label.superview() } {
+        for v in parent.subviews().iter() {
+            if let Ok(meta) = v.downcast::<NSTextField>()
+                && &*meta as *const NSTextField != label as *const NSTextField
+            {
+                let f = meta.frame();
+                meta.setFrame(NSRect::new(
+                    NSPoint::new(f.origin.x, META_Y - lift * 0.8),
+                    f.size,
+                ));
+            }
+        }
+    }
 }
 
 /// A card's meta line, tracked.

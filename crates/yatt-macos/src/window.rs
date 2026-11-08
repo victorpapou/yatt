@@ -75,7 +75,7 @@ const PAD: f64 = 16.0;
 const GROUPING_KEY: &str = "grouping";
 /// A column is never narrower than this: four fit when the board is four times
 /// this wide, otherwise three do and the rest scroll in.
-const COLUMN_MIN_W: f64 = 240.0;
+const COLUMN_MIN_W: f64 = 270.0;
 /// The board's least width: three columns of the least width.
 const MIN_BOARD_W: f64 = 3.0 * COLUMN_MIN_W;
 /// The inspector's width.
