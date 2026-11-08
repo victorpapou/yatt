@@ -55,6 +55,10 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
         };
 
         wait(600).await;
+        if std::env::var_os("YATT_DEMO_EDGE").is_some() {
+            window.demo_dump_toolbar_edge();
+            return;
+        }
         if std::env::var_os("YATT_DEMO_TIMEEDIT").is_some() {
             eprintln!("demo: time editor png: {}", window.demo_time_editor_png(&format!("{dir}/timeedit.png")));
             return;

@@ -281,6 +281,25 @@ impl MainWindow {
             window.titlebarSeparatorStyle(),
             window.titlebarAppearsTransparent()
         );
+        // Experiment: a hairline-high titlebar accessory whose scroll edge effect is
+        // the hard one, which is what makes the system draw its rule under the
+        // toolbar in the active window (YATT_HARD_EDGE=1).
+        if std::env::var_os("YATT_HARD_EDGE").is_some() {
+            use objc2::{class, msg_send};
+            let acc = objc2_app_kit::NSTitlebarAccessoryViewController::new(mtm);
+            let v = NSView::initWithFrame(
+                NSView::alloc(mtm),
+                NSRect::new(NSPoint::ZERO, NSSize::new(100.0, 1.0)),
+            );
+            acc.setView(&v);
+            acc.setLayoutAttribute(objc2_app_kit::NSLayoutAttribute::Bottom);
+            unsafe {
+                let hard: Retained<AnyObject> = msg_send![class!(NSScrollEdgeEffectStyle), hardStyle];
+                let _: () = msg_send![&acc, setPreferredScrollEdgeEffectStyle: &*hard];
+            }
+            window.addTitlebarAccessoryViewController(&acc);
+            eprintln!("hard-edge titlebar accessory added");
+        }
         window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
         window.setMinSize(NSSize::new(760.0, 480.0));
 
@@ -1301,6 +1320,41 @@ impl MainWindow {
     /// Development aid: the time editor with a sample log, as a PNG.
     pub fn demo_time_editor_png(&self, path: &str) -> bool {
         self.ui.modal.debug_time_editor(path)
+    }
+
+    /// Development aid: what lies over and under the toolbar's bottom edge: the
+    /// frame view's children in z-order, and every view of the content that
+    /// crosses that edge.
+    pub fn demo_dump_toolbar_edge(&self) {
+        let Some(content) = self.ui.window.contentView() else { return };
+        let Some(frame_view) = (unsafe { content.superview() }) else { return };
+        let top = self.ui.top_inset.get();
+        eprintln!("edge: top inset {top}, content frame {:?}, frame view {:?}", content.frame(), frame_view.frame());
+        for (i, v) in frame_view.subviews().iter().enumerate() {
+            eprintln!("edge: frame view child {i}: {} frame {:?} hidden {} alpha {}", v.class().name().to_str().unwrap_or("?"), v.frame(), v.isHidden(), v.alphaValue());
+            if i > 0 || v.class().name().to_str().unwrap_or("").contains("Titlebar") {
+                for (j, s) in v.subviews().iter().enumerate().take(12) {
+                    eprintln!("edge:    child {j}: {} frame {:?} hidden {}", s.class().name().to_str().unwrap_or("?"), s.frame(), s.isHidden());
+                }
+            }
+        }
+        // The band of the edge, in window coordinates (y from the top).
+        let h = frame_view.bounds().size.height;
+        let edge_y = h - top;
+        fn walk(v: &objc2_app_kit::NSView, root: &objc2_app_kit::NSView, edge_y: f64, depth: usize, out: &mut usize) {
+            for s in v.subviews().iter() {
+                if s.isHidden() { continue; }
+                let r = root.convertRect_fromView(s.bounds(), Some(&s));
+                let (lo, hi) = (r.origin.y, r.origin.y + r.size.height);
+                if lo <= edge_y && hi >= edge_y && *out < 60 {
+                    *out += 1;
+                    eprintln!("edge: {}{} frame in window {:?} alpha {}", "  ".repeat(depth), s.class().name().to_str().unwrap_or("?"), r, s.alphaValue());
+                }
+                walk(&s, root, edge_y, depth + 1, out);
+            }
+        }
+        let mut n = 0;
+        walk(&frame_view, &frame_view, edge_y, 0, &mut n);
     }
 
     pub fn demo_editor_self_test(&self) -> String {
