@@ -322,6 +322,8 @@ impl DemoCard {
 /// The settings window and the controls that must follow changes made elsewhere.
 pub struct SettingsWindow {
     window: Retained<NSWindow>,
+    tabs: Retained<NSTabViewController>,
+    timer_show: Rc<dyn Fn(&crate::model::TimerSnap)>,
     refresh: Rc<RefCell<Vec<Box<dyn Fn()>>>>,
     _retained: Vec<Retained<AnyObject>>,
 }
@@ -332,6 +334,7 @@ impl SettingsWindow {
         mtm: MainThreadMarker,
         changed: Rc<dyn Fn()>,
         tags_provider: Rc<dyn Fn() -> Vec<String>>,
+        sink: crate::window::Sink,
     ) -> Self {
         let mut retained: Vec<Retained<AnyObject>> = Vec::new();
         let refresh: Rc<RefCell<Vec<Box<dyn Fn()>>>> = Rc::default();
@@ -504,10 +507,153 @@ impl SettingsWindow {
         }
         let tags_tab = tab(mtm, "Теги", "tag", &tags_pane, 300.0, &mut retained);
 
+        // ---- Помидор ----
+        let timer_pane = FlippedView::new(mtm, NSRect::new(NSPoint::ZERO, NSSize::new(W, 290.0)));
+        let state: Rc<std::cell::Cell<(u32, u32, u32, u32, bool, bool)>> =
+            Rc::new(std::cell::Cell::new((25, 5, 15, 4, true, false)));
+        let send = {
+            let (sink, state) = (sink.clone(), state.clone());
+            Rc::new(move |p: (u32, u32, u32, u32, bool, bool)| {
+                let old = state.get();
+                state.set(p);
+                if (p.0, p.1) != (old.0, old.1) {
+                    sink(crate::model::UiEvent::SetDurations {
+                        work_min: p.0,
+                        break_min: p.1,
+                    });
+                }
+                if (p.2, p.3, p.4, p.5) != (old.2, old.3, old.4, old.5) {
+                    sink(crate::model::UiEvent::SetCycle {
+                        long_min: p.2,
+                        every: p.3,
+                        auto_breaks: p.4,
+                        auto_work: p.5,
+                    });
+                }
+            })
+        };
+        // A pop-up of minutes: the usual lengths plus the current one if unusual.
+        let minute_titles = |opts: &[u32], cur: u32| -> (Vec<u32>, Vec<String>) {
+            let mut v: Vec<u32> = opts.to_vec();
+            if !v.contains(&cur) {
+                v.push(cur);
+                v.sort_unstable();
+            }
+            let t = v.iter().map(|m| format!("{m} мин")).collect();
+            (v, t)
+        };
+        let rows: [(&str, &[u32], usize); 3] = [
+            ("Работа", &[15, 20, 25, 30, 40, 45, 50, 60, 90], 0),
+            ("Короткий перерыв", &[3, 5, 10, 15], 1),
+            ("Длинный перерыв", &[10, 15, 20, 30], 2),
+        ];
+        let mut pops: Vec<(Retained<NSPopUpButton>, &'static [u32], usize)> = Vec::new();
+        for (i, (title, opts, field)) in rows.iter().enumerate() {
+            let y = 16.0 + i as f64 * ROW;
+            timer_pane.addSubview(&label(mtm, title, y));
+            let (vals, titles) = minute_titles(opts, state.get().0);
+            let _ = vals;
+            let p = popup(mtm, y, &titles, false, 0);
+            let (send, state) = (send.clone(), state.clone());
+            let opts_owned: Vec<u32> = opts.to_vec();
+            let field = *field;
+            let slot = ObjcWeak::from_retained(&p);
+            let t = ActionTarget::new(mtm, move || {
+                let Some(p) = slot.load() else { return };
+                let Some(item) = p.titleOfSelectedItem() else { return };
+                let minutes: u32 = item
+                    .to_string()
+                    .split_whitespace()
+                    .next()
+                    .and_then(|n| n.parse().ok())
+                    .unwrap_or(opts_owned[0]);
+                let mut s = state.get();
+                match field {
+                    0 => s.0 = minutes,
+                    1 => s.1 = minutes,
+                    _ => s.2 = minutes,
+                }
+                send(s);
+            });
+            unsafe {
+                p.setTarget(Some(&t));
+                p.setAction(Some(ActionTarget::sel()));
+            }
+            retained.push(Retained::into_super(Retained::into_super(t)));
+            timer_pane.addSubview(&p);
+            let static_opts: &'static [u32] = match field {
+                0 => &[15, 20, 25, 30, 40, 45, 50, 60, 90],
+                1 => &[3, 5, 10, 15],
+                _ => &[10, 15, 20, 30],
+            };
+            pops.push((p, static_opts, field));
+        }
+        timer_pane.addSubview(&label(mtm, "Длинный перерыв после каждой", 16.0 + 3.0 * ROW));
+        let every = popup(
+            mtm,
+            16.0 + 3.0 * ROW,
+            &(2..=8).map(|n| format!("{n}-й")).collect::<Vec<_>>(),
+            false,
+            2,
+        );
+        {
+            let (send, state) = (send.clone(), state.clone());
+            on_pick(mtm, &every, &mut retained, move |i| {
+                let mut s = state.get();
+                s.3 = (i + 2) as u32;
+                send(s);
+            });
+        }
+        timer_pane.addSubview(&every);
+        timer_pane.addSubview(&label(mtm, "Перерыв стартует сам", 16.0 + 4.0 * ROW));
+        let auto_b = switch(mtm, 16.0 + 4.0 * ROW, true);
+        {
+            let (send, state) = (send.clone(), state.clone());
+            on_switch(mtm, &auto_b, &mut retained, move |on| {
+                let mut s = state.get();
+                s.4 = on;
+                send(s);
+            });
+        }
+        timer_pane.addSubview(&auto_b);
+        timer_pane.addSubview(&label(mtm, "Работа стартует сама", 16.0 + 5.0 * ROW));
+        let auto_w = switch(mtm, 16.0 + 5.0 * ROW, false);
+        {
+            let (send, state) = (send.clone(), state.clone());
+            on_switch(mtm, &auto_w, &mut retained, move |on| {
+                let mut s = state.get();
+                s.5 = on;
+                send(s);
+            });
+        }
+        timer_pane.addSubview(&auto_w);
+        let timer_tab = tab(mtm, "Помидор", "timer", &timer_pane, 290.0, &mut retained);
+        // The timer's values now in force (from the snapshot), shown without sending.
+        let timer_show: Rc<dyn Fn(&crate::model::TimerSnap)> = {
+            let (state, every, auto_b, auto_w) =
+                (state.clone(), every.clone(), auto_b.clone(), auto_w.clone());
+            Rc::new(move |t: &crate::model::TimerSnap| {
+                state.set((t.work_min, t.break_min, t.long_min, t.every, t.auto_breaks, t.auto_work));
+                for (p, opts, field) in &pops {
+                    let cur = [t.work_min, t.break_min, t.long_min][*field];
+                    let (vals, titles) = minute_titles(opts, cur);
+                    p.removeAllItems();
+                    let items: Vec<Retained<NSString>> =
+                        titles.iter().map(|x| NSString::from_str(x)).collect();
+                    p.addItemsWithTitles(&NSArray::from_retained_slice(&items));
+                    p.selectItemAtIndex(vals.iter().position(|m| *m == cur).unwrap_or(0) as isize);
+                }
+                every.selectItemAtIndex((t.every.clamp(2, 8) - 2) as isize);
+                auto_b.setState(if t.auto_breaks { NSControlStateValueOn } else { NSControlStateValueOff });
+                auto_w.setState(if t.auto_work { NSControlStateValueOn } else { NSControlStateValueOff });
+            })
+        };
+
         let tabs = NSTabViewController::new(mtm);
         tabs.setTabStyle(NSTabViewControllerTabStyle::Toolbar);
         tabs.addTabViewItem(&tasks_tab);
         tabs.addTabViewItem(&tags_tab);
+        tabs.addTabViewItem(&timer_tab);
         tabs.addTabViewItem(&view_tab);
         // `YATT_SETTINGS_TAB=n`: opens on that tab (for the demo's captures).
         if let Some(n) = std::env::var("YATT_SETTINGS_TAB").ok().and_then(|v| v.parse::<isize>().ok()) {
@@ -519,16 +665,30 @@ impl SettingsWindow {
         unsafe { window.setReleasedWhenClosed(false) };
         window.setLevel(NSNormalWindowLevel);
         window.center();
-        retained.push(Retained::<AnyObject>::from(Retained::into_super(Retained::into_super(tabs))));
+        retained.push(Retained::<AnyObject>::from(Retained::into_super(tabs.clone())));
+        retained.push(Retained::<AnyObject>::from(Retained::into_super(timer_tab)));
         retained.push(Retained::<AnyObject>::from(Retained::into_super(tasks_tab)));
         retained.push(Retained::<AnyObject>::from(Retained::into_super(view_tab)));
         retained.push(Retained::<AnyObject>::from(Retained::into_super(tags_tab)));
         let _ = (NSColor::clearColor(), NSView::new(mtm), ns_string!("").copy());
         Self {
             window,
+            tabs,
+            timer_show,
             refresh,
             _retained: retained,
         }
+    }
+
+    /// The pomodoro's values now in force (every snapshot).
+    pub fn show_timer(&self, t: &crate::model::TimerSnap) {
+        (self.timer_show)(t);
+    }
+
+    /// Opens the window on a tab: 0 tasks, 1 tags, 2 pomodoro, 3 view.
+    pub fn show_tab(&self, index: isize) {
+        self.show();
+        self.tabs.setSelectedTabViewItemIndex(index);
     }
 
     pub fn show(&self) {

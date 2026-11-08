@@ -728,6 +728,7 @@ impl MainWindow {
                     }
                     out
                 }),
+                sink.clone(),
             )
         };
         let task_window = {
@@ -1846,6 +1847,7 @@ impl Ui {
         }
         self.cards.render(&snap.columns);
         self.sync_modal(snap);
+        self.settings.show_timer(&snap.timer);
         *self.last.borrow_mut() = Some(snap.clone());
     }
 
