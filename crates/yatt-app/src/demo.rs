@@ -55,6 +55,10 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
         };
 
         wait(600).await;
+        if std::env::var_os("YATT_DEMO_TIMEEDIT").is_some() {
+            eprintln!("demo: time editor png: {}", window.demo_time_editor_png(&format!("{dir}/timeedit.png")));
+            return;
+        }
         // `YATT_DEMO_CAPGROW=1`: lines typed into the capsule one by one, the
         // capsule sampled every 8 ms for 450 ms after each.
         if std::env::var_os("YATT_DEMO_CAPGROW").is_some() {

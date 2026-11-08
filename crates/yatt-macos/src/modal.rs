@@ -76,6 +76,19 @@ pub struct Modal {
 }
 
 impl Modal {
+    /// Development aid: the time editor with a sample log, as a PNG.
+    pub fn debug_time_editor(&self, path: &str) -> bool {
+        let now = 1_800_000_000_000_i64;
+        let log: Vec<crate::model::LogEntry> = (0..4)
+            .map(|i| crate::model::LogEntry {
+                id: format!("e{i}"),
+                start_ms: now - (i + 1) * 5_400_000,
+                end_ms: Some(now - (i + 1) * 5_400_000 + (i + 1) * 900_000),
+            })
+            .collect();
+        self.time_editor.debug_png(yatt_core::TaskId::new(), &log, path)
+    }
+
     pub fn new(mtm: MainThreadMarker, sink: &Sink) -> Self {
         let open: Rc<Cell<Option<TaskId>>> = Rc::new(Cell::new(None));
         let title_known = Rc::new(RefCell::new(String::new()));

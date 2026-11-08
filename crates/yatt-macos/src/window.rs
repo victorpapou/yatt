@@ -1281,6 +1281,11 @@ impl MainWindow {
         eprintln!("capsule: h {:.1}; {}", self.ui.capsule_h.get(), self.ui.new_task.debug_geometry());
     }
 
+    /// Development aid: the time editor with a sample log, as a PNG.
+    pub fn demo_time_editor_png(&self, path: &str) -> bool {
+        self.ui.modal.debug_time_editor(path)
+    }
+
     pub fn demo_editor_self_test(&self) -> String {
         self.ui.modal.debug_self_test()
     }
