@@ -148,31 +148,135 @@ pub fn swatch_image(hue: usize) -> Option<Retained<NSImage>> {
     image.imageWithSymbolConfiguration(&config)
 }
 
-const W: f64 = 540.0;
-const PAD: f64 = 24.0;
-const ROW: f64 = 38.0;
+const W: f64 = 560.0;
+/// The grouped form's geometry, on the system's grid: groups 20 pt in from the
+/// window's edges, rows 44 pt, controls 16 pt in from a group's edge.
+const MARGIN: f64 = 20.0;
+const BOX_W: f64 = W - 2.0 * MARGIN;
+const INNER: f64 = 16.0;
+const ROW_H: f64 = 44.0;
+const SUB_ROW_H: f64 = 56.0;
+const GAP: f64 = 20.0;
 
-fn label(mtm: MainThreadMarker, text: &str, y: f64) -> Retained<NSTextField> {
+/// One row of a group: its height and the views, framed within the row.
+struct Row {
+    h: f64,
+    views: Vec<Retained<NSView>>,
+}
+
+fn text_label(
+    mtm: MainThreadMarker,
+    text: &str,
+    secondary: bool,
+    frame: NSRect,
+) -> Retained<NSTextField> {
     let l = NSTextField::labelWithString(&NSString::from_str(text), mtm);
     l.setAlignment(NSTextAlignment::Left);
-    l.setFrame(NSRect::new(NSPoint::new(PAD, y + 6.0), NSSize::new(W - 2.0 * PAD, 20.0)));
+    if secondary {
+        l.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize(11.0)));
+        l.setTextColor(Some(&NSColor::secondaryLabelColor()));
+    }
+    l.setFrame(frame);
     l
 }
 
-/// A pop-up button on the right of a row, with `titles` (and a swatch each when
-/// `swatches` is set), `selected` chosen.
+/// A row with `title` (and a small grey `subtitle` under it) on the left and
+/// `control` on the right, vertically centred.
+fn control_row(
+    mtm: MainThreadMarker,
+    title: &str,
+    subtitle: Option<&str>,
+    control: &NSView,
+) -> Row {
+    let h = if subtitle.is_some() { SUB_ROW_H } else { ROW_H };
+    let cw = control.frame().size.width;
+    let ch = control.frame().size.height;
+    control.setFrame(NSRect::new(
+        NSPoint::new(BOX_W - INNER - cw, ((h - ch) / 2.0).round()),
+        NSSize::new(cw, ch),
+    ));
+    let text_w = BOX_W - 3.0 * INNER - cw;
+    let mut views: Vec<Retained<NSView>> = Vec::new();
+    match subtitle {
+        Some(sub) => {
+            views.push(Retained::into_super(Retained::into_super(text_label(
+                mtm,
+                title,
+                false,
+                NSRect::new(NSPoint::new(INNER, 10.0), NSSize::new(text_w, 18.0)),
+            ))));
+            views.push(Retained::into_super(Retained::into_super(text_label(
+                mtm,
+                sub,
+                true,
+                NSRect::new(NSPoint::new(INNER, 29.0), NSSize::new(text_w, 15.0)),
+            ))));
+        }
+        None => views.push(Retained::into_super(Retained::into_super(text_label(
+            mtm,
+            title,
+            false,
+            NSRect::new(NSPoint::new(INNER, (h - 18.0) / 2.0), NSSize::new(text_w, 18.0)),
+        )))),
+    }
+    views.push(objc2::Message::retain(control));
+    Row { h, views }
+}
+
+/// Stacks `rows` in a rounded group at `top`, hairlines between them; adds it to
+/// `parent` and returns where the next group may start.
+fn group(mtm: MainThreadMarker, parent: &NSView, top: f64, rows: Vec<Row>) -> f64 {
+    let total: f64 = rows.iter().map(|r| r.h).sum();
+    let frame = NSRect::new(NSPoint::new(MARGIN, top), NSSize::new(BOX_W, total));
+    let boxv = objc2_app_kit::NSBox::new(mtm);
+    boxv.setFrame(frame);
+    boxv.setBoxType(objc2_app_kit::NSBoxType::Custom);
+    boxv.setTitlePosition(objc2_app_kit::NSTitlePosition::NoTitle);
+    boxv.setBorderWidth(0.0);
+    boxv.setCornerRadius(10.0);
+    boxv.setContentViewMargins(NSSize::ZERO);
+    boxv.setFillColor(&NSColor::quaternarySystemFillColor());
+    let content = FlippedView::new(mtm, NSRect::new(NSPoint::ZERO, frame.size));
+    boxv.setContentView(Some(&content));
+    let boxv = content;
+    let mut y = 0.0;
+    for (i, row) in rows.iter().enumerate() {
+        for v in &row.views {
+            let f = v.frame();
+            v.setFrame(NSRect::new(
+                NSPoint::new(f.origin.x, f.origin.y + y),
+                f.size,
+            ));
+            boxv.addSubview(v);
+        }
+        y += row.h;
+        if i + 1 < rows.len() {
+            let line = FillView::new(mtm, Fill::Separator);
+            line.setFrame(NSRect::new(
+                NSPoint::new(INNER, y - 0.5),
+                NSSize::new(BOX_W - INNER, 1.0),
+            ));
+            boxv.addSubview(&line);
+        }
+    }
+    if let Some(b) = unsafe { boxv.superview() } {
+        parent.addSubview(&b);
+    }
+    top + total + GAP
+}
+
+/// A pop-up button with `titles` (a swatch each when `swatches` is set),
+/// `selected` chosen.
 fn popup(
     mtm: MainThreadMarker,
-    y: f64,
     titles: &[String],
     swatches: bool,
     selected: usize,
 ) -> Retained<NSPopUpButton> {
-    let w = 200.0;
     let p = unsafe {
         NSPopUpButton::initWithFrame_pullsDown(
             NSPopUpButton::alloc(mtm),
-            NSRect::new(NSPoint::new(W - PAD - w, y + 2.0), NSSize::new(w, 26.0)),
+            NSRect::new(NSPoint::ZERO, NSSize::new(190.0, 26.0)),
             false,
         )
     };
@@ -189,12 +293,17 @@ fn popup(
     p
 }
 
-/// A switch on the right of a row.
-fn switch(mtm: MainThreadMarker, y: f64, on: bool) -> Retained<NSSwitch> {
+/// A switch for the right of a row.
+fn switch(mtm: MainThreadMarker, on: bool) -> Retained<NSSwitch> {
     let s = NSSwitch::new(mtm);
     s.setState(if on { NSControlStateValueOn } else { NSControlStateValueOff });
-    s.setFrame(NSRect::new(NSPoint::new(W - PAD - 38.0, y + 5.0), NSSize::new(38.0, 22.0)));
+    s.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(38.0, 22.0)));
     s
+}
+
+fn as_view<T: objc2::Message + std::ops::Deref<Target = NSView>>(v: &Retained<T>) -> Retained<NSView> {
+    let view: &NSView = v;
+    objc2::Message::retain(view)
 }
 
 fn on_pick(
@@ -261,26 +370,30 @@ fn tab(
     item
 }
 
-/// The live demo beside the first-tag switch: a small card that eases from the
-/// default colour to its tag's colour and back.
+/// The live demo under the first-tag switch: a mini card of the board's own
+/// glass, with a tag capsule, that eases from the default colour to its tag's
+/// colour and back as the switch is flipped.
 struct DemoCard {
-    card: Retained<FlippedView>,
+    glass: Retained<NSView>,
 }
 
 impl DemoCard {
-    fn new(mtm: MainThreadMarker, y: f64) -> Self {
-        let card = FlippedView::new(mtm, NSRect::new(NSPoint::new(PAD, y), NSSize::new(170.0, 66.0)));
-        card.setWantsLayer(true);
-        if let Some(layer) = card.layer() {
-            layer.setCornerRadius(14.0);
-        }
-        let title = NSTextField::labelWithString(ns_string!("Задача"), mtm);
-        title.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize_weight(13.0, unsafe {
+    fn new(mtm: MainThreadMarker) -> Self {
+        let glass = style::card_blur(mtm);
+        glass.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(200.0, 84.0)));
+        // The card's own text and tag, over its glass.
+        let content = FlippedView::new(mtm, NSRect::new(NSPoint::ZERO, NSSize::new(200.0, 84.0)));
+        let title = NSTextField::labelWithString(ns_string!("Сверстать доску"), mtm);
+        title.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize_weight(14.0, unsafe {
             objc2_app_kit::NSFontWeightSemibold
         })));
-        title.setFrame(NSRect::new(NSPoint::new(14.0, 10.0), NSSize::new(130.0, 18.0)));
-        card.addSubview(&title);
-        let tag = FlippedView::new(mtm, NSRect::new(NSPoint::new(14.0, 36.0), NSSize::new(64.0, 18.0)));
+        title.setFrame(NSRect::new(NSPoint::new(16.0, 14.0), NSSize::new(168.0, 18.0)));
+        content.addSubview(&title);
+        let tag = NSTextField::labelWithString(ns_string!("дизайн"), mtm);
+        tag.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize_weight(11.5, unsafe {
+            objc2_app_kit::NSFontWeightMedium
+        })));
+        tag.setAlignment(NSTextAlignment::Center);
         tag.setWantsLayer(true);
         if let Some(layer) = tag.layer() {
             layer.setCornerRadius(9.0);
@@ -288,13 +401,15 @@ impl DemoCard {
                 &style::swatch(style::tag_hue("дизайн")).colorWithAlphaComponent(0.55).CGColor(),
             ));
         }
-        let tag_text = NSTextField::labelWithString(ns_string!("дизайн"), mtm);
-        tag_text.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize(11.0)));
-        tag_text.setAlignment(NSTextAlignment::Center);
-        tag_text.setFrame(NSRect::new(NSPoint::new(0.0, 1.0), NSSize::new(64.0, 16.0)));
-        tag.addSubview(&tag_text);
-        card.addSubview(&tag);
-        let this = Self { card };
+        tag.setFrame(NSRect::new(NSPoint::new(16.0, 46.0), NSSize::new(66.0, 20.0)));
+        content.addSubview(&tag);
+        // The glass hosts the content when it is the system's; else it lies under.
+        if let Some(g) = glass.downcast_ref::<objc2_app_kit::NSGlassEffectView>() {
+            g.setContentView(Some(&content));
+        } else {
+            glass.addSubview(&content);
+        }
+        let this = Self { glass };
         this.paint(false, false);
         this
     }
@@ -306,11 +421,9 @@ impl DemoCard {
             default_color()
         };
         if eased {
-            crate::motion::soften(&self.card);
+            crate::motion::soften(&self.glass);
         }
-        if let Some(layer) = self.card.layer() {
-            layer.setBackgroundColor(Some(&style::swatch(hue).colorWithAlphaComponent(0.7).CGColor()));
-        }
+        style::tint_glass(&self.glass, hue);
     }
 
     /// Eases to the card's colour with or without the tag's.
@@ -340,11 +453,17 @@ impl SettingsWindow {
         let refresh: Rc<RefCell<Vec<Box<dyn Fn()>>>> = Rc::default();
 
         // ---- Задачи ----
-        let tasks = FlippedView::new(mtm, NSRect::new(NSPoint::ZERO, NSSize::new(W, 250.0)));
-        tasks.addSubview(&label(mtm, "Цвет новой задачи", 16.0));
+        let tasks = FlippedView::new(mtm, NSRect::new(NSPoint::ZERO, NSSize::new(W, 330.0)));
         let names: Vec<String> = HUE_NAMES.iter().map(|n| n.to_string()).collect();
-        let colors = popup(mtm, 16.0, &names, true, default_color());
-        let demo = Rc::new(DemoCard::new(mtm, 136.0));
+        let colors = popup(mtm, &names, true, default_color());
+        let open = popup(
+            mtm,
+            &["В инспекторе".to_string(), "В отдельном окне".to_string()],
+            false,
+            open_in_window() as usize,
+        );
+        let recolor = switch(mtm, recolor_by_tag());
+        let demo = Rc::new(DemoCard::new(mtm));
         {
             let (changed, demo) = (changed.clone(), demo.clone());
             on_pick(mtm, &colors, &mut retained, move |i| {
@@ -353,15 +472,6 @@ impl SettingsWindow {
                 changed();
             });
         }
-        tasks.addSubview(&colors);
-        tasks.addSubview(&label(mtm, "Открывать задачу", 16.0 + ROW));
-        let open = popup(
-            mtm,
-            16.0 + ROW,
-            &["В инспекторе".to_string(), "В отдельном окне".to_string()],
-            false,
-            open_in_window() as usize,
-        );
         {
             let changed = changed.clone();
             on_pick(mtm, &open, &mut retained, move |i| {
@@ -369,9 +479,6 @@ impl SettingsWindow {
                 changed();
             });
         }
-        tasks.addSubview(&open);
-        tasks.addSubview(&label(mtm, "Красить карточку в цвет первого тега", 16.0 + 2.0 * ROW));
-        let recolor = switch(mtm, 16.0 + 2.0 * ROW, recolor_by_tag());
         {
             let (changed, demo) = (changed.clone(), demo.clone());
             on_switch(mtm, &recolor, &mut retained, move |on| {
@@ -380,8 +487,40 @@ impl SettingsWindow {
                 changed();
             });
         }
-        tasks.addSubview(&recolor);
-        tasks.addSubview(&demo.card);
+        // The preview row: the card, centred in the group.
+        let preview_h = 124.0;
+        let card_frame = demo.glass.frame();
+        demo.glass.setFrame(NSRect::new(
+            NSPoint::new(((BOX_W - card_frame.size.width) / 2.0).round(), 20.0),
+            card_frame.size,
+        ));
+        let preview = Row {
+            h: preview_h,
+            views: vec![demo.glass.clone()],
+        };
+        let next = group(
+            mtm,
+            &tasks,
+            20.0,
+            vec![
+                control_row(mtm, "Цвет новой задачи", None, &colors),
+                control_row(mtm, "Открывать задачу", None, &open),
+            ],
+        );
+        group(
+            mtm,
+            &tasks,
+            next,
+            vec![
+                control_row(
+                    mtm,
+                    "Красить карточку в цвет тега",
+                    Some("Карточка берёт цвет своего первого тега"),
+                    &recolor,
+                ),
+                preview,
+            ],
+        );
         demo.show(recolor_by_tag());
         {
             let (colors, open, recolor, demo) =
@@ -397,18 +536,17 @@ impl SettingsWindow {
                 demo.show(recolor_by_tag());
             }));
         }
-        let tasks_tab = tab(mtm, "Задачи", "checklist", &tasks, 250.0, &mut retained);
+        let tasks_tab = tab(mtm, "Задачи", "checklist", &tasks, 330.0, &mut retained);
 
         // ---- Вид ----
-        let view = FlippedView::new(mtm, NSRect::new(NSPoint::ZERO, NSSize::new(W, 130.0)));
-        view.addSubview(&label(mtm, "Группировка карточек", 16.0));
+        let view = FlippedView::new(mtm, NSRect::new(NSPoint::ZERO, NSSize::new(W, 150.0)));
         let grouping_pop = popup(
             mtm,
-            16.0,
             &["Без группировки".to_string(), "По тегу".to_string(), "По цвету".to_string()],
             false,
             grouping(),
         );
+        let stacks = switch(mtm, stacked());
         {
             let changed = changed.clone();
             on_pick(mtm, &grouping_pop, &mut retained, move |i| {
@@ -416,9 +554,6 @@ impl SettingsWindow {
                 changed();
             });
         }
-        view.addSubview(&grouping_pop);
-        view.addSubview(&label(mtm, "Колонки стопками", 16.0 + ROW));
-        let stacks = switch(mtm, 16.0 + ROW, stacked());
         {
             let changed = changed.clone();
             on_switch(mtm, &stacks, &mut retained, move |on| {
@@ -426,7 +561,20 @@ impl SettingsWindow {
                 changed();
             });
         }
-        view.addSubview(&stacks);
+        group(
+            mtm,
+            &view,
+            20.0,
+            vec![
+                control_row(mtm, "Группировка карточек", None, &grouping_pop),
+                control_row(
+                    mtm,
+                    "Колонки стопками",
+                    Some("Карточки колонки складываются в стопку"),
+                    &stacks,
+                ),
+            ],
+        );
         {
             let (grouping_pop, stacks) = (grouping_pop.clone(), stacks.clone());
             refresh.borrow_mut().push(Box::new(move || {
@@ -438,55 +586,43 @@ impl SettingsWindow {
                 });
             }));
         }
-        let view_tab = tab(mtm, "Вид", "rectangle.3.group", &view, 130.0, &mut retained);
+        let view_tab = tab(mtm, "Вид", "rectangle.3.group", &view, 150.0, &mut retained);
 
         // ---- Теги ----
-        let tags_pane = FlippedView::new(mtm, NSRect::new(NSPoint::ZERO, NSSize::new(W, 300.0)));
+        let tags_pane = FlippedView::new(mtm, NSRect::new(NSPoint::ZERO, NSSize::new(W, 320.0)));
         let scroll = objc2_app_kit::NSScrollView::new(mtm);
-        scroll.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(W, 300.0)));
+        scroll.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(W, 320.0)));
         scroll.setDrawsBackground(false);
         scroll.setHasVerticalScroller(true);
-        let doc = FlippedView::new(mtm, NSRect::new(NSPoint::ZERO, NSSize::new(W, 300.0)));
+        let doc = FlippedView::new(mtm, NSRect::new(NSPoint::ZERO, NSSize::new(W, 320.0)));
         scroll.setDocumentView(Some(&doc));
         tags_pane.addSubview(&scroll);
-        let empty = label(mtm, "Тегов пока нет: напишите #тег в заметке задачи", 16.0);
-        empty.setTextColor(Some(&NSColor::secondaryLabelColor()));
-        doc.addSubview(&empty);
         {
-            let (doc, changed, provider, empty) =
-                (doc.clone(), changed.clone(), tags_provider.clone(), empty.clone());
+            let (doc, changed, provider) = (doc.clone(), changed.clone(), tags_provider.clone());
             let held: Rc<RefCell<Vec<Retained<AnyObject>>>> = Rc::default();
             refresh.borrow_mut().push(Box::new(move || {
                 held.borrow_mut().clear();
                 for v in doc.subviews().iter() {
-                    if !std::ptr::eq(&*v, &*empty as &NSView) {
-                        v.removeFromSuperview();
-                    }
+                    v.removeFromSuperview();
                 }
                 let tags = provider();
-                empty.setHidden(!tags.is_empty());
+                if tags.is_empty() {
+                    let l = text_label(
+                        mtm,
+                        "Тегов пока нет: напишите #тег в заметке задачи",
+                        true,
+                        NSRect::new(NSPoint::new(MARGIN + INNER, 24.0), NSSize::new(BOX_W - 2.0 * INNER, 18.0)),
+                    );
+                    doc.addSubview(&l);
+                    doc.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(W, 320.0)));
+                    return;
+                }
                 let picked = tag_colors();
-                for (i, tag) in tags.iter().enumerate() {
-                    let y = 12.0 + i as f64 * ROW;
-                    // The tag as its capsule, in its colour now.
-                    let hue = style::tag_hue(tag);
-                    let cap = NSTextField::labelWithString(&NSString::from_str(tag), mtm);
-                    cap.setAlignment(NSTextAlignment::Center);
-                    cap.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize(12.0)));
-                    cap.setWantsLayer(true);
-                    if let Some(layer) = cap.layer() {
-                        layer.setCornerRadius(9.0);
-                        layer.setBackgroundColor(Some(
-                            &style::swatch(hue).colorWithAlphaComponent(0.55).CGColor(),
-                        ));
-                    }
-                    let w = (cap.fittingSize().width + 18.0).min(240.0);
-                    cap.setFrame(NSRect::new(NSPoint::new(PAD, y + 7.0), NSSize::new(w, 20.0)));
-                    doc.addSubview(&cap);
+                let mut rows = Vec::new();
+                for tag in &tags {
                     let mut titles = vec!["По названию".to_string()];
                     titles.extend(HUE_NAMES.iter().map(|n| n.to_string()));
-                    let p = popup(mtm, y, &titles, false, picked.get(tag).map_or(0, |h| h + 1));
-                    // Swatches from the second item on.
+                    let p = popup(mtm, &titles, false, picked.get(tag).map_or(0, |h| h + 1));
                     for k in 1..titles.len() {
                         if let Some(item) = p.itemAtIndex(k as isize) {
                             item.setImage(swatch_image(k - 1).as_deref());
@@ -499,16 +635,35 @@ impl SettingsWindow {
                         changed();
                     });
                     held.borrow_mut().extend(mine);
-                    doc.addSubview(&p);
+                    // The tag as its capsule, in its colour now, on the left.
+                    let mut row = control_row(mtm, "", None, &p);
+                    row.views.remove(0);
+                    let cap = NSTextField::labelWithString(&NSString::from_str(tag), mtm);
+                    cap.setAlignment(NSTextAlignment::Center);
+                    cap.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize(12.0)));
+                    cap.setWantsLayer(true);
+                    if let Some(layer) = cap.layer() {
+                        layer.setCornerRadius(9.0);
+                        layer.setBackgroundColor(Some(
+                            &style::swatch(style::tag_hue(tag)).colorWithAlphaComponent(0.55).CGColor(),
+                        ));
+                    }
+                    let w = (cap.fittingSize().width + 18.0).min(240.0);
+                    cap.setFrame(NSRect::new(
+                        NSPoint::new(INNER, (ROW_H - 20.0) / 2.0),
+                        NSSize::new(w, 20.0),
+                    ));
+                    row.views.insert(0, Retained::into_super(Retained::into_super(cap)));
+                    rows.push(row);
                 }
-                let h = (24.0 + tags.len() as f64 * ROW).max(300.0);
-                doc.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(W, h)));
+                let bottom = group(mtm, &doc, 20.0, rows);
+                doc.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(W, bottom.max(320.0))));
             }));
         }
-        let tags_tab = tab(mtm, "Теги", "tag", &tags_pane, 300.0, &mut retained);
+        let tags_tab = tab(mtm, "Теги", "tag", &tags_pane, 320.0, &mut retained);
 
         // ---- Помидор ----
-        let timer_pane = FlippedView::new(mtm, NSRect::new(NSPoint::ZERO, NSSize::new(W, 290.0)));
+        let timer_pane = FlippedView::new(mtm, NSRect::new(NSPoint::ZERO, NSSize::new(W, 340.0)));
         let state: Rc<std::cell::Cell<(u32, u32, u32, u32, bool, bool)>> =
             Rc::new(std::cell::Cell::new((25, 5, 15, 4, true, false)));
         let send = {
@@ -533,7 +688,7 @@ impl SettingsWindow {
             })
         };
         // A pop-up of minutes: the usual lengths plus the current one if unusual.
-        let minute_titles = |opts: &[u32], cur: u32| -> (Vec<u32>, Vec<String>) {
+        fn minute_titles(opts: &[u32], cur: u32) -> (Vec<u32>, Vec<String>) {
             let mut v: Vec<u32> = opts.to_vec();
             if !v.contains(&cur) {
                 v.push(cur);
@@ -541,32 +696,30 @@ impl SettingsWindow {
             }
             let t = v.iter().map(|m| format!("{m} мин")).collect();
             (v, t)
-        };
-        let rows: [(&str, &[u32], usize); 3] = [
-            ("Работа", &[15, 20, 25, 30, 40, 45, 50, 60, 90], 0),
-            ("Короткий перерыв", &[3, 5, 10, 15], 1),
-            ("Длинный перерыв", &[10, 15, 20, 30], 2),
+        }
+        const LENGTHS: [(&str, &[u32]); 3] = [
+            ("Работа", &[15, 20, 25, 30, 40, 45, 50, 60, 90]),
+            ("Короткий перерыв", &[3, 5, 10, 15]),
+            ("Длинный перерыв", &[10, 15, 20, 30]),
         ];
-        let mut pops: Vec<(Retained<NSPopUpButton>, &'static [u32], usize)> = Vec::new();
-        for (i, (title, opts, field)) in rows.iter().enumerate() {
-            let y = 16.0 + i as f64 * ROW;
-            timer_pane.addSubview(&label(mtm, title, y));
-            let (vals, titles) = minute_titles(opts, state.get().0);
-            let _ = vals;
-            let p = popup(mtm, y, &titles, false, 0);
+        let mut pops: Vec<(Retained<NSPopUpButton>, usize)> = Vec::new();
+        let mut length_rows = Vec::new();
+        for (field, (title, opts)) in LENGTHS.iter().enumerate() {
+            let (_, titles) = minute_titles(opts, [25, 5, 15][field]);
+            let p = popup(mtm, &titles, false, 0);
             let (send, state) = (send.clone(), state.clone());
-            let opts_owned: Vec<u32> = opts.to_vec();
-            let field = *field;
             let slot = ObjcWeak::from_retained(&p);
             let t = ActionTarget::new(mtm, move || {
                 let Some(p) = slot.load() else { return };
                 let Some(item) = p.titleOfSelectedItem() else { return };
-                let minutes: u32 = item
+                let Some(minutes) = item
                     .to_string()
                     .split_whitespace()
                     .next()
-                    .and_then(|n| n.parse().ok())
-                    .unwrap_or(opts_owned[0]);
+                    .and_then(|n| n.parse::<u32>().ok())
+                else {
+                    return;
+                };
                 let mut s = state.get();
                 match field {
                     0 => s.0 = minutes,
@@ -580,18 +733,11 @@ impl SettingsWindow {
                 p.setAction(Some(ActionTarget::sel()));
             }
             retained.push(Retained::into_super(Retained::into_super(t)));
-            timer_pane.addSubview(&p);
-            let static_opts: &'static [u32] = match field {
-                0 => &[15, 20, 25, 30, 40, 45, 50, 60, 90],
-                1 => &[3, 5, 10, 15],
-                _ => &[10, 15, 20, 30],
-            };
-            pops.push((p, static_opts, field));
+            length_rows.push(control_row(mtm, title, None, &p));
+            pops.push((p, field));
         }
-        timer_pane.addSubview(&label(mtm, "Длинный перерыв после каждой", 16.0 + 3.0 * ROW));
         let every = popup(
             mtm,
-            16.0 + 3.0 * ROW,
             &(2..=8).map(|n| format!("{n}-й")).collect::<Vec<_>>(),
             false,
             2,
@@ -604,9 +750,14 @@ impl SettingsWindow {
                 send(s);
             });
         }
-        timer_pane.addSubview(&every);
-        timer_pane.addSubview(&label(mtm, "Перерыв стартует сам", 16.0 + 4.0 * ROW));
-        let auto_b = switch(mtm, 16.0 + 4.0 * ROW, true);
+        length_rows.push(control_row(
+            mtm,
+            "Длинный перерыв после каждой",
+            Some("Через сколько рабочих отрезков"),
+            &every,
+        ));
+        let auto_b = switch(mtm, true);
+        let auto_w = switch(mtm, false);
         {
             let (send, state) = (send.clone(), state.clone());
             on_switch(mtm, &auto_b, &mut retained, move |on| {
@@ -615,9 +766,6 @@ impl SettingsWindow {
                 send(s);
             });
         }
-        timer_pane.addSubview(&auto_b);
-        timer_pane.addSubview(&label(mtm, "Работа стартует сама", 16.0 + 5.0 * ROW));
-        let auto_w = switch(mtm, 16.0 + 5.0 * ROW, false);
         {
             let (send, state) = (send.clone(), state.clone());
             on_switch(mtm, &auto_w, &mut retained, move |on| {
@@ -626,17 +774,26 @@ impl SettingsWindow {
                 send(s);
             });
         }
-        timer_pane.addSubview(&auto_w);
-        let timer_tab = tab(mtm, "Помидор", "timer", &timer_pane, 290.0, &mut retained);
+        let next = group(mtm, &timer_pane, 20.0, length_rows);
+        group(
+            mtm,
+            &timer_pane,
+            next,
+            vec![
+                control_row(mtm, "Перерыв стартует сам", None, &auto_b),
+                control_row(mtm, "Работа стартует сама", None, &auto_w),
+            ],
+        );
+        let timer_tab = tab(mtm, "Помидор", "timer", &timer_pane, 340.0, &mut retained);
         // The timer's values now in force (from the snapshot), shown without sending.
         let timer_show: Rc<dyn Fn(&crate::model::TimerSnap)> = {
             let (state, every, auto_b, auto_w) =
                 (state.clone(), every.clone(), auto_b.clone(), auto_w.clone());
             Rc::new(move |t: &crate::model::TimerSnap| {
                 state.set((t.work_min, t.break_min, t.long_min, t.every, t.auto_breaks, t.auto_work));
-                for (p, opts, field) in &pops {
+                for (p, field) in &pops {
                     let cur = [t.work_min, t.break_min, t.long_min][*field];
-                    let (vals, titles) = minute_titles(opts, cur);
+                    let (vals, titles) = minute_titles(LENGTHS[*field].1, cur);
                     p.removeAllItems();
                     let items: Vec<Retained<NSString>> =
                         titles.iter().map(|x| NSString::from_str(x)).collect();
