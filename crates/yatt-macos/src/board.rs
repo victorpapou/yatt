@@ -167,7 +167,7 @@ const HEAD_H: f64 = 26.0;
 const CHIP_STICK: f64 = 0.0;
 
 /// Names of the card colours, by palette index.
-const HUE_NAMES: [&str; 15] = [
+pub(crate) const HUE_NAMES: [&str; 15] = [
     "Синий",
     "Розовый",
     "Фиолетовый",

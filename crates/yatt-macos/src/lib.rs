@@ -25,6 +25,7 @@ mod notify;
 #[cfg(target_os = "macos")]
 mod palette;
 mod picker;
+mod settings;
 mod subtasks;
 mod tags;
 #[cfg(target_os = "macos")]

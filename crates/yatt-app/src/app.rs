@@ -18,7 +18,7 @@ actions!(
     yatt,
     [
         Quit, NewTask, Undo, Redo, StartPause, Stopwatch, Stop, Skip, Minimal, Cut, Copy, Paste,
-        SelectAll, Find
+        SelectAll, Find, OpenSettings
     ]
 );
 
@@ -183,6 +183,16 @@ pub fn run() -> anyhow::Result<()> {
                     .timer(std::time::Duration::from_millis(1000))
                     .await;
                 eprintln!("shot: {path}: {}", window.capture_png(&path));
+                if std::env::var_os("YATT_SHOT_SETTINGS").is_some() {
+                    window.show_settings();
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(800))
+                        .await;
+                    eprintln!(
+                        "shot: settings: {}",
+                        window.capture_settings_png(&format!("{path}.settings.png"))
+                    );
+                }
                 sink(yatt_macos::UiEvent::Quit);
             })
             .detach();
@@ -220,6 +230,7 @@ fn install_menus(cx: &mut App, window: &Rc<MainWindow>, sink: &yatt_macos::Sink)
         KeyBinding::new("cmd-v", Paste, None),
         KeyBinding::new("cmd-a", SelectAll, None),
         KeyBinding::new("cmd-f", Find, None),
+        KeyBinding::new("cmd-,", OpenSettings, None),
     ]);
 
     {
@@ -245,6 +256,10 @@ fn install_menus(cx: &mut App, window: &Rc<MainWindow>, sink: &yatt_macos::Sink)
     {
         let window = window.clone();
         cx.on_action(move |_: &Find, _| window.focus_search());
+    }
+    {
+        let window = window.clone();
+        cx.on_action(move |_: &OpenSettings, _| window.show_settings());
     }
     {
         let window = window.clone();
@@ -283,7 +298,11 @@ fn install_menus(cx: &mut App, window: &Rc<MainWindow>, sink: &yatt_macos::Sink)
         vec![
             Menu {
                 name: "yatt".into(),
-                items: vec![MenuItem::action("Выйти из yatt", Quit)],
+                items: vec![
+                    MenuItem::action("Настройки…", OpenSettings),
+                    MenuItem::separator(),
+                    MenuItem::action("Выйти из yatt", Quit),
+                ],
             },
             Menu {
                 name: "Файл".into(),

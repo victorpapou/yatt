@@ -72,9 +72,6 @@ const TOOLBAR_H: f64 = 40.0;
 const RING_D_MINI: f64 = 34.0;
 const RING_LINE: f64 = 3.0;
 const PAD: f64 = 16.0;
-/// A new card's colour unless one is picked: yellow (an index into `style`'s palette).
-const DEFAULT_NEW_COLOR: usize = 8;
-const RECOLOR_KEY: &str = "recolorByTag";
 const GROUPING_KEY: &str = "grouping";
 /// A column never gets narrower than this; the window grows for the inspector.
 const COLUMN_MIN_W: f64 = 240.0;
@@ -145,6 +142,7 @@ struct Ui {
     /// The new-task capsule's colour: the button, its popover, the chosen colour.
     palette_button: Retained<NSButton>,
     palette: crate::palette::Palette,
+    settings: crate::settings::SettingsWindow,
     new_color: Cell<usize>,
     /// How many items the toolbar has without the inspector's section.
     base_toolbar_len: Cell<usize>,
@@ -639,7 +637,7 @@ impl MainWindow {
             capsule_content.addSubview(&b);
             b
         };
-        style::set_recolor_by_tag(load_recolor());
+        style::set_recolor_by_tag(crate::settings::recolor_by_tag());
         board.addSubview(&cards.overlay);
         // The cards fade out under the capsule: the fade and the capsule above
         // every card, flying and dragged ones too, explicitly (own layers, own
@@ -660,19 +658,22 @@ impl MainWindow {
         }
 
         let palette = {
-            let (pick_ui, recolor_ui) = (inspector_ui.clone(), inspector_ui.clone());
-            crate::palette::Palette::new(
+            let pick_ui = inspector_ui.clone();
+            crate::palette::Palette::new(mtm, move |hue| {
+                if let Some(ui) = pick_ui.borrow().as_ref().and_then(|w| w.upgrade()) {
+                    ui.set_new_color(hue);
+                }
+            })
+        };
+        let settings = {
+            let ui_slot = inspector_ui.clone();
+            crate::settings::SettingsWindow::new(
                 mtm,
-                move |hue| {
-                    if let Some(ui) = pick_ui.borrow().as_ref().and_then(|w| w.upgrade()) {
-                        ui.set_new_color(hue);
+                Rc::new(move || {
+                    if let Some(ui) = ui_slot.borrow().as_ref().and_then(|w| w.upgrade()) {
+                        ui.apply_settings();
                     }
-                },
-                move |on| {
-                    if let Some(ui) = recolor_ui.borrow().as_ref().and_then(|w| w.upgrade()) {
-                        ui.set_recolor(on);
-                    }
-                },
+                }),
             )
         };
         let ui = Rc::new(Ui {
@@ -700,7 +701,8 @@ impl MainWindow {
             grouping_items: grouping_item.1,
             palette_button,
             palette,
-            new_color: Cell::new(DEFAULT_NEW_COLOR),
+            settings,
+            new_color: Cell::new(crate::settings::default_color()),
             inspector_ids,
             base_toolbar_len: Cell::new(0),
             _inspector_ui: inspector_ui.clone(),
@@ -900,6 +902,14 @@ impl MainWindow {
 
     /// Development aid: a scroll of `down` points over `at`: over a stack,
     /// down fans it out and up folds it.
+    pub fn show_settings(&self) {
+        self.ui.show_settings();
+    }
+
+    pub fn capture_settings_png(&self, path: &str) -> bool {
+        self.ui.settings.capture_png(path)
+    }
+
     pub fn demo_is_stacked(&self) -> bool {
         self.ui.cards.is_stacked()
     }
@@ -1170,7 +1180,7 @@ impl Ui {
         }));
         this.base_toolbar_len.set(this.toolbar.items().len());
         this.fit_root();
-        this.set_new_color(DEFAULT_NEW_COLOR);
+        this.set_new_color(this.new_color.get());
         {
             let weak = weak.clone();
             this.modal.on_subtasks_resize(move || {
@@ -1184,7 +1194,7 @@ impl Ui {
             let weak = weak.clone();
             let target = ActionTarget::new(this.mtm, move || {
                 if let Some(ui) = weak.upgrade() {
-                    ui.palette.show_state(ui.new_color.get(), style::recolor_by_tag());
+                    ui.palette.show_state(ui.new_color.get());
                     ui.palette.toggle(&ui.palette_button);
                 }
             });
@@ -1357,18 +1367,21 @@ impl Ui {
         self.new_color.set(hue);
         self.palette_button
             .setContentTintColor(Some(&style::swatch(hue)));
-        self.palette.show_state(hue, style::recolor_by_tag());
+        self.palette.show_state(hue);
     }
 
-    /// The setting: cards take the colour of their first tag.
-    fn set_recolor(self: &Rc<Self>, on: bool) {
-        style::set_recolor_by_tag(on);
-        objc2_foundation::NSUserDefaults::standardUserDefaults()
-            .setBool_forKey(on, &NSString::from_str(RECOLOR_KEY));
+    /// The settings changed: the colour new cards get and the first-tag colouring.
+    fn apply_settings(self: &Rc<Self>) {
+        self.set_new_color(crate::settings::default_color());
+        style::set_recolor_by_tag(crate::settings::recolor_by_tag());
         self.cards.restyle();
         if let Some(snap) = self.last.borrow().clone() {
             self.sync_modal(&snap);
         }
+    }
+
+    pub fn show_settings(&self) {
+        self.settings.show();
     }
 
     fn toggle_stack(&self) {
@@ -2656,11 +2669,6 @@ fn save_grouping(g: crate::board::Grouping) {
     };
     objc2_foundation::NSUserDefaults::standardUserDefaults()
         .setInteger_forKey(v, &NSString::from_str(GROUPING_KEY));
-}
-
-fn load_recolor() -> bool {
-    objc2_foundation::NSUserDefaults::standardUserDefaults()
-        .boolForKey(&NSString::from_str(RECOLOR_KEY))
 }
 
 fn save_stacks(on: bool) {
