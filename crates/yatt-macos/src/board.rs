@@ -1321,6 +1321,15 @@ impl Board {
         check.setWantsLayer(true);
         let check_box = crate::notes::make_box();
         check_box.root.setFrame(NSRect::new(NSPoint::new(3.0, 3.0), NSSize::new(16.0, 16.0)));
+        // As big as the glyph it replaces (about 20 pt), about the same centre.
+        check_box.root.setAffineTransform(objc2_core_foundation::CGAffineTransform {
+            a: 1.25,
+            b: 0.0,
+            c: 0.0,
+            d: 1.25,
+            tx: 0.0,
+            ty: 0.0,
+        });
         check_box
             .ring
             .setStrokeColor(Some(&style::text(hue).colorWithAlphaComponent(0.7).CGColor()));
