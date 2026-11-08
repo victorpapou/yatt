@@ -268,8 +268,9 @@ impl MainWindow {
         // each column's rows go under it (the columns are split-view items, so
         // all three get the same effect).
         window.setTitlebarAppearsTransparent(false);
-        // No line under it: the columns start right there.
-        window.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::None);
+        // The system's own separator, as in Finder: the line shows when content has
+        // gone under the toolbar and not before.
+        window.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::Automatic);
         window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
         window.setMinSize(NSSize::new(760.0, 480.0));
 
@@ -615,7 +616,7 @@ impl MainWindow {
             let item = objc2_app_kit::NSSplitViewItem::splitViewItemWithViewController(&vc);
             item.setCanCollapse(false);
             item.setMinimumThickness(MIN_BOARD_W);
-            item.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::None);
+            item.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::Automatic);
             split_vc.addSplitViewItem(&item);
             unsafe { retained.push(Retained::cast_unchecked::<AnyObject>(vc)) };
         }
@@ -630,7 +631,7 @@ impl MainWindow {
             item.setPreferredThicknessFraction(0.0);
             item.setCanCollapse(true);
             item.setCollapsed(true);
-            item.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::None);
+            item.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::Automatic);
             split_vc.addSplitViewItem(&item);
             let vc_keep = vc.clone();
             unsafe { retained.push(Retained::cast_unchecked::<AnyObject>(vc)) };
