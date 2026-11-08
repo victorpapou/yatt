@@ -52,6 +52,9 @@ pub struct State {
     /// Decoded images by their URL (None: not decodable).
     images: RefCell<HashMap<String, Option<Retained<objc2_app_kit::NSImage>>>>,
     image_layers: RefCell<Vec<Retained<CALayer>>>,
+    /// The tags drawn as badges: where their text starts and ends, name, colour.
+    tag_slots: RefCell<Vec<(usize, usize, String, (u8, u8, u8))>>,
+    tag_layers: RefCell<Vec<(Retained<CALayer>, Retained<objc2_quartz_core::CATextLayer>)>>,
     /// The images shown: where their text starts, the URL and the size they take.
     image_slots: RefCell<Vec<(usize, String, f64, f64)>>,
     /// Where each shown checkbox is, and the index of its state character.
@@ -190,6 +193,8 @@ impl NotesEditor {
             boxes: RefCell::default(),
             images: RefCell::default(),
             image_layers: RefCell::default(),
+            tag_slots: RefCell::default(),
+            tag_layers: RefCell::default(),
             image_slots: RefCell::default(),
             hits: RefCell::default(),
         });
@@ -413,6 +418,7 @@ fn restyle(st: &Rc<State>) {
         }
     };
     let mut slots: Vec<(usize, String, f64, f64)> = Vec::new();
+    let mut tag_slots: Vec<(usize, usize, String, (u8, u8, u8))> = Vec::new();
     for sp in parse(&string) {
         match sp.kind {
             Kind::Marker => unsafe { set(NSForegroundColorAttributeName, &dim, sp.start, sp.end) },
@@ -507,31 +513,34 @@ fn restyle(st: &Rc<State>) {
                 }
             }
             Kind::Tag(name) => {
-                let (r, g, b) = colors.get(&name).copied().unwrap_or_else(|| {
+                // The text is there for the caret and the selection, in the badge's
+                // font and clear; the badge itself is drawn over it (`place_tags`),
+                // with room for its padding either side.
+                let rgb = colors.get(&name).copied().unwrap_or_else(|| {
                     let c = style::swatch(style::tag_hue(&name));
                     let (r, g, b, _) = rgba(&c);
                     (r, g, b)
                 });
-                let bg = NSColor::colorWithSRGBRed_green_blue_alpha(
-                    r as f64 / 255.0,
-                    g as f64 / 255.0,
-                    b as f64 / 255.0,
-                    1.0,
-                );
-                let white = NSColor::whiteColor();
-                let f = NSFont::systemFontOfSize_weight(BODY - 1.0, unsafe {
+                let f = NSFont::systemFontOfSize_weight(crate::tags::BADGE_FONT, unsafe {
                     objc2_app_kit::NSFontWeightMedium
                 });
+                let clear = NSColor::clearColor();
+                let pad = NSNumber::new_f64(crate::tags::BADGE_PAD);
                 unsafe {
-                    set(NSBackgroundColorAttributeName, &bg, sp.start, sp.end);
-                    set(NSForegroundColorAttributeName, &white, sp.start, sp.end);
                     set(NSFontAttributeName, &f, sp.start, sp.end);
+                    set(NSForegroundColorAttributeName, &clear, sp.start, sp.end);
+                    set(NSKernAttributeName, &pad, sp.end - 1, sp.end);
+                    if sp.start > 0 {
+                        set(NSKernAttributeName, &pad, sp.start - 1, sp.start);
+                    }
                 }
+                tag_slots.push((sp.start, sp.end, name.clone(), rgb));
             }
         }
     }
     storage.endEditing();
     *st.image_slots.borrow_mut() = slots;
+    *st.tag_slots.borrow_mut() = tag_slots;
     drop(colors);
     place_boxes(st);
     // What is typed next starts plain, not in the style of the text before it.
@@ -679,7 +688,11 @@ fn place_boxes(st: &Rc<State>) {
         let frame = NSRect::new(
             NSPoint::new(
                 (origin.x + rect.origin.x).round(),
-                (origin.y + used.origin.y + (used.size.height - BOX) / 2.0).round(),
+                {
+                    // Centred on the text's own height: from the line's baseline.
+                    let base = unsafe { lm.locationForGlyphAtIndex(glyphs.location) };
+                    (origin.y + used.origin.y + base.y - 5.0 - BOX / 2.0).round()
+                },
             ),
             NSSize::new(BOX, BOX),
         );
@@ -701,6 +714,7 @@ fn place_boxes(st: &Rc<State>) {
     *st.hits.borrow_mut() = hits;
     drop(layers);
     place_images(st, &text, &lm, &container, origin);
+    place_tags(st, &text, &lm, &container, origin);
 }
 
 fn make_box() -> BoxLayer {
@@ -906,6 +920,87 @@ fn place_images(
             if let Some(img) = img {
                 unsafe { l.setContents(Some(&img)) };
             }
+        });
+    }
+}
+
+/// The tags as badges over their text, the one look (`tags::badge`).
+fn place_tags(
+    st: &Rc<State>,
+    text: &NSTextView,
+    lm: &objc2_app_kit::NSLayoutManager,
+    container: &objc2_app_kit::NSTextContainer,
+    origin: NSPoint,
+) {
+    let Some(layer) = text.layer() else { return };
+    let slots = st.tag_slots.borrow().clone();
+    let scale = text.window().map_or(2.0, |w| w.backingScaleFactor());
+    let mut layers = st.tag_layers.borrow_mut();
+    while layers.len() < slots.len() {
+        let root = CALayer::new();
+        root.setCornerRadius(crate::tags::BADGE_RADIUS);
+        let label = objc2_quartz_core::CATextLayer::new();
+        label.setAlignmentMode(unsafe { objc2_quartz_core::kCAAlignmentCenter });
+        root.addSublayer(&label);
+        layer.addSublayer(&root);
+        layers.push((root, label));
+    }
+    for (k, (root, label)) in layers.iter().enumerate() {
+        let Some((start, end, name, (r, g, b))) = slots.get(k) else {
+            root.setHidden(true);
+            continue;
+        };
+        let glyphs = unsafe {
+            lm.glyphRangeForCharacterRange_actualCharacterRange(
+                NSRange::new(*start, end - start),
+                std::ptr::null_mut(),
+            )
+        };
+        let used = unsafe {
+            lm.lineFragmentUsedRectForGlyphAtIndex_effectiveRange(
+                glyphs.location,
+                std::ptr::null_mut(),
+            )
+        };
+        let rect = unsafe { lm.boundingRectForGlyphRange_inTextContainer(glyphs, container) };
+        let pad = crate::tags::BADGE_PAD;
+        let h = crate::tags::BADGE_H;
+        let frame = NSRect::new(
+            NSPoint::new(
+                (origin.x + rect.origin.x - pad).round(),
+                (origin.y + used.origin.y + (used.size.height - h) / 2.0).round(),
+            ),
+            NSSize::new((rect.size.width + pad).ceil(), h),
+        );
+        root.setHidden(false);
+        crate::motion::quietly(|| {
+            root.setFrame(frame);
+            root.setBackgroundColor(Some(
+                &NSColor::colorWithSRGBRed_green_blue_alpha(
+                    *r as f64 / 255.0,
+                    *g as f64 / 255.0,
+                    *b as f64 / 255.0,
+                    1.0,
+                )
+                .CGColor(),
+            ));
+            label.setContentsScale(scale);
+            let title = NSString::from_str(&format!("#{name}"));
+            unsafe { label.setString(Some(&title)) };
+            label.setFontSize(crate::tags::BADGE_FONT);
+            let font = NSFont::systemFontOfSize_weight(crate::tags::BADGE_FONT, unsafe {
+                objc2_app_kit::NSFontWeightMedium
+            });
+            // NSFont is toll-free bridged with CTFont.
+            unsafe {
+                label.setFont(Some(&*(&*font as *const NSFont as *const objc2_core_foundation::CFType)))
+            };
+            label.setForegroundColor(Some(&NSColor::whiteColor().CGColor()));
+            let th = (crate::tags::BADGE_FONT * 1.25).ceil();
+            label.setFrame(NSRect::new(
+                NSPoint::new(0.0, ((h - th) / 2.0).round()),
+                NSSize::new(frame.size.width, th),
+            ));
         });
     }
 }

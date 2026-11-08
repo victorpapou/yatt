@@ -12,9 +12,14 @@ use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 use crate::classes::FlippedView;
 use crate::style;
 
-const CAPSULE_H: f64 = 20.0;
+/// The tag badge's one look: the settings, the editor and anywhere else use these.
+pub const BADGE_H: f64 = 20.0;
+pub const BADGE_RADIUS: f64 = 8.0;
+pub const BADGE_PAD: f64 = 6.0;
+pub const BADGE_FONT: f64 = 12.5;
+const CAPSULE_H: f64 = BADGE_H;
 /// Horizontal padding of a capsule's text: a little, not a plate.
-const CAPSULE_PAD: f64 = 6.0;
+const CAPSULE_PAD: f64 = BADGE_PAD;
 const GAP: f64 = 4.0;
 const ROW_GAP: f64 = 4.0;
 const PAD: f64 = 20.0;
@@ -105,7 +110,7 @@ impl Tags {
 pub fn badge(mtm: MainThreadMarker, name: &str) -> Retained<FlippedView> {
     let hue = style::tag_hue(name);
     let label = NSTextField::labelWithString(&NSString::from_str(name), mtm);
-    label.setFont(Some(&NSFont::systemFontOfSize_weight(12.5, unsafe {
+    label.setFont(Some(&NSFont::systemFontOfSize_weight(BADGE_FONT, unsafe {
         NSFontWeightMedium
     })));
     label.setTextColor(Some(&NSColor::whiteColor()));
@@ -114,7 +119,7 @@ pub fn badge(mtm: MainThreadMarker, name: &str) -> Retained<FlippedView> {
     let view = FlippedView::new(mtm, NSRect::new(NSPoint::ZERO, NSSize::new(w, CAPSULE_H)));
     view.setWantsLayer(true);
     if let Some(layer) = view.layer() {
-        layer.setCornerRadius(8.0);
+        layer.setCornerRadius(BADGE_RADIUS);
         layer.setBackgroundColor(Some(
             &style::swatch(hue).CGColor(),
         ));
