@@ -2,7 +2,7 @@
 
 yet another task tracker: a native macOS task manager in Rust + [GPUI](https://www.gpui.rs).
 
-- Kanban board (backlog, in progress, done) with drag and drop and undo.
+- Kanban board (backlog, in progress, review, done) with drag and drop and undo.
 - Pomodoro and stopwatch tied to tasks: every second of work is a time entry on each task in "In progress".
 - Focus profiles: app and site blocking, macOS Focus via Shortcuts (in progress).
 

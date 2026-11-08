@@ -51,7 +51,7 @@ use yatt_core::{Status, TaskId};
 use crate::classes::{
     CanvasMsg, CanvasView, Fill, FillView, FlippedView, OverlayView, Scroll, Touch,
 };
-use crate::model::{CardSnap, ColumnSnap, UiEvent, format_duration, moves_into};
+use crate::model::{COLS, CardSnap, ColumnSnap, UiEvent, format_duration, moves_into};
 use crate::motion;
 use crate::physics::{self, Body};
 use crate::style::{self, CARD_H, CARD_W};
@@ -322,28 +322,28 @@ pub struct Board {
     /// How far the toolbar reaches over the board (it runs under it, blurred).
     top: Cell<f64>,
     sink: Sink,
-    cols: [Column; 3],
+    cols: [Column; COLS],
     /// Scroll observers of the columns, kept for as long as the board.
     observers: RefCell<Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>>,
-    statuses: [Status; 3],
-    titles: RefCell<[String; 3]>,
-    geom: Cell<[ColumnGeom; 3]>,
+    statuses: [Status; COLS],
+    titles: RefCell<[String; COLS]>,
+    geom: Cell<[ColumnGeom; COLS]>,
     height: Cell<f64>,
-    order: RefCell<[Vec<TaskId>; 3]>,
+    order: RefCell<[Vec<TaskId>; COLS]>,
     cards: RefCell<HashMap<TaskId, Card>>,
     /// `YATT_DUMP`: the glass's layer tree has been printed once.
     dumped: Cell<bool>,
     started: Cell<f64>,
-    layouts: Cell<[Layout; 3]>,
+    layouts: Cell<[Layout; COLS]>,
     /// How open each column's stack should be (0 folded, 1 fanned; between
     /// while a scroll drives it), and when that scroll last moved it (media
     /// time).
-    open_p: Cell<[f64; 3]>,
+    open_p: Cell<[f64; COLS]>,
     /// How open each column's stack is: falling toward `open_p`, or held by
     /// the fingers on the trackpad (`held`).
-    opening: Cell<[physics::Opening; 3]>,
-    held: Cell<[Option<Held>; 3]>,
-    scrubbed: Cell<[f64; 3]>,
+    opening: Cell<[physics::Opening; COLS]>,
+    held: Cell<[Option<Held>; COLS]>,
+    scrubbed: Cell<[f64; COLS]>,
     /// Selected cards, and the one a ⇧-click range starts from.
     selected: RefCell<HashSet<TaskId>>,
     anchor: Cell<Option<TaskId>>,
@@ -389,7 +389,7 @@ impl Board {
         canvas.setClipsToBounds(true);
         let overlay = OverlayView::new(mtm);
         overlay.setClipsToBounds(false);
-        let cols = [0, 1, 2].map(|_| {
+        let cols = std::array::from_fn::<_, COLS, _>(|_| {
             let scroll = NSScrollView::new(mtm);
             scroll.setDrawsBackground(false);
             scroll.setHasVerticalScroller(true);
@@ -431,11 +431,11 @@ impl Board {
             cards: RefCell::new(HashMap::new()),
             dumped: Cell::new(false),
             started: Cell::new(CACurrentMediaTime()),
-            layouts: Cell::new([Layout::List; 3]),
-            open_p: Cell::new([0.0; 3]),
+            layouts: Cell::new([Layout::List; COLS]),
+            open_p: Cell::new([0.0; COLS]),
             opening: Cell::new(Default::default()),
-            held: Cell::new([None; 3]),
-            scrubbed: Cell::new([0.0; 3]),
+            held: Cell::new([None; COLS]),
+            scrubbed: Cell::new([0.0; COLS]),
             selected: RefCell::new(HashSet::new()),
             anchor: Cell::new(None),
             press: RefCell::new(None),
@@ -537,7 +537,7 @@ impl Board {
     /// `top`: how far the toolbar reaches over the board, which runs under it.
     pub fn set_geometry(
         self: &Rc<Self>,
-        geom: [ColumnGeom; 3],
+        geom: [ColumnGeom; COLS],
         height: f64,
         overlay_dy: f64,
         top: f64,
@@ -571,7 +571,7 @@ impl Board {
         }
     }
 
-    pub fn render(self: &Rc<Self>, columns: &[ColumnSnap; 3]) {
+    pub fn render(self: &Rc<Self>, columns: &[ColumnSnap; COLS]) {
         let dragging: HashSet<TaskId> = self.dragged().into_iter().collect();
         let mut seen = HashSet::new();
         {
@@ -810,8 +810,8 @@ impl Board {
         } else {
             Layout::Stack { fanned: false }
         };
-        self.layouts.set([layout; 3]);
-        self.open_p.set([0.0; 3]);
+        self.layouts.set([layout; COLS]);
+        self.open_p.set([0.0; COLS]);
         self.retarget();
         self.kick();
     }
@@ -1573,7 +1573,7 @@ impl Board {
         // Each stack's openness falls toward what it should be, and every card
         // of the stack is headed for its place at that openness.
         let mut opening = self.opening.get();
-        let mut opened = [false; 3];
+        let mut opened = [false; COLS];
         for (ci, o) in opening.iter_mut().enumerate() {
             // Held: the fingers set it (`on_scroll`); the cards follow.
             if held[ci].is_some() {
@@ -2092,7 +2092,7 @@ impl Board {
             }
         }
         self.layouts.set(layouts);
-        self.open_p.set([0.0; 3]);
+        self.open_p.set([0.0; COLS]);
         any
     }
 
@@ -2192,7 +2192,7 @@ impl Board {
     fn let_go(self: &Rc<Self>) {
         let now = CACurrentMediaTime();
         let mut held = self.held.get();
-        for ci in 0..3 {
+        for ci in 0..COLS {
             let Some(h) = held[ci].take() else { continue };
             self.held.set(held);
             let mut opening = self.opening.get();

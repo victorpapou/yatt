@@ -104,5 +104,27 @@ CREATE TABLE kv (
         ),
         // Done tasks tucked into the archive.
         M::up("ALTER TABLE tasks ADD COLUMN archived_at INTEGER;"),
+        // The «review» column: the status CHECK learns a fourth value. SQLite
+        // cannot alter a CHECK, and rebuilding `tasks` would risk the data;
+        // widening it in the schema text leaves every row as it is.
+        M::up_with_hook(
+            "",
+            |tx| {
+                const OLD: &str = "CHECK (status IN ('backlog', 'in_progress', 'done'))";
+                const NEW: &str =
+                    "CHECK (status IN ('backlog', 'in_progress', 'review', 'done'))";
+                let version: i64 = tx.query_row("PRAGMA schema_version", [], |r| r.get(0))?;
+                tx.execute_batch("PRAGMA writable_schema = ON")?;
+                let changed = tx.execute(
+                    "UPDATE sqlite_master SET sql = replace(sql, ?1, ?2)
+                     WHERE type = 'table' AND name = 'tasks'",
+                    [OLD, NEW],
+                )?;
+                tx.execute_batch(&format!("PRAGMA schema_version = {}", version + 1))?;
+                tx.execute_batch("PRAGMA writable_schema = OFF")?;
+                debug_assert_eq!(changed, 1);
+                Ok(())
+            },
+        ),
     ])
 }

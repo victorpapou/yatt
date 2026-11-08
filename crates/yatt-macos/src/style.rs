@@ -287,6 +287,7 @@ pub fn column_color(i: usize) -> Retained<NSColor> {
         0 => NSColor::systemGrayColor(),
         // «В работе»: yellow, a shade deep enough for its text to read.
         1 => NSColor::colorWithSRGBRed_green_blue_alpha(0.86, 0.62, 0.0, 1.0),
+        2 => NSColor::systemBlueColor(),
         _ => NSColor::systemGreenColor(),
     }
 }

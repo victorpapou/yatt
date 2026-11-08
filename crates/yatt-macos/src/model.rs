@@ -3,10 +3,13 @@
 
 use yatt_core::{Status, TaskId};
 
+/// The board's columns, one per status.
+pub const COLS: usize = yatt_core::Status::ALL.len();
+
 /// Everything the window shows, rebuilt by the app whenever state changes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
-    pub columns: [ColumnSnap; 3],
+    pub columns: [ColumnSnap; COLS],
     pub timer: TimerSnap,
     pub expanded: Option<TaskId>,
 }
@@ -69,6 +72,7 @@ pub fn status_label(status: Status) -> &'static str {
     match status {
         Status::Backlog => "Бэклог",
         Status::InProgress => "В работе",
+        Status::Review => "На ревью",
         Status::Done => "Готово",
     }
 }

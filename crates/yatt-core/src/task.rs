@@ -7,16 +7,24 @@ use crate::ids::{ProjectId, TaskId};
 pub enum Status {
     Backlog,
     InProgress,
+    /// Handed on for review: no time is written here.
+    Review,
     Done,
 }
 
 impl Status {
-    pub const ALL: [Status; 3] = [Status::Backlog, Status::InProgress, Status::Done];
+    pub const ALL: [Status; 4] = [
+        Status::Backlog,
+        Status::InProgress,
+        Status::Review,
+        Status::Done,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Status::Backlog => "backlog",
             Status::InProgress => "in_progress",
+            Status::Review => "review",
             Status::Done => "done",
         }
     }

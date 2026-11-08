@@ -607,4 +607,47 @@ mod tests {
         assert_eq!(merged_len(vec![(0, 10), (5, 15), (20, 30)]), 25);
         assert_eq!(merged_len(vec![]), 0);
     }
+
+    #[test]
+    fn review_migration_keeps_rows_and_accepts_the_new_status() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        schema::migrations().to_version(&mut conn, 3).unwrap();
+        conn.execute(
+            "INSERT INTO tasks (id, title, status, position, created_at, updated_at)
+             VALUES ('a', 'old', 'in_progress', 'a0', 1, 1)",
+            [],
+        )
+        .unwrap();
+        assert!(
+            conn.execute(
+                "INSERT INTO tasks (id, title, status, position, created_at, updated_at)
+                 VALUES ('b', 'x', 'review', 'a1', 1, 1)",
+                [],
+            )
+            .is_err()
+        );
+        schema::migrations().to_latest(&mut conn).unwrap();
+        conn.execute(
+            "INSERT INTO tasks (id, title, status, position, created_at, updated_at)
+             VALUES ('b', 'x', 'review', 'a1', 1, 1)",
+            [],
+        )
+        .unwrap();
+        let n: i64 = conn
+            .query_row("SELECT count(*) FROM tasks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 2);
+        assert!(
+            conn.execute(
+                "INSERT INTO tasks (id, title, status, position, created_at, updated_at)
+                 VALUES ('c', 'x', 'nonsense', 'a2', 1, 1)",
+                [],
+            )
+            .is_err()
+        );
+        let ok: String = conn
+            .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(ok, "ok");
+    }
 }

@@ -238,6 +238,7 @@ fn column_title(status: Status) -> &'static str {
     match status {
         Status::Backlog => "Бэклог",
         Status::InProgress => "В работе",
+        Status::Review => "На ревью",
         Status::Done => "Готово",
     }
 }
@@ -363,6 +364,6 @@ mod tests {
         ws.handle(UiEvent::ArchiveDone);
         assert!(ws.snapshot().columns.iter().all(|c| c.cards.is_empty()));
         ws.handle(UiEvent::Undo);
-        assert_eq!(ws.snapshot().columns[2].cards.len(), 1);
+        assert_eq!(ws.snapshot().columns[3].cards.len(), 1);
     }
 }

@@ -462,6 +462,18 @@ mod tests {
     }
 
     #[test]
+    fn review_writes_no_time() {
+        let mut f = Fixture::new();
+        let a = f.task("a", Status::InProgress);
+        f.at(0).start_or_pause(Mode::Stopwatch);
+        f.at(10).move_task(a, Status::Review, Placement::Top);
+        assert!(!f.engine.timer.active_tasks.contains(&a));
+        f.at(40).stop();
+        assert_eq!(f.total(a), 10_000);
+        assert_eq!(f.status(a), Status::Review);
+    }
+
+    #[test]
     fn done_closes_entry_and_undo_resumes_it() {
         let mut f = Fixture::new();
         let a = f.task("a", Status::InProgress);

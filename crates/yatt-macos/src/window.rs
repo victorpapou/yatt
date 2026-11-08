@@ -4,7 +4,7 @@
 //!
 //! Layout: the timer row in a native toolbar unified with the titlebar (the
 //! digits in its middle, the controls on the right), the board running under it,
-//! split into three columns by 1 px dividers that fade in from the top. Each
+//! split into four columns by 1 px dividers that fade in from the top. Each
 //! column's title and count sit in a small glass chip right under the toolbar, in
 //! the column's colour, floating over the cards; one header button switches the
 //! whole board between lists and stacks.
@@ -57,7 +57,7 @@ use crate::classes::{
     editing_text,
 };
 use crate::modal::Modal;
-use crate::model::{Snapshot, TimerSnap, UiEvent, format_clock};
+use crate::model::{COLS, Snapshot, TimerSnap, UiEvent, format_clock};
 use crate::motion;
 use crate::style;
 
@@ -125,8 +125,8 @@ struct Ui {
     top_inset: Cell<f64>,
     /// Everything below the header; hidden in minimal mode.
     board: Retained<FlippedView>,
-    dividers: [Retained<FadeLine>; 2],
-    columns: [Column; 3],
+    dividers: [Retained<FadeLine>; COLS - 1],
+    columns: [Column; COLS],
     /// Holds the column chips above the cards; clicks elsewhere fall through.
     heads: Retained<PassView>,
     capsule: Retained<NSView>,
@@ -345,12 +345,12 @@ impl MainWindow {
         split_view.setDividerStyle(objc2_app_kit::NSSplitViewDividerStyle::Thin);
         // The toolbar follows the column dividers: one section per column, so each
         // column's scroll view gets the edge effect under its own part of the bar.
-        let seps: Vec<Retained<NSToolbarItem>> = (0..2)
+        let seps: Vec<Retained<NSToolbarItem>> = (0..COLS - 1)
             .map(|i| {
                 let t = objc2_app_kit::NSTrackingSeparatorToolbarItem::trackingSeparatorToolbarItemWithIdentifier_splitView_dividerIndex(
                     &NSString::from_str(&format!("yatt.sep{i}")),
                     &split_view,
-                    i,
+                    i as isize,
                 );
                 Retained::into_super(t)
             })
@@ -410,6 +410,7 @@ impl MainWindow {
             inspector_items[0].clone(),
             inspector_items[1].clone(),
             inspector_items[2].clone(),
+            seps[2].clone(),
         ];
         // The toolbar gives neighbouring items one shared bubble; a fixed space
         // between two items gives each its own.
@@ -427,6 +428,8 @@ impl MainWindow {
             id(&items[0]),
             flexible.clone(),
             id(&items[9]),
+            flexible.clone(),
+            id(&items[13]),
             flexible,
             id(&items[1]),
             space.clone(),
@@ -462,7 +465,7 @@ impl MainWindow {
         // filled in once `Ui` exists.
         let tint_target: Rc<RefCell<Option<std::rc::Weak<Ui>>>> = Rc::new(RefCell::new(None));
         let tint_target_for_board = tint_target.clone();
-        let columns = [0, 1, 2].map(|i| Column::new(mtm, i));
+        let columns: [Column; COLS] = std::array::from_fn(|i| Column::new(mtm, i));
         let split_vc = objc2_app_kit::NSSplitViewController::new(mtm);
         split_vc.setSplitView(&split_view);
         let modal = Modal::new(mtm, &sink);
@@ -472,7 +475,7 @@ impl MainWindow {
             let tint_target = tint_target_for_board.clone();
             Board::new(mtm, sink.clone(), move |col| {
                 if let Some(ui) = tint_target.borrow().as_ref().and_then(|w| w.upgrade()) {
-                    for i in 0..3 {
+                    for i in 0..COLS {
                         ui.set_highlight(i, Some(i) == col);
                     }
                 }
@@ -487,7 +490,7 @@ impl MainWindow {
             let item = objc2_app_kit::NSSplitViewItem::splitViewItemWithViewController(&vc);
             item.setCanCollapse(false);
             item.setMinimumThickness(COLUMN_MIN_W);
-            item.setPreferredThicknessFraction(1.0 / 3.0);
+            item.setPreferredThicknessFraction(1.0 / COLS as f64);
             split_vc.addSplitViewItem(&item);
         }
         // The open task lives in an inspector pane on the right, as in Calendar:
@@ -517,7 +520,7 @@ impl MainWindow {
         split_vc.view().layoutSubtreeIfNeeded();
         // The three columns always share the board equally: equal widths, firmer
         // than the split view's own holding priorities.
-        for i in 1..3 {
+        for i in 1..COLS {
             let c = unsafe {
                 objc2_app_kit::NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
                     &columns[i].view,
@@ -541,7 +544,7 @@ impl MainWindow {
 
         let board = FlippedView::new(mtm, NSRect::ZERO);
         root.addSubview(&board);
-        let dividers = [FadeLine::new(mtm), FadeLine::new(mtm)];
+        let dividers: [Retained<FadeLine>; COLS - 1] = std::array::from_fn(|_| FadeLine::new(mtm));
         board.addSubview(&cards.canvas);
         let heads = PassView::new(mtm);
         board.addSubview(&heads);
@@ -1345,17 +1348,17 @@ impl Ui {
         // Three equal columns: the split view lays its items out (the
         // dividers have no width and nowhere to go).
         // The window lays the split view out (it is the content view).
-        let col_w = (size.width / 3.0).floor();
-        let mut geom = [ColumnGeom::default(); 3];
+        let col_w = (size.width / COLS as f64).floor();
+        let mut geom = [ColumnGeom::default(); COLS];
         for (i, c) in self.columns.iter().enumerate() {
             // The items share the width equally, give or take half a point.
             let x = i as f64 * col_w;
-            let w = if i == 2 { size.width - x } else { col_w };
+            let w = if i == COLS - 1 { size.width - x } else { col_w };
             c.tint
                 .setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(w, board_h)));
             c.middle.set(x + w / 2.0);
             c.layout_chip(x + w / 2.0, top + CHIP_TOP);
-            if i < 2 {
+            if i < COLS - 1 {
                 // From under the toolbar, fading in to full by half way down.
                 self.dividers[i].setFrame(NSRect::new(
                     NSPoint::new(x + w - 0.5, top),
@@ -1554,7 +1557,7 @@ impl Ui {
         let frame = self.window.frame();
         let mut target = frame;
         if show {
-            let need = 3.0 * COLUMN_MIN_W + INSPECTOR_W + 3.0;
+            let need = COLS as f64 * COLUMN_MIN_W + INSPECTOR_W + COLS as f64;
             let grow = (need - frame.size.width).max(0.0);
             self.grew.set(grow);
             target.size.width += grow;
@@ -1562,7 +1565,7 @@ impl Ui {
             target.size.width = (frame.size.width - self.grew.replace(0.0)).max(0.0);
         }
         let min = if show {
-            (3.0 * COLUMN_MIN_W + INSPECTOR_W + 3.0).max(760.0)
+            (COLS as f64 * COLUMN_MIN_W + INSPECTOR_W + COLS as f64).max(760.0)
         } else {
             760.0
         };
