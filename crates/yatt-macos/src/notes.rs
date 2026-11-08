@@ -91,6 +91,39 @@ const BOX_LINE: f64 = 20.0;
 /// What a collapsed `- [ ] ` takes in the line.
 const BOX_W: f64 = 24.0;
 
+pub struct PinIvars {
+    pinned: Cell<bool>,
+}
+
+define_class!(
+    /// A clip view that, while `pinned`, never scrolls: the capsule's text shows from
+    /// its top, however the text view tries to bring the caret into view (it did so
+    /// for a frame, before the capsule had grown to hold the new line).
+    // SAFETY: NSClipView has no subclassing requirements; no Drop impl.
+    #[unsafe(super(objc2_app_kit::NSClipView))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = PinIvars]
+    pub struct PinClip;
+
+    impl PinClip {
+        #[unsafe(method(constrainBoundsRect:))]
+        fn constrain_bounds_rect(&self, proposed: NSRect) -> NSRect {
+            let mut r: NSRect = unsafe { msg_send![super(self), constrainBoundsRect: proposed] };
+            if self.ivars().pinned.get() {
+                r.origin.y = 0.0;
+            }
+            r
+        }
+    }
+);
+
+impl PinClip {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(PinIvars { pinned: Cell::new(false) });
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
 pub struct DelegateIvars {
     state: Rc<State>,
 }
@@ -314,6 +347,7 @@ impl NotesTextView {
 
 pub struct NotesEditor {
     pub view: Retained<NSScrollView>,
+    pin: RefCell<Option<Retained<PinClip>>>,
     text: Retained<NotesTextView>,
     state: Rc<State>,
     _delegate: Retained<NotesDelegate>,
@@ -397,9 +431,30 @@ impl NotesEditor {
         }
         Self {
             view: scroll,
+            pin: RefCell::new(None),
             text,
             state,
             _delegate: delegate,
+        }
+    }
+
+    /// Swaps in the clip view that can be pinned to the top (see `set_pinned`).
+    pub fn use_pin_clip(&self, mtm: MainThreadMarker) {
+        let clip = PinClip::new(mtm);
+        clip.setDrawsBackground(false);
+        self.view.setContentView(&clip);
+        clip.setDocumentView(Some(&self.text));
+        *self.pin.borrow_mut() = Some(clip);
+    }
+
+    /// While pinned the text shows from its top and does not scroll.
+    pub fn set_pinned(&self, pinned: bool) {
+        if let Some(c) = self.pin.borrow().as_ref() {
+            c.ivars().pinned.set(pinned);
+            if pinned {
+                self.view.contentView().scrollToPoint(NSPoint::ZERO);
+                self.view.reflectScrolledClipView(&self.view.contentView());
+            }
         }
     }
 

@@ -689,6 +689,7 @@ impl MainWindow {
         // The capsule is a small editor of the same native kind as the notes: the first
         // line is the task's name, lines after it may be checklists, lists, #tags.
         let new_task = crate::notes::NotesEditor::new(mtm, |_| {});
+        new_task.use_pin_clip(mtm);
         new_task.view.setDrawsBackground(false);
         new_task.view.setHasVerticalScroller(false);
         new_task.set_inset(NSSize::new(CAPSULE_INSET, (CAPSULE_H - 17.0) / 2.0));
@@ -1193,6 +1194,12 @@ impl MainWindow {
         self.ui.submit_new_task(in_progress);
     }
 
+    /// Development aid: types `text` into the capsule as the keyboard would (the
+    /// text view's own insertion path, caret scrolling and all).
+    pub fn demo_capsule_type(&self, text: &str) {
+        self.ui.new_task.debug_type(text);
+    }
+
     /// Development aid: one sample of the capsule while it grows, from the
     /// presentation layers (what is on screen), in the window's coordinates:
     /// the capsule's edges, the first text line's, and their distances.
@@ -1605,15 +1612,18 @@ impl Ui {
     fn update_capsule_height(&self) {
         let empty = self.new_task.string().is_empty();
         self.placeholder.setHidden(!empty);
+        let max = (self.board.frame().size.height * 0.6).max(CAPSULE_H);
+        let content = self.new_task.content_height();
         let want = if empty {
             CAPSULE_H
         } else {
-            // Up to six lines, then it scrolls inside.
             // As tall as the text, whatever it is; only a sane share of the window
             // is the limit (then it scrolls inside).
-            let max = (self.board.frame().size.height * 0.6).max(CAPSULE_H);
-            self.new_task.content_height().clamp(CAPSULE_H, max)
+            content.clamp(CAPSULE_H, max)
         };
+        // While the text fits the editor never scrolls: the caret scroll the text
+        // view does on a new line came a frame before the capsule had grown.
+        self.new_task.set_pinned(empty || content <= max + 0.5);
         if (want - self.capsule_h.get()).abs() > 0.5 {
             self.capsule_h.set(want);
             self.place_capsule(true);
@@ -1622,17 +1632,6 @@ impl Ui {
         // moment later: the text view scrolls its caret into view after the edit that
         // brought us here, and again while the capsule is still growing.
         self.new_task.keep_in_view(want);
-        for delay in [0.03, 0.27] {
-            let weak = self.new_task.weak_view();
-            let block = RcBlock::new(move |_: NonNull<objc2_foundation::NSTimer>| {
-                if let Some((view, h)) = weak() {
-                    crate::notes::keep_in_view_of(&view, h);
-                }
-            });
-            let _ = unsafe {
-                objc2_foundation::NSTimer::scheduledTimerWithTimeInterval_repeats_block(delay, false, &block)
-            };
-        }
     }
 
     /// The capsule's colour for the next new card.

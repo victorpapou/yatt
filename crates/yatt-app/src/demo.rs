@@ -58,13 +58,19 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
         // `YATT_DEMO_CAPGROW=1`: lines typed into the capsule one by one, the
         // capsule sampled every 8 ms for 450 ms after each.
         if std::env::var_os("YATT_DEMO_CAPGROW").is_some() {
-            let mut text = String::new();
-            for line in 0..4 {
-                if line > 0 {
-                    text.push('\n');
+            window.demo_capsule_text("");
+            for line in 0..6 {
+                match line {
+                    0..=3 => {
+                        if line > 0 {
+                            window.demo_capsule_type("\n");
+                        }
+                        window.demo_capsule_type(&format!("строка {line}"));
+                    }
+                    // A long line that wraps, then several lines pasted at once.
+                    4 => window.demo_capsule_type(&"длинное слово ".repeat(20)),
+                    _ => window.demo_capsule_type("\nа\nб\nв"),
                 }
-                text.push_str(&format!("строка {line}"));
-                window.demo_capsule_text(&text);
                 for f in 0..56 {
                     eprintln!("capgrow,{line},{f},{}", window.demo_capsule_probe());
                     wait(8).await;
