@@ -1,5 +1,6 @@
 //! The new-task capsule's colour: a small popover off the palette button, a
-//! grid of round swatches (Freeform's), the chosen one ringed.
+//! grid of round swatches (Freeform's), the chosen one ticked. The one colour
+//! picker of the app: the capsule, the settings and the tags use it.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -69,15 +70,24 @@ impl SwatchView {
             dot.setCornerRadius((D - 6.0) / 2.0);
             dot.setBackgroundColor(Some(&style::swatch(hue).CGColor()));
             layer.addSublayer(&dot);
-            // ...and the chosen one has a ring round it, outside the colour.
-            let ring = CALayer::new();
+            // ...and the chosen one carries a tick, no ring or border round any.
+            let ring = objc2_quartz_core::CAShapeLayer::new();
             ring.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(D, D)));
-            ring.setCornerRadius(D / 2.0);
-            ring.setBorderWidth(2.0);
-            ring.setBorderColor(Some(&NSColor::labelColor().colorWithAlphaComponent(0.75).CGColor()));
+            ring.setFillColor(None);
+            ring.setStrokeColor(Some(&NSColor::whiteColor().CGColor()));
+            ring.setLineWidth(2.2);
+            unsafe { ring.setLineCap(objc2_quartz_core::kCALineCapRound) };
+            ring.setLineJoin(unsafe { objc2_quartz_core::kCALineJoinRound });
+            let path = objc2_core_graphics::CGMutablePath::new();
+            unsafe {
+                objc2_core_graphics::CGMutablePath::move_to_point(Some(&path), std::ptr::null(), D * 0.32, D * 0.50);
+                objc2_core_graphics::CGMutablePath::add_line_to_point(Some(&path), std::ptr::null(), D * 0.44, D * 0.38);
+                objc2_core_graphics::CGMutablePath::add_line_to_point(Some(&path), std::ptr::null(), D * 0.69, D * 0.64);
+            }
+            ring.setPath(Some(&path));
             ring.setHidden(true);
             layer.addSublayer(&ring);
-            *this.ivars().ring.borrow_mut() = Some(ring);
+            *this.ivars().ring.borrow_mut() = Some(Retained::into_super(ring));
         }
         this
     }
@@ -187,7 +197,7 @@ impl Palette {
         }
     }
 
-    /// Rings the chosen colour.
+    /// Ticks the chosen colour.
     pub fn show_state(&self, selected: usize) {
         for (hue, v) in &self.swatches {
             v.select(*hue == selected);

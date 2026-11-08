@@ -830,8 +830,8 @@ impl Board {
                 .setFrame(NSRect::new(NSPoint::new(0.0, y), NSSize::new(width, HEAD_H)));
             h.material
                 .setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(width, HEAD_H)));
-            // A native separator is one device pixel: 0.5 pt on Retina.
-            let px = 1.0 / col.scroll.window().map_or(2.0, |w| w.backingScaleFactor()).max(1.0);
+            // Finder's section rule: 1 pt.
+            let px = 1.0; // 1 pt (2 px on Retina), as Finder's
             h.line.setFrame(NSRect::new(
                 NSPoint::new(0.0, HEAD_H - px),
                 NSSize::new(width, px),
@@ -3482,7 +3482,7 @@ pub(crate) fn place_dots(title: &NSTextField, dots: &objc2_app_kit::NSImageView,
         }
         if k == sizes.len() - 1 {
             // Cut to two lines: the dots sit at the end of the second.
-            placed = Some((last_end, line_h * (lines.min(2) as f64 - 0.5), false));
+            placed = Some((last_end, last_mid - line_h * lines.saturating_sub(2) as f64, false));
         }
     }
     let Some((end, mid, fits)) = placed else { return };
@@ -3526,8 +3526,12 @@ fn measure_lines(title: &NSTextField, width: f64) -> (usize, f64, f64, f64) {
         let used = unsafe { lm.lineFragmentUsedRectForGlyphAtIndex_effectiveRange(g, &mut range) };
         lines += 1;
         end = used.origin.x + used.size.width;
-        mid = used.origin.y + used.size.height / 2.0;
         line_h = used.size.height;
+        // The optical centre of the line: halfway between the middles of the
+        // lowercase and the capitals, up from the baseline.
+        let base = unsafe { lm.locationForGlyphAtIndex(g) }.y;
+        let (xh, ch) = title.font().map_or((7.0, 10.0), |f| (f.xHeight(), f.capHeight()));
+        mid = used.origin.y + base - (xh + ch) / 4.0;
         g = (range.location + range.length).max(g + 1);
     }
     (lines.max(1), end, mid, line_h)
@@ -3671,8 +3675,11 @@ impl CardPreview {
     }
 
     fn face_for(mtm: MainThreadMarker, id: TaskId, title: &str, hue: usize) -> Retained<FlippedView> {
-        let Face { content, dots, .. } = card_face(mtm, id, title, hue);
+        let Face { content, dots, time, title, .. } = card_face(mtm, id, title, hue);
         set_tag_dots(&dots, &["дизайн".to_string()], hue);
+        place_dots(&title, &dots, true);
+        // A running timer, top right, as on the board.
+        set_meta(&time, "0:12:40");
         content
     }
 

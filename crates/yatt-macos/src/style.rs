@@ -378,7 +378,8 @@ pub fn column_color(i: usize) -> Retained<NSColor> {
 
 /// A tag's capsule colour as CSS, for the notes editor.
 pub fn tag_css(name: &str) -> String {
-    let (r, g, b) = palette()[tag_hue(name) % HUES.len()].0;
+    // The vivid swatch, as the dots on the cards: one colour everywhere.
+    let (r, g, b) = HUES[tag_hue(name) % HUES.len()].0;
     format!("{r},{g},{b}")
 }
 

@@ -557,11 +557,10 @@ impl MainWindow {
             flexible2_space,
             id(&items[7]),
         ];
-        // The inspector's palette and trash in one bubble in the middle of its
-        // section, «close» in a bubble of its own at the right edge.
+        // The inspector's palette and trash in one bubble at the left of its section,
+        // «close» in a bubble of its own at the right edge.
         let inspector_ids: Vec<Retained<NSString>> = vec![
             unsafe { objc2_app_kit::NSToolbarInspectorTrackingSeparatorItemIdentifier }.copy(),
-            unsafe { NSToolbarFlexibleSpaceItemIdentifier }.copy(),
             id(&items[10]),
             id(&items[11]),
             unsafe { NSToolbarFlexibleSpaceItemIdentifier }.copy(),
@@ -2028,8 +2027,8 @@ impl Ui {
             c.layout_chip(x + w / 2.0, top + CHIP_TOP);
             if i < COLS - 1 {
                 // From under the toolbar, fading in to full by half way down.
-                // One device pixel, as Finder's: 0.5 pt on Retina.
-                let px = 1.0 / self.window.backingScaleFactor().max(1.0);
+                // 1 pt (2 px on Retina), as Finder's.
+                let px = 1.0;
                 self.dividers[i].setFrame(NSRect::new(
                     NSPoint::new(x + w - px, top),
                     NSSize::new(px, board_h - top),

@@ -500,12 +500,20 @@ impl SettingsWindow {
                 .position(|h| *h == hue)
                 .unwrap_or(0)
         };
-        let colors = popup(mtm, &names, false, slot_of(default_color()));
-        for (k, hue) in crate::picker::HUE_SWATCH_ORDER.iter().enumerate() {
-            if let Some(item) = colors.itemAtIndex(k as isize) {
-                item.setImage(swatch_image(*hue).as_deref());
-            }
+        // The default colour: a button showing it, opening the same colour popover
+        // as the capsule's (one component).
+        let colors = unsafe {
+            objc2_app_kit::NSButton::buttonWithTitle_target_action(ns_string!(""), None, None, mtm)
+        };
+        colors.setBezelStyle(objc2_app_kit::NSBezelStyle::Push);
+        colors.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageLeading);
+        colors.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(190.0, 26.0)));
+        fn show_color(b: &objc2_app_kit::NSButton, hue: usize) {
+            b.setTitle(&NSString::from_str(crate::board::HUE_NAMES[hue % crate::board::HUE_NAMES.len()]));
+            b.setImage(swatch_image(hue).as_deref());
         }
+        show_color(&colors, default_color());
+        let _ = &names;
         let open = popup(
             mtm,
             &["В инспекторе".to_string(), "В отдельном окне".to_string()],
@@ -516,11 +524,29 @@ impl SettingsWindow {
         let demo = Rc::new(DemoCard::new(mtm));
         {
             let (changed, demo) = (changed.clone(), demo.clone());
-            on_pick(mtm, &colors, &mut retained, move |i| {
-                set_default_color(crate::picker::HUE_SWATCH_ORDER[i.min(crate::picker::HUE_SWATCH_ORDER.len() - 1)]);
-                demo.show(recolor_by_tag());
-                changed();
+            let palette = Rc::new(crate::palette::Palette::new(mtm, {
+                let (changed, demo, colors) = (changed.clone(), demo.clone(), colors.clone());
+                move |hue| {
+                    set_default_color(hue);
+                    show_color(&colors, hue);
+                    demo.show(recolor_by_tag());
+                    changed();
+                }
+            }));
+            palette.show_state(default_color());
+            let anchor = colors.clone();
+            let target = ActionTarget::new(mtm, {
+                let palette = palette.clone();
+                move || {
+                    palette.show_state(default_color());
+                    palette.toggle(&anchor);
+                }
             });
+            unsafe {
+                colors.setTarget(Some(&target));
+                colors.setAction(Some(ActionTarget::sel()));
+            }
+            retained.push(Retained::into_super(Retained::into_super(target)));
         }
         {
             let changed = changed.clone();
@@ -562,13 +588,13 @@ impl SettingsWindow {
             &tasks,
             next,
             vec![
+                preview,
                 control_row(
                     mtm,
                     "Красить карточку в цвет тега",
                     Some("Карточка берёт цвет своего первого тега"),
                     &recolor,
                 ),
-                preview,
             ],
         );
         demo.show(recolor_by_tag());
@@ -576,7 +602,7 @@ impl SettingsWindow {
             let (colors, open, recolor, demo) =
                 (colors.clone(), open.clone(), recolor.clone(), demo.clone());
             refresh.borrow_mut().push(Box::new(move || {
-                colors.selectItemAtIndex(slot_of(default_color()) as isize);
+                show_color(&colors, default_color());
                 open.selectItemAtIndex(open_in_window() as isize);
                 recolor.setState(if recolor_by_tag() {
                     NSControlStateValueOn

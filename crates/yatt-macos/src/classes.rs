@@ -281,8 +281,7 @@ pub struct SplitIvars {
 }
 
 define_class!(
-    /// The board's columns and the inspector side by side with no divider of
-    /// their own (the board draws its fading lines) and nothing to drag.
+    /// The board and the inspector side by side, with the system's own divider.
     // SAFETY: NSSplitView has no subclassing requirements; no Drop impl.
     #[unsafe(super(objc2_app_kit::NSSplitView, NSView, NSResponder, NSObject))]
     #[thread_kind = MainThreadOnly]
@@ -290,14 +289,6 @@ define_class!(
     pub struct ColumnsSplit;
 
     impl ColumnsSplit {
-        #[unsafe(method(dividerThickness))]
-        fn divider_thickness(&self) -> f64 {
-            1.0
-        }
-
-        #[unsafe(method(drawDividerInRect:))]
-        fn draw_divider(&self, _rect: NSRect) {}
-
         #[unsafe(method(layout))]
         fn layout(&self) {
             let _: () = unsafe { msg_send![super(self), layout] };
