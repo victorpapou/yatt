@@ -193,8 +193,55 @@ fn look(id: TaskId) -> Look {
     LOOKS.with(|l| l.borrow().get(&id).copied().unwrap_or_default())
 }
 
-/// A task's colour index: its own, or a stable one from its id.
+thread_local! {
+    /// Each task's first tag, from the snapshot.
+    static FIRST_TAGS: std::cell::RefCell<std::collections::HashMap<TaskId, String>> =
+        Default::default();
+    /// The setting: cards take the colour of their first tag.
+    static RECOLOR_BY_TAG: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Records the task's first tag (`None`: it has none).
+pub fn set_first_tag(id: TaskId, tag: Option<&str>) {
+    FIRST_TAGS.with(|t| {
+        let mut t = t.borrow_mut();
+        match tag {
+            Some(tag) => {
+                t.insert(id, tag.to_string());
+            }
+            None => {
+                t.remove(&id);
+            }
+        }
+    });
+}
+
+pub fn recolor_by_tag() -> bool {
+    RECOLOR_BY_TAG.with(|r| r.get())
+}
+
+pub fn set_recolor_by_tag(on: bool) {
+    RECOLOR_BY_TAG.with(|r| r.set(on));
+}
+
+/// A tag's colour: the same name always gives the same one (never the grey).
+pub fn tag_hue(name: &str) -> usize {
+    const TAG_HUES: [usize; 12] = [0, 1, 2, 3, 4, 6, 7, 8, 10, 11, 13, 14];
+    let h = name
+        .to_lowercase()
+        .bytes()
+        .fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3));
+    TAG_HUES[(mix(h) % TAG_HUES.len() as u64) as usize]
+}
+
+/// A task's colour index: its first tag's when the setting is on, else its
+/// own, or a stable one from its id.
 pub fn hue_of(id: TaskId) -> usize {
+    if recolor_by_tag()
+        && let Some(hue) = FIRST_TAGS.with(|t| t.borrow().get(&id).map(|n| tag_hue(n)))
+    {
+        return hue;
+    }
     look(id)
         .0
         .unwrap_or((mix(fold(id)) % AUTO_HUES as u64) as usize)

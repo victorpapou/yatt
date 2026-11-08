@@ -76,6 +76,8 @@ pub struct Task {
     /// Symbol name); `None`: picked from the id.
     pub color: Option<u8>,
     pub icon: Option<String>,
+    /// Tag names, in the order given: the first one can colour the card.
+    pub tags: Vec<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
     pub completed_at: Option<Timestamp>,
@@ -108,6 +110,7 @@ impl Task {
             estimate_pomodoros: None,
             color: None,
             icon: None,
+            tags: Vec::new(),
             created_at: now,
             updated_at: now,
             completed_at: (status == Status::Done).then_some(now),

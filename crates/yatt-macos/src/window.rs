@@ -72,6 +72,9 @@ const TOOLBAR_H: f64 = 40.0;
 const RING_D_MINI: f64 = 34.0;
 const RING_LINE: f64 = 3.0;
 const PAD: f64 = 16.0;
+/// A new card's colour unless one is picked: yellow (an index into `style`'s palette).
+const DEFAULT_NEW_COLOR: usize = 8;
+const RECOLOR_KEY: &str = "recolorByTag";
 /// A column never gets narrower than this; the window grows for the inspector.
 const COLUMN_MIN_W: f64 = 240.0;
 /// The inspector's width.
@@ -136,6 +139,10 @@ struct Ui {
     modal: Modal,
     /// The inspector pane on the right: the open task.
     inspector: Retained<objc2_app_kit::NSSplitViewItem>,
+    /// The new-task capsule's colour: the button, its popover, the chosen colour.
+    palette_button: Retained<NSButton>,
+    palette: crate::palette::Palette,
+    new_color: Cell<usize>,
     /// The toolbar items of the inspector's section.
     inspector_items: Vec<Retained<NSToolbarItem>>,
     /// How much the window grew to make room for the inspector.
@@ -561,6 +568,16 @@ impl MainWindow {
         new_task.setFocusRingType(NSFocusRingType::None);
         new_task.setFont(Some(&NSFont::systemFontOfSize(14.0)));
         capsule_content.addSubview(&new_task);
+        let palette_button = {
+            let b = NSButton::new(mtm);
+            b.setBordered(false);
+            b.setImage(symbol("circle.fill", "Цвет новой задачи").as_deref());
+            b.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageOnly);
+            b.setToolTip(Some(ns_string!("Цвет новой задачи")));
+            capsule_content.addSubview(&b);
+            b
+        };
+        style::set_recolor_by_tag(load_recolor());
         board.addSubview(&cards.overlay);
         // The cards fade out under the capsule: the fade and the capsule above
         // every card, flying and dragged ones too, explicitly (own layers, own
@@ -580,6 +597,22 @@ impl MainWindow {
             }
         }
 
+        let palette = {
+            let (pick_ui, recolor_ui) = (inspector_ui.clone(), inspector_ui.clone());
+            crate::palette::Palette::new(
+                mtm,
+                move |hue| {
+                    if let Some(ui) = pick_ui.borrow().as_ref().and_then(|w| w.upgrade()) {
+                        ui.set_new_color(hue);
+                    }
+                },
+                move |on| {
+                    if let Some(ui) = recolor_ui.borrow().as_ref().and_then(|w| w.upgrade()) {
+                        ui.set_recolor(on);
+                    }
+                },
+            )
+        };
         let ui = Rc::new(Ui {
             mtm,
             window,
@@ -602,6 +635,9 @@ impl MainWindow {
             cards,
             modal,
             inspector,
+            palette_button,
+            palette,
+            new_color: Cell::new(DEFAULT_NEW_COLOR),
             inspector_items,
             grew: Cell::new(0.0),
             _inspector_ui: inspector_ui.clone(),
@@ -1062,6 +1098,23 @@ impl Ui {
             }
         }));
         this.fit_root();
+        this.set_new_color(DEFAULT_NEW_COLOR);
+        {
+            let weak = weak.clone();
+            let target = ActionTarget::new(this.mtm, move || {
+                if let Some(ui) = weak.upgrade() {
+                    ui.palette.show_state(ui.new_color.get(), style::recolor_by_tag());
+                    ui.palette.toggle(&ui.palette_button);
+                }
+            });
+            unsafe {
+                this.palette_button.setTarget(Some(&target));
+                this.palette_button.setAction(Some(ActionTarget::sel()));
+            }
+            this._retained
+                .borrow_mut()
+                .push(Retained::into_super(Retained::into_super(target)));
+        }
         *this.root.ivars().on_key.borrow_mut() = Some(Box::new({
             let weak = weak.clone();
             move |event: &NSEvent| weak.upgrade().is_some_and(|ui| ui.key_down(event))
@@ -1192,8 +1245,28 @@ impl Ui {
         (self.sink)(UiEvent::NewTask {
             title: title.to_string(),
             status,
+            color: Some(self.new_color.get() as u8),
         });
         self.new_task.setStringValue(ns_string!(""));
+    }
+
+    /// The capsule's colour for the next new card.
+    fn set_new_color(&self, hue: usize) {
+        self.new_color.set(hue);
+        self.palette_button
+            .setContentTintColor(Some(&style::swatch(hue)));
+        self.palette.show_state(hue, style::recolor_by_tag());
+    }
+
+    /// The setting: cards take the colour of their first tag.
+    fn set_recolor(self: &Rc<Self>, on: bool) {
+        style::set_recolor_by_tag(on);
+        objc2_foundation::NSUserDefaults::standardUserDefaults()
+            .setBool_forKey(on, &NSString::from_str(RECOLOR_KEY));
+        self.cards.restyle();
+        if let Some(snap) = self.last.borrow().clone() {
+            self.sync_modal(&snap);
+        }
     }
 
     fn toggle_stack(&self) {
@@ -1343,7 +1416,11 @@ impl Ui {
         let field_h = 20.0;
         self.new_task.setFrame(NSRect::new(
             NSPoint::new(20.0, ((CAPSULE_H - field_h) / 2.0).round()),
-            NSSize::new(cw - 40.0, field_h),
+            NSSize::new(cw - 40.0 - 36.0, field_h),
+        ));
+        self.palette_button.setFrame(NSRect::new(
+            NSPoint::new(cw - 20.0 - 28.0, ((CAPSULE_H - 28.0) / 2.0).round()),
+            NSSize::new(28.0, 28.0),
         ));
         // Three equal columns: the split view lays its items out (the
         // dividers have no width and nowhere to go).
@@ -2441,6 +2518,11 @@ const STACKS_KEY: &str = "yatt.stacked";
 fn stacks_saved() -> bool {
     objc2_foundation::NSUserDefaults::standardUserDefaults()
         .boolForKey(&NSString::from_str(STACKS_KEY))
+}
+
+fn load_recolor() -> bool {
+    objc2_foundation::NSUserDefaults::standardUserDefaults()
+        .boolForKey(&NSString::from_str(RECOLOR_KEY))
 }
 
 fn save_stacks(on: bool) {

@@ -23,6 +23,7 @@ mod modal;
 pub mod motion;
 mod notify;
 #[cfg(target_os = "macos")]
+mod palette;
 mod picker;
 #[cfg(target_os = "macos")]
 mod style;

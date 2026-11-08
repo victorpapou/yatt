@@ -8,6 +8,10 @@ use yatt_engine::Engine;
 use yatt_macos::{CardSnap, ColumnSnap, Snapshot, TimerSnap, UiEvent, format_duration};
 use yatt_platform::MenuBarTimer;
 
+/// A new card's colour unless one is picked: yellow (an index into the
+/// macOS palette, `style::HUES`).
+const DEFAULT_COLOR: u8 = 8;
+
 /// How many time entries the expanded card lists.
 /// Every entry of the open task, for copying.
 const ENTRIES_SHOWN: usize = 50;
@@ -34,9 +38,14 @@ impl Workspace {
     pub fn handle(&mut self, event: UiEvent) -> bool {
         let e = &mut self.engine;
         match event {
-            UiEvent::NewTask { title, status } => {
-                e.create_task(title, status);
+            UiEvent::NewTask {
+                title,
+                status,
+                color,
+            } => {
+                e.create_task_coloured(title, status, color.unwrap_or(DEFAULT_COLOR));
             }
+            UiEvent::SetTags { id, tags } => e.execute(Command::SetTags { id, tags }),
             UiEvent::Move { id, status, index } => {
                 e.move_task(id, status, Placement::Index(index));
             }
@@ -163,6 +172,7 @@ impl Workspace {
                         },
                         color: t.color,
                         icon: t.icon.clone(),
+                        tags: t.tags.clone(),
                     }
                 })
                 .collect(),
@@ -309,6 +319,7 @@ mod tests {
         ws.handle(UiEvent::NewTask {
             title: "А".into(),
             status: Status::InProgress,
+            color: None,
         });
         let id = ws.snapshot().columns[1].cards[0].id;
         ws.handle(UiEvent::OpenTask(id));
@@ -326,6 +337,7 @@ mod tests {
         ws.handle(UiEvent::NewTask {
             title: "Написать план".into(),
             status: Status::Backlog,
+            color: None,
         });
         let id = ws.snapshot().columns[0].cards[0].id;
         ws.handle(UiEvent::Move {
@@ -360,6 +372,7 @@ mod tests {
         ws.handle(UiEvent::NewTask {
             title: "готово".into(),
             status: Status::Done,
+            color: None,
         });
         ws.handle(UiEvent::ArchiveDone);
         assert!(ws.snapshot().columns.iter().all(|c| c.cards.is_empty()));

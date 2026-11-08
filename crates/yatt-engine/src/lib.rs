@@ -147,6 +147,25 @@ impl Engine {
         id
     }
 
+    /// A new task with its own colour, as one step to undo.
+    pub fn create_task_coloured(&mut self, title: String, status: Status, color: u8) -> TaskId {
+        let id = TaskId::new();
+        self.execute(Command::Batch(vec![
+            Command::Create {
+                id,
+                title,
+                status,
+                placement: Placement::Top,
+            },
+            Command::SetLook {
+                id,
+                color: Some(color),
+                icon: None,
+            },
+        ]));
+        id
+    }
+
     pub fn move_task(&mut self, id: TaskId, status: Status, placement: Placement) {
         self.execute(Command::Move {
             id,

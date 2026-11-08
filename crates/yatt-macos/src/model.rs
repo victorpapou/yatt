@@ -36,6 +36,8 @@ pub struct CardSnap {
     /// The card's own colour and icon, when it chose them.
     pub color: Option<u8>,
     pub icon: Option<String>,
+    /// Tag names, in order.
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -83,6 +85,13 @@ pub enum UiEvent {
     NewTask {
         title: String,
         status: Status,
+        /// The card's colour (an index into the palette); `None`: the default.
+        color: Option<u8>,
+    },
+    /// The tags of a task, in order.
+    SetTags {
+        id: TaskId,
+        tags: Vec<String>,
     },
     /// `index` counts cards of the target column with the moved card left out.
     Move {

@@ -585,6 +585,7 @@ impl Board {
         for col in columns {
             for snap in &col.cards {
                 style::set_look(snap.id, snap.color, snap.icon.as_deref());
+                style::set_first_tag(snap.id, snap.tags.first().map(String::as_str));
             }
         }
         for (ci, col) in columns.iter().enumerate() {

@@ -27,7 +27,7 @@ use crate::style;
 use crate::window::Sink;
 
 /// The header: title and stats, in the card's colour, below the toolbar.
-const HEADER_H: f64 = 80.0;
+const HEADER_H: f64 = 112.0;
 /// The time entries' line at the bottom.
 const FOOTER_H: f64 = 44.0;
 const PANEL_PAD: f64 = 20.0;
@@ -39,6 +39,10 @@ pub struct Modal {
     /// Covers the header; a click on it starts editing the title.
     rename: Retained<NSButton>,
     stats: Retained<NSTextField>,
+    /// The tags, as tokens; a comma ends one.
+    tags: Retained<objc2_app_kit::NSTokenField>,
+    /// Tags known to match the store, to tell edits from echoes.
+    tags_known: Rc<RefCell<Vec<String>>>,
     rules: [Retained<FillView>; 2],
     editor: NotesEditor,
     editor_clip: Retained<FlippedView>,
@@ -111,6 +115,38 @@ impl Modal {
         }
 
         let stats = small_label(mtm);
+
+        let tags_known: Rc<RefCell<Vec<String>>> = Rc::default();
+        let tags = {
+            let f = unsafe { objc2_app_kit::NSTokenField::initWithFrame(objc2_app_kit::NSTokenField::alloc(mtm), NSRect::ZERO) };
+            f.setPlaceholderString(Some(ns_string!("Теги")));
+            f.setBordered(false);
+            f.setBezeled(false);
+            f.setDrawsBackground(false);
+            f.setFocusRingType(objc2_app_kit::NSFocusRingType::None);
+            f.setFont(Some(&NSFont::systemFontOfSize(13.0)));
+            if let Some(cell) = f.cell() {
+                cell.setSendsActionOnEndEditing(true);
+            }
+            let (sink, open, known) = (sink.clone(), open.clone(), tags_known.clone());
+            let field = ObjcWeak::from_retained(&f);
+            let target = ActionTarget::new(mtm, move || {
+                let (Some(field), Some(id)) = (field.load(), open.get()) else {
+                    return;
+                };
+                let now = tag_values(&field);
+                if now != *known.borrow() {
+                    *known.borrow_mut() = now.clone();
+                    sink(UiEvent::SetTags { id, tags: now });
+                }
+            });
+            unsafe {
+                f.setTarget(Some(&target));
+                f.setAction(Some(ActionTarget::sel()));
+            }
+            retained.push(Retained::into_super(Retained::into_super(target)));
+            f
+        };
 
         let editor = {
             let (sink, open, known) = (sink.clone(), open.clone(), notes_known.clone());
@@ -240,10 +276,11 @@ impl Modal {
             FillView::new(mtm, Fill::Separator),
             FillView::new(mtm, Fill::Separator),
         ];
-        let views: [&NSView; 8] = [
+        let views: [&NSView; 9] = [
             &rename,
             &title,
             &stats,
+            &tags,
             &look,
             &rules[0],
             &editor_clip,
@@ -259,6 +296,8 @@ impl Modal {
             panel,
             title,
             stats,
+            tags,
+            tags_known,
             rules,
             editor,
             editor_clip,
@@ -364,6 +403,10 @@ impl Modal {
             NSPoint::new(pad, ty + 32.0),
             NSSize::new(iw, 16.0),
         ));
+        self.tags.setFrame(NSRect::new(
+            NSPoint::new(pad, ty + 56.0),
+            NSSize::new(iw, 24.0),
+        ));
         self.rules[0].setFrame(NSRect::new(
             NSPoint::new(0.0, top + HEADER_H),
             NSSize::new(w, 1.0),
@@ -405,6 +448,16 @@ impl Modal {
         self.editor.focus();
     }
 
+    /// Sends the tags as typed if they differ from the stored ones.
+    fn commit_tags(&self) {
+        let Some(id) = self.open.get() else { return };
+        let now = tag_values(&self.tags);
+        if now != *self.tags_known.borrow() {
+            *self.tags_known.borrow_mut() = now.clone();
+            (self.sink)(UiEvent::SetTags { id, tags: now });
+        }
+    }
+
     /// Sends the title field's text as a rename if it differs from the stored one.
     fn commit_title(&self) {
         let Some(id) = self.open.get() else { return };
@@ -427,6 +480,7 @@ impl Modal {
         if let Some(window) = self.panel.window() {
             window.makeFirstResponder(None);
         }
+        self.commit_tags();
         self.open.set(None);
     }
 
@@ -467,6 +521,13 @@ impl Modal {
             self.keys.borrow_mut().insert(snap.id.to_string(), snap.id);
             self.editor.set_markdown(&snap.notes, &snap.id.to_string());
         }
+        if self.tags.currentEditor().is_none() && *self.tags_known.borrow() != snap.tags {
+            let arr = objc2_foundation::NSArray::from_retained_slice(
+                &snap.tags.iter().map(|t| NSString::from_str(t)).collect::<Vec<_>>(),
+            );
+            unsafe { self.tags.setObjectValue(Some(&arr)) };
+        }
+        *self.tags_known.borrow_mut() = snap.tags.clone();
         let stats = format!(
             "{}{}  ·  сегодня {}  ·  🍅 {}",
             if snap.tracking { "● " } else { "" },
@@ -504,6 +565,24 @@ impl Modal {
             .setContentTintColor(Some(&NSColor::secondaryLabelColor()));
         *self.all_entries.borrow_mut() = snap.entries.clone();
     }
+}
+
+/// The token field's tags as typed: trimmed, no empty ones, no repeats.
+fn tag_values(field: &objc2_app_kit::NSTokenField) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if let Some(value) = unsafe { field.objectValue() }
+        && let Ok(arr) = value.downcast::<objc2_foundation::NSArray>()
+    {
+        for item in arr.iter() {
+            if let Ok(s) = item.downcast::<NSString>() {
+                let s = s.to_string().trim().to_string();
+                if !s.is_empty() && !out.contains(&s) {
+                    out.push(s);
+                }
+            }
+        }
+    }
+    out
 }
 
 fn plural(n: usize, one: &'static str, few: &'static str, many: &'static str) -> &'static str {

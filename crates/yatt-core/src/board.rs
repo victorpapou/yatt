@@ -56,6 +56,11 @@ pub enum Command {
         color: Option<u8>,
         icon: Option<String>,
     },
+    /// The card's tags.
+    SetTags {
+        id: TaskId,
+        tags: Vec<String>,
+    },
     Move {
         id: TaskId,
         status: Status,
@@ -274,6 +279,15 @@ impl Board {
                         color: old_color,
                         icon: old_icon,
                     },
+                })
+            }
+            Command::SetTags { id, tags } => {
+                let task = self.task_mut(id)?;
+                let old = std::mem::replace(&mut task.tags, tags);
+                task.updated_at = now;
+                Ok(Applied {
+                    changed: vec![id],
+                    inverse: Command::SetTags { id, tags: old },
                 })
             }
             Command::Move {

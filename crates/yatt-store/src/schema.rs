@@ -104,6 +104,8 @@ CREATE TABLE kv (
         ),
         // Done tasks tucked into the archive.
         M::up("ALTER TABLE tasks ADD COLUMN archived_at INTEGER;"),
+        // Tags keep the order they were given in.
+        M::up("ALTER TABLE task_tags ADD COLUMN position INTEGER NOT NULL DEFAULT 0;"),
         // The «review» column: the status CHECK learns a fourth value. SQLite
         // cannot alter a CHECK, and rebuilding `tasks` would risk the data;
         // widening it in the schema text leaves every row as it is.

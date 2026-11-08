@@ -95,7 +95,20 @@ impl Store {
              FROM tasks",
         )?;
         let rows = stmt.query_map([], task_from_row)?;
-        rows.map(|r| r?).collect()
+        let mut tasks: Vec<Task> = rows.map(|r| r?).collect::<Result<_>>()?;
+        let mut tags: std::collections::HashMap<String, Vec<String>> = Default::default();
+        let mut stmt = self.conn.prepare(
+            "SELECT tt.task_id, t.name FROM task_tags tt JOIN tags t ON t.id = tt.tag_id
+             WHERE t.deleted_at IS NULL ORDER BY tt.task_id, tt.position",
+        )?;
+        for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+            let (task, name) = row?;
+            tags.entry(task).or_default().push(name);
+        }
+        for t in &mut tasks {
+            t.tags = tags.remove(&t.id.0.to_string()).unwrap_or_default();
+        }
+        Ok(tasks)
     }
 
     pub fn save_task(&self, t: &Task) -> Result<()> {
@@ -367,6 +380,25 @@ fn save_task(conn: &Connection, t: &Task) -> Result<()> {
             t.archived_at.map(ms),
         ],
     )?;
+    save_tags(conn, t)
+}
+
+/// Rewrites the task's tag list (tag names are shared, one row each).
+fn save_tags(conn: &Connection, t: &Task) -> Result<()> {
+    let id = t.id.0.to_string();
+    conn.execute("DELETE FROM task_tags WHERE task_id = ?1", [&id])?;
+    for (i, name) in t.tags.iter().enumerate() {
+        conn.execute(
+            "INSERT INTO tags (id, name, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)
+             ON CONFLICT(name) DO UPDATE SET deleted_at = NULL",
+            params![Uuid::now_v7().to_string(), name, ms(t.updated_at)],
+        )?;
+        conn.execute(
+            "INSERT OR REPLACE INTO task_tags (task_id, tag_id, position)
+             SELECT ?1, id, ?3 FROM tags WHERE name = ?2",
+            params![id, name, i as i64],
+        )?;
+    }
     Ok(())
 }
 
@@ -408,6 +440,7 @@ fn task_from_row(r: &Row<'_>) -> rusqlite::Result<Result<Task>> {
         color: r.get(13)?,
         icon: r.get(14)?,
         archived_at: r.get::<_, Option<i64>>(15)?.map(ts).transpose()?,
+        tags: Vec::new(),
     }))
 }
 
@@ -606,6 +639,25 @@ mod tests {
     fn merge_overlapping_spans() {
         assert_eq!(merged_len(vec![(0, 10), (5, 15), (20, 30)]), 25);
         assert_eq!(merged_len(vec![]), 0);
+    }
+
+    #[test]
+    fn tags_roundtrip_in_order() {
+        let mut store = Store::open_in_memory().unwrap();
+        let mut a = Task::new(TaskId::new(), "a", Status::Backlog, "a0".into(), t(0));
+        a.tags = vec!["motion".into(), "marketing".into()];
+        let mut b = Task::new(TaskId::new(), "b", Status::Backlog, "a1".into(), t(0));
+        b.tags = vec!["marketing".into()];
+        store.save_tasks([&a, &b]).unwrap();
+        let mut loaded = store.load_tasks().unwrap();
+        loaded.sort_by(|x, y| x.title.cmp(&y.title));
+        assert_eq!(loaded[0].tags, ["motion", "marketing"]);
+        assert_eq!(loaded[1].tags, ["marketing"]);
+        a.tags = vec!["marketing".into()];
+        store.save_task(&a).unwrap();
+        let mut loaded = store.load_tasks().unwrap();
+        loaded.sort_by(|x, y| x.title.cmp(&y.title));
+        assert_eq!(loaded[0].tags, ["marketing"]);
     }
 
     #[test]

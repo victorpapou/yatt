@@ -29,7 +29,7 @@ const STATUS_Y: f64 = PAD + SWATCH_CELL * 2.0 + 18.0;
 const SEARCH_Y: f64 = STATUS_Y + 42.0;
 const SYMBOLS_Y: f64 = SEARCH_Y + 48.0;
 const ICONS_Y: f64 = SYMBOLS_Y + 22.0;
-const HUE_SWATCH_ORDER: [usize; style::HUE_COUNT] =
+pub(crate) const HUE_SWATCH_ORDER: [usize; style::HUE_COUNT] =
     [6, 7, 8, 3, 4, 10, 11, 0, 13, 2, 14, 1, 5, 9, 12];
 
 fn icon_at(slot: usize, y0: f64) -> NSPoint {

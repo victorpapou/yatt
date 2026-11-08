@@ -61,6 +61,7 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             // (the lead card's centre, angle and scale).
             for i in 0..6 {
                 sink(UiEvent::NewTask {
+ color: None,
                     title: format!("Задача {}", i + 1),
                     status: Status::Backlog,
                 });
@@ -96,6 +97,7 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             // A new card dropped into the open fan: the old top card (now the
             // second) and a deeper one, as the fan re-lays itself out.
             sink(UiEvent::NewTask {
+ color: None,
                 title: "Новая".into(),
                 status: Status::Backlog,
             });
@@ -160,6 +162,7 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             // One stack of `n` cards, fanned open, for a look at the fan.
             for i in 0..n {
                 sink(UiEvent::NewTask {
+ color: None,
                     title: format!("Задача {}", i + 1),
                     status: Status::Backlog,
                 });
@@ -185,6 +188,7 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             // A task renamed and its notes typed, then quit at once, inside the
             // notes' debounce: both must be in the database afterwards.
             sink(UiEvent::NewTask {
+ color: None,
                 title: "Задача".into(),
                 status: Status::Backlog,
             });
@@ -206,6 +210,7 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             // frame and alphas every frame and a layer capture every other.
             for i in 0..5 {
                 sink(UiEvent::NewTask {
+ color: None,
                     title: format!("Задача {}", i + 1),
                     status: Status::Backlog,
                 });
@@ -260,6 +265,7 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             // submit, where the new card's view is. It must stay on the way
             // from the capsule to its slot, never at the board's corner.
             sink(UiEvent::NewTask {
+ color: None,
                 title: "Старая".into(),
                 status: Status::Backlog,
             });
@@ -311,6 +317,7 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             window.demo_appearance(true);
             for i in 0..6 {
                 sink(UiEvent::NewTask {
+ color: None,
                     title: format!("Задача {}", i + 1),
                     status: [Status::Backlog, Status::InProgress][i % 2],
                 });
@@ -331,6 +338,7 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             // it and the scroller must start below it.
             for i in 0..9 {
                 sink(UiEvent::NewTask {
+ color: None,
                     title: format!("Задача {}", i + 1),
                     status: Status::Backlog,
                 });
@@ -349,6 +357,7 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             // Long lists in all three columns, scrolled under the toolbar.
             for i in 0..27 {
                 sink(UiEvent::NewTask {
+ color: None,
                     title: format!("Задача {}", i + 1),
                     status: [Status::Backlog, Status::InProgress, Status::Done][i % 3],
                 });
@@ -368,6 +377,7 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             // Just the window as it opens, for a look at the toolbar.
             for i in 0..4 {
                 sink(UiEvent::NewTask {
+ color: None,
                     title: format!("Задача {}", i + 1),
                     status: Status::Backlog,
                 });
@@ -409,6 +419,7 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             let n: usize = n.parse().unwrap_or(100);
             for i in 0..n {
                 sink(UiEvent::NewTask {
+ color: None,
                     title: format!("Задача {}", i + 1),
                     status: [Status::Backlog, Status::InProgress, Status::Done][i % 3],
                 });
@@ -467,6 +478,7 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             "Сверстать доску",
         ] {
             sink(UiEvent::NewTask {
+ color: None,
                 title: title.into(),
                 status: Status::Backlog,
             });
@@ -584,6 +596,7 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
         let mut k = 0;
         while ids(cx, 0).len() < 11 && k < 12 {
             sink(UiEvent::NewTask {
+ color: None,
                 title: format!("Задача {}", k + 1),
                 status: Status::Backlog,
             });
