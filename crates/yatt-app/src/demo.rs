@@ -263,7 +263,7 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             let backlog = ids(cx, 0);
             sink(UiEvent::SetNotes(
                 backlog[0],
-                format!("{}\n\n- [x] Макеты\n- [ ] Сверстать\n- [ ] Проверить на трекпаде", notes(0)),
+                std::env::var("YATT_DEMO_NOTES").map(|n| n.replace("\\n", "\n")).unwrap_or_else(|_| format!("{}\n\n- [x] Макеты\n- [ ] Сверстать\n- [ ] Проверить на трекпаде", notes(0))),
             ));
             sink(UiEvent::SetTags {
                 id: backlog[0],

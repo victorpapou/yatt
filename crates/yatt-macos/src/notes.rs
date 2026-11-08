@@ -68,6 +68,8 @@ struct BoxLayer {
 }
 
 const BOX: f64 = 16.0;
+/// The height of a checklist line.
+const BOX_LINE: f64 = 20.0;
 /// What a collapsed `- [ ] ` takes in the line.
 const BOX_W: f64 = 24.0;
 
@@ -507,10 +509,19 @@ fn restyle(st: &Rc<State>) {
                 let tiny = NSFont::systemFontOfSize(1.0);
                 let clear = NSColor::clearColor();
                 let kern = NSNumber::new_f64(BOX_W - 3.0);
+                // A line of its own fixed height, so an empty item keeps its row and
+                // the checkbox sits in the middle of it.
+                let lp = NSMutableParagraphStyle::new();
+                lp.setLineSpacing(3.0);
+                lp.setParagraphSpacing(4.0);
+                lp.setMinimumLineHeight(BOX_LINE);
+                lp.setMaximumLineHeight(BOX_LINE);
+                let (ls, le) = line_range(&string, sp.start);
                 unsafe {
                     set(NSFontAttributeName, &tiny, sp.start, sp.end);
                     set(NSForegroundColorAttributeName, &clear, sp.start, sp.end);
                     set(NSKernAttributeName, &kern, sp.end - 1, sp.end);
+                    set(NSParagraphStyleAttributeName, &lp, ls, (le + 1).min(total));
                 }
             }
             Kind::Image => {
@@ -724,11 +735,7 @@ fn place_boxes(st: &Rc<State>) {
         let frame = NSRect::new(
             NSPoint::new(
                 (origin.x + rect.origin.x).round(),
-                {
-                    // Centred on the text's own height: from the line's baseline.
-                    let base = unsafe { lm.locationForGlyphAtIndex(glyphs.location) };
-                    (origin.y + used.origin.y + base.y - 5.0 - BOX / 2.0).round()
-                },
+                (origin.y + used.origin.y + (BOX_LINE - BOX) / 2.0).round(),
             ),
             NSSize::new(BOX, BOX),
         );
