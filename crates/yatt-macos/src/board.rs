@@ -851,11 +851,19 @@ impl Board {
                 let s2 = h.strip.clone();
                 animate(true, 0.4, move || s2.animator().setAlphaValue(1.0));
             }
-            // Later titles lie over earlier ones, so the one coming up covers.
-            let on_top = col.doc.subviews().lastObject();
-            if on_top.as_deref().map(|v| v as *const _ as usize)
-                != Some(&**h.strip as *const _ as usize)
-            {
+        }
+        // Later titles lie over earlier ones, so the one coming up covers. Touch
+        // the stacking only when it is off: re-adding views on every tick makes the
+        // window recompute its scroll edges (the toolbar's line flickered).
+        let subs = col.doc.subviews();
+        let n = heads.len();
+        let ordered = subs.count() >= n
+            && heads.iter().enumerate().all(|(k, h)| {
+                let at = subs.count() - n + k;
+                (&*subs.objectAtIndex(at) as *const NSView as usize) == (&**h.strip as *const _ as usize)
+            });
+        if !ordered {
+            for h in heads.iter() {
                 col.doc.addSubview(&h.strip);
             }
         }
