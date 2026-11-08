@@ -169,6 +169,11 @@ struct Ui {
     new_color: Cell<usize>,
     /// The capsule's height now: one line, or taller while the text wraps.
     capsule_h: Cell<f64>,
+    /// The board strip's width as shown, and the move from one column count to
+    /// another in progress: (from, started at a clock second).
+    strip_shown: Cell<f64>,
+    strip_anim: Cell<Option<(f64, f64)>>,
+    visible_cols: Cell<usize>,
     /// How many items the toolbar has without the inspector's section.
     base_toolbar_len: Cell<usize>,
     /// Identifiers of that section (its tracking separator first), in the
@@ -829,6 +834,9 @@ impl MainWindow {
             force_window,
             new_color: Cell::new(crate::settings::default_color()),
             capsule_h: Cell::new(CAPSULE_H),
+            strip_shown: Cell::new(0.0),
+            strip_anim: Cell::new(None),
+            visible_cols: Cell::new(0),
             inspector_ids,
             base_toolbar_len: Cell::new(0),
             _inspector_ui: inspector_ui.clone(),
@@ -2132,6 +2140,24 @@ impl Ui {
         }
     }
 
+    /// While the strip glides, lays it out again every frame.
+    fn tick_strip(&self) {
+        let Some(weak) = self._inspector_ui.borrow().clone() else { return };
+        let block = RcBlock::new(move |timer: NonNull<objc2_foundation::NSTimer>| {
+            if let Some(ui) = weak.upgrade() {
+                ui.fit_root();
+                if ui.strip_anim.get().is_none() {
+                    unsafe { timer.as_ref().invalidate() };
+                }
+            } else {
+                unsafe { timer.as_ref().invalidate() };
+            }
+        });
+        let _ = unsafe {
+            objc2_foundation::NSTimer::scheduledTimerWithTimeInterval_repeats_block(1.0 / 60.0, true, &block)
+        };
+    }
+
     /// The board is what is left of the split view left of the inspector.
     fn fit_root(&self) {
         // The board's viewport is the scroll view's: what the inspector leaves.
@@ -2141,11 +2167,34 @@ impl Ui {
         // scrolling in; always whole columns across the viewport.
         let visible = if vw >= COLS as f64 * COLUMN_MIN_W { COLS } else { 3 };
         let col_w = (vw / visible as f64).floor().max(COLUMN_MIN_W.min(vw));
-        let strip_w = if self.minimal.get() || visible == COLS {
+        let target_w = if self.minimal.get() || visible == COLS {
             vw
         } else {
             col_w * COLS as f64
         };
+        // A change of the column count (four to three or back) glides: the strip's
+        // width eases from where it was to where it goes (0.25 s) instead of jumping.
+        // Live resizing otherwise follows the window at once.
+        let now = unsafe { objc2_quartz_core::CACurrentMediaTime() };
+        if self.visible_cols.get() != 0 && self.visible_cols.get() != visible {
+            self.strip_anim.set(Some((self.strip_shown.get(), now)));
+            self.tick_strip();
+        }
+        self.visible_cols.set(visible);
+        let strip_w = match self.strip_anim.get() {
+            Some((from, start)) => {
+                let t = ((now - start) / 0.25).clamp(0.0, 1.0);
+                if t >= 1.0 {
+                    self.strip_anim.set(None);
+                    target_w
+                } else {
+                    let e = 1.0 - (1.0 - t).powi(3);
+                    from + (target_w - from) * e
+                }
+            }
+            None => target_w,
+        };
+        self.strip_shown.set(strip_w);
         let strip = NSRect::new(NSPoint::ZERO, NSSize::new(strip_w, viewport.height));
         if self.strip.frame() != strip {
             self.strip.setFrame(strip);
