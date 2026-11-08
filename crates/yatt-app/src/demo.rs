@@ -237,9 +237,15 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             window.demo_scroll_to(0, 300.0);
             wait(500).await;
             shot("s1-scrolled");
+            window.demo_scroll_to(0, 760.0);
+            wait(500).await;
+            shot("s2-push-before");
+            window.demo_scroll_to(0, 800.0);
+            wait(500).await;
+            shot("s3-push-during");
             window.demo_scroll_to(0, 900.0);
             wait(500).await;
-            shot("s2-scrolled-more");
+            shot("s4-after");
             window.save_edits_then(move || sink(UiEvent::Quit));
             return;
         }

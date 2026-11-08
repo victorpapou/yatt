@@ -141,8 +141,6 @@ struct Column {
     doc: Retained<FlippedView>,
     /// The group titles over the cards, while the board is grouped.
     heads: RefCell<Vec<Head>>,
-    /// The column's own name as the first, sticky title.
-    title_head: RefCell<Option<Head>>,
 }
 
 /// A group's title strip: the full width of its column, a row of its own. Bare at
@@ -468,7 +466,6 @@ impl Board {
                 scroll,
                 doc,
                 heads: RefCell::new(Vec::new()),
-                title_head: RefCell::new(None),
             }
         });
         let board = Rc::new(Self {
@@ -733,54 +730,16 @@ impl Board {
         Head { strip, material, line, label }
     }
 
-    /// Puts a column's own name at the top of its list, held under the toolbar.
-    fn place_title(&self, ci: usize) {
-        let col = &self.cols[ci];
-        let mut slot = col.title_head.borrow_mut();
-        if slot.is_none() {
-            *slot = Some(self.new_head(&col.doc));
-        }
-        let h = slot.as_ref().unwrap();
-        if self.layouts.get()[ci] != Layout::List {
-            h.strip.setHidden(true);
-            return;
-        }
-        let title = self.col_titles.borrow()[ci].clone();
-        h.label.setStringValue(&objc2_foundation::NSString::from_str(&title));
-        let x = self.list_x(ci);
-        let width = col.doc.frame().size.width;
-        let seen_top = col.scroll.contentView().bounds().origin.y
-            + col.scroll.contentInsets().top
-            + CHIP_STICK;
-        let y = seen_top.max(0.0);
-        let want = if y > 0.5 { 1.0 } else { 0.0 };
-        if (h.material.alphaValue() - want).abs() > 0.01 {
-            let (m, l) = (h.material.clone(), h.line.clone());
-            animate(true, 0.15, move || {
-                m.animator().setAlphaValue(want);
-                l.animator().setAlphaValue(want);
-            });
-        }
-        h.strip.setFrame(NSRect::new(NSPoint::new(0.0, y), NSSize::new(width, HEAD_H)));
-        h.material.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(width, HEAD_H)));
-        h.line.setFrame(NSRect::new(NSPoint::new(0.0, HEAD_H - 1.0), NSSize::new(width, 1.0)));
-        h.label.setFrame(NSRect::new(
-            NSPoint::new(x - 2.0, HEAD_H - 20.0),
-            NSSize::new((width - x).max(0.0), 16.0),
-        ));
-        h.strip.setHidden(false);
-        // Over the cards and the group titles, which are added later.
-        let top = col.doc.subviews().lastObject();
-        if top.as_deref().map(|v| v as *const _ as usize) != Some(&**h.strip as *const _ as usize) {
-            col.doc.addSubview(&h.strip);
-        }
-    }
-
-    /// Puts a column's group titles over their groups (or hides them).
+    /// Puts a column's titles in one row of headers: its own name first, then
+    /// (grouped) each group's. All look alike and behave alike: the one in view
+    /// holds under the toolbar, and the next, coming up from below, pushes it up
+    /// and takes its place (as in Finder).
     fn place_heads(&self, ci: usize, show: bool) {
-        let starts = self.group_starts.borrow()[ci].clone();
-        let wanted: Vec<(usize, String)> = if show {
-            starts
+        let col = &self.cols[ci];
+        let mut heads = col.heads.borrow_mut();
+        let is_list = self.layouts.get()[ci] == Layout::List;
+        let groups: Vec<(usize, String)> = if show && is_list {
+            self.group_starts.borrow()[ci]
                 .iter()
                 .enumerate()
                 .filter_map(|(i, g)| g.clone().map(|g| (i, g)))
@@ -788,56 +747,73 @@ impl Board {
         } else {
             Vec::new()
         };
-        let col = &self.cols[ci];
-        let mut heads = col.heads.borrow_mut();
-        while heads.len() < wanted.len() {
+        // (natural top, title) in order down the list.
+        let mut items: Vec<(f64, String)> = Vec::new();
+        if is_list {
+            items.push((0.0, self.col_titles.borrow()[ci].clone()));
+        }
+        for (i, g) in &groups {
+            items.push((self.list_y(ci, *i) - HEAD_H, g.clone()));
+        }
+        while heads.len() < items.len() {
             let h = self.new_head(&col.doc);
-            h.label.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize_weight(11.0, unsafe {
-                objc2_app_kit::NSFontWeightMedium
-            })));
             heads.push(h);
             self.stacking.borrow_mut().clear();
         }
         let x = self.list_x(ci);
         let width = col.doc.frame().size.width;
+        // The top edge of what is seen below the toolbar, in document coordinates.
+        let seen_top = col.scroll.contentView().bounds().origin.y
+            + col.scroll.contentInsets().top
+            + CHIP_STICK;
         for (k, h) in heads.iter().enumerate() {
-            match wanted.get(k) {
-                Some((i, title)) => {
-                    h.label
-                        .setStringValue(&objc2_foundation::NSString::from_str(title));
-                    // A light caption inside the list: scrolls with its cards, no
-                    // band, no line; only the column's own title sticks.
-                    let y = self.list_y(ci, *i) - HEAD_H;
-                    h.material.setAlphaValue(0.0);
-                    h.line.setAlphaValue(0.0);
-                    let full = NSRect::new(NSPoint::new(0.0, y), NSSize::new(width, HEAD_H));
-                    h.strip.setFrame(full);
-                    h.material
-                        .setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(width, HEAD_H)));
-                    h.line.setFrame(NSRect::new(
-                        NSPoint::new(0.0, HEAD_H - 1.0),
-                        NSSize::new(width, 1.0),
-                    ));
-                    // The text at the cards' left edge, in the row's lower part.
-                    h.label.setFrame(NSRect::new(
-                        NSPoint::new(x - 2.0, HEAD_H - 20.0),
-                        NSSize::new((width - x).max(0.0), 16.0),
-                    ));
-                    if h.strip.isHidden() {
-                        // A title that appears (grouping switched on, a column
-                        // laid out again) fades in while the cards spring to their
-                        // new places, so it never flashes over one in passing.
-                        h.strip.setAlphaValue(0.0);
-                        h.strip.setHidden(false);
-                        let s2 = h.strip.clone();
-                        animate(true, 0.4, move || s2.animator().setAlphaValue(1.0));
-                    }
-                }
-                None => h.strip.setHidden(true),
+            let Some((natural, title)) = items.get(k) else {
+                h.strip.setHidden(true);
+                continue;
+            };
+            h.label
+                .setStringValue(&objc2_foundation::NSString::from_str(title));
+            let mut y = natural.max(seen_top);
+            if let Some((next, _)) = items.get(k + 1) {
+                y = y.min(next - HEAD_H);
+            }
+            let y = y.max(*natural);
+            // The blurred band and its hairline only while it holds over cards
+            // going under it.
+            let want = if y > natural + 0.5 { 1.0 } else { 0.0 };
+            if (h.material.alphaValue() - want).abs() > 0.01 {
+                let (m, l) = (h.material.clone(), h.line.clone());
+                animate(true, 0.15, move || {
+                    m.animator().setAlphaValue(want);
+                    l.animator().setAlphaValue(want);
+                });
+            }
+            h.strip
+                .setFrame(NSRect::new(NSPoint::new(0.0, y), NSSize::new(width, HEAD_H)));
+            h.material
+                .setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(width, HEAD_H)));
+            h.line.setFrame(NSRect::new(
+                NSPoint::new(0.0, HEAD_H - 1.0),
+                NSSize::new(width, 1.0),
+            ));
+            h.label.setFrame(NSRect::new(
+                NSPoint::new(x - 2.0, HEAD_H - 20.0),
+                NSSize::new((width - x).max(0.0), 16.0),
+            ));
+            if h.strip.isHidden() {
+                h.strip.setAlphaValue(0.0);
+                h.strip.setHidden(false);
+                let s2 = h.strip.clone();
+                animate(true, 0.4, move || s2.animator().setAlphaValue(1.0));
+            }
+            // Later titles lie over earlier ones, so the one coming up covers.
+            let on_top = col.doc.subviews().lastObject();
+            if on_top.as_deref().map(|v| v as *const _ as usize)
+                != Some(&**h.strip as *const _ as usize)
+            {
+                col.doc.addSubview(&h.strip);
             }
         }
-        drop(heads);
-        self.place_title(ci);
     }
 
     /// The top of slot `i` of a list column: the group titles above it count.
