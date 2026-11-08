@@ -52,6 +52,7 @@ pub struct State {
     /// Decoded images by their URL (None: not decodable).
     images: RefCell<HashMap<String, Option<Retained<objc2_app_kit::NSImage>>>>,
     image_layers: RefCell<Vec<Retained<CALayer>>>,
+    bullet_layers: RefCell<Vec<Retained<CALayer>>>,
     /// The images shown: where their text starts, the URL and the size they take.
     image_slots: RefCell<Vec<(usize, String, f64, f64)>>,
     /// Where each shown checkbox is, and the index of its state character.
@@ -68,6 +69,8 @@ struct BoxLayer {
 }
 
 const BOX: f64 = 16.0;
+/// What a collapsed `- ` takes in the line.
+const BULLET_W: f64 = 18.0;
 /// The height of a checklist line.
 const BOX_LINE: f64 = 20.0;
 /// What a collapsed `- [ ] ` takes in the line.
@@ -234,6 +237,7 @@ impl NotesEditor {
             boxes: RefCell::default(),
             images: RefCell::default(),
             image_layers: RefCell::default(),
+            bullet_layers: RefCell::default(),
             image_slots: RefCell::default(),
             hits: RefCell::default(),
         });
@@ -460,6 +464,26 @@ fn restyle(st: &Rc<State>) {
     for sp in parse(&string) {
         match sp.kind {
             Kind::Marker => unsafe { set(NSForegroundColorAttributeName, &dim, sp.start, sp.end) },
+            Kind::Hide => {
+                // Not drawn, takes no room.
+                let tiny = NSFont::systemFontOfSize(0.5);
+                let clear = NSColor::clearColor();
+                unsafe {
+                    set(NSFontAttributeName, &tiny, sp.start, sp.end);
+                    set(NSForegroundColorAttributeName, &clear, sp.start, sp.end);
+                }
+            }
+            Kind::Bullet => {
+                // Room for the bullet drawn in its place.
+                let tiny = NSFont::systemFontOfSize(1.0);
+                let clear = NSColor::clearColor();
+                let kern = NSNumber::new_f64(BULLET_W - 2.0);
+                unsafe {
+                    set(NSFontAttributeName, &tiny, sp.start, sp.end);
+                    set(NSForegroundColorAttributeName, &clear, sp.start, sp.end);
+                    set(NSKernAttributeName, &kern, sp.end - 1, sp.end);
+                }
+            }
             Kind::Heading(n) => {
                 let size = [BODY + 8.0, BODY + 4.0, BODY + 2.0][(n as usize - 1).min(2)];
                 let f = NSFont::systemFontOfSize_weight(size, unsafe {
@@ -669,7 +693,7 @@ fn list_marker(line: &str) -> Option<(String, String)> {
 fn box_markers(string: &str) -> Vec<(usize, usize)> {
     parse(string)
         .into_iter()
-        .filter(|s| matches!(s.kind, Kind::Box { .. }))
+        .filter(|s| matches!(s.kind, Kind::Box { .. } | Kind::Hide | Kind::Bullet))
         .map(|s| (s.start, s.end))
         .collect()
 }
@@ -757,6 +781,7 @@ fn place_boxes(st: &Rc<State>) {
     *st.hits.borrow_mut() = hits;
     drop(layers);
     place_images(st, &text, &lm, &container, origin);
+    place_bullets(st, &text, &lm, origin, &string);
 }
 
 fn make_box() -> BoxLayer {
@@ -962,6 +987,62 @@ fn place_images(
             if let Some(img) = img {
                 unsafe { l.setContents(Some(&img)) };
             }
+        });
+    }
+}
+
+/// The bullets of list items, drawn in the room their `- ` leaves.
+fn place_bullets(
+    st: &Rc<State>,
+    text: &NSTextView,
+    lm: &objc2_app_kit::NSLayoutManager,
+    origin: NSPoint,
+    string: &str,
+) {
+    let Some(layer) = text.layer() else { return };
+    let starts: Vec<usize> = parse(string)
+        .into_iter()
+        .filter(|s| matches!(s.kind, Kind::Bullet))
+        .map(|s| s.start)
+        .collect();
+    let ink = st.ink.borrow().colorWithAlphaComponent(0.8);
+    let mut layers = st.bullet_layers.borrow_mut();
+    while layers.len() < starts.len() {
+        let l = CALayer::new();
+        l.setCornerRadius(2.5);
+        layer.addSublayer(&l);
+        layers.push(l);
+    }
+    for (k, l) in layers.iter().enumerate() {
+        let Some(start) = starts.get(k).copied() else {
+            l.setHidden(true);
+            continue;
+        };
+        let glyphs = unsafe {
+            lm.glyphRangeForCharacterRange_actualCharacterRange(
+                NSRange::new(start, 1),
+                std::ptr::null_mut(),
+            )
+        };
+        let used = unsafe {
+            lm.lineFragmentUsedRectForGlyphAtIndex_effectiveRange(
+                glyphs.location,
+                std::ptr::null_mut(),
+            )
+        };
+        let rect = unsafe { lm.boundingRectForGlyphRange_inTextContainer(glyphs, &text.textContainer().unwrap()) };
+        let base = unsafe { lm.locationForGlyphAtIndex(glyphs.location) };
+        let frame = NSRect::new(
+            NSPoint::new(
+                (origin.x + rect.origin.x + 5.0).round(),
+                (origin.y + used.origin.y + base.y - 4.5 - 2.5).round(),
+            ),
+            NSSize::new(5.0, 5.0),
+        );
+        l.setHidden(false);
+        crate::motion::quietly(|| {
+            l.setFrame(frame);
+            l.setBackgroundColor(Some(&ink.CGColor()));
         });
     }
 }

@@ -7,8 +7,13 @@
 pub enum Kind {
     /// The text of a heading of this level (the `# ` before it is a Marker).
     Heading(u8),
-    /// Syntax that is only there to be typed: `# `, `**`, a backtick, `> `.
+    /// Syntax shown dimmed: a number of an ordered list, a code fence.
     Marker,
+    /// Syntax that is only there to be typed, once it has made its construct:
+    /// `# `, `**`, a backtick, `> `. Not drawn, not enterable.
+    Hide,
+    /// The `- ` of a list item, drawn as a bullet.
+    Bullet,
     Bold,
     Italic,
     Strike,
@@ -79,7 +84,7 @@ pub fn parse(text: &str) -> Vec<Span> {
         if (1..=6).contains(&hashes)
             && chars.get(indent + hashes) == Some(&' ')
         {
-            out.push(span(indent, indent + hashes + 1, Kind::Marker));
+            out.push(span(indent, indent + hashes + 1, Kind::Hide));
             body = indent + hashes + 1;
             if body < chars.len() {
                 out.push(span(body, chars.len(), Kind::Heading(hashes.min(3) as u8)));
@@ -94,13 +99,13 @@ pub fn parse(text: &str) -> Vec<Span> {
                 out.push(span(body, chars.len(), Kind::Done));
             }
         } else if rest.starts_with("- ") || rest.starts_with("* ") || rest.starts_with("+ ") {
-            out.push(span(indent, indent + 2, Kind::Marker));
+            out.push(span(indent, indent + 2, Kind::Bullet));
             body = indent + 2;
         } else if let Some(n) = ordered_marker(&chars[indent..]) {
             out.push(span(indent, indent + n, Kind::Marker));
             body = indent + n;
         } else if rest.starts_with("> ") {
-            out.push(span(indent, indent + 2, Kind::Marker));
+            out.push(span(indent, indent + 2, Kind::Hide));
             body = indent + 2;
             if body < chars.len() {
                 out.push(span(body, chars.len(), Kind::Quote));
@@ -151,11 +156,11 @@ fn inline(
         // Inline code.
         if c == '`' {
             if let Some(end) = find(chars, i + 1, &['`']) {
-                out.push(span(i, i + 1, Kind::Marker));
+                out.push(span(i, i + 1, Kind::Hide));
                 if end > i + 1 {
                     out.push(span(i + 1, end, Kind::Code));
                 }
-                out.push(span(end, end + 1, Kind::Marker));
+                out.push(span(end, end + 1, Kind::Hide));
                 i = end + 1;
                 continue;
             }
@@ -164,13 +169,13 @@ fn inline(
         if (c == '*' || c == '_' || c == '~') && chars.get(i + 1) == Some(&c) {
             if let Some(end) = find(chars, i + 2, &[c, c]) {
                 if end > i + 2 {
-                    out.push(span(i, i + 2, Kind::Marker));
+                    out.push(span(i, i + 2, Kind::Hide));
                     out.push(span(
                         i + 2,
                         end,
                         if c == '~' { Kind::Strike } else { Kind::Bold },
                     ));
-                    out.push(span(end, end + 2, Kind::Marker));
+                    out.push(span(end, end + 2, Kind::Hide));
                     i = end + 2;
                     continue;
                 }
@@ -182,9 +187,9 @@ fn inline(
             if c == '*' || word_start {
                 if let Some(end) = find(chars, i + 1, &[c]) {
                     if end > i + 1 && chars[end - 1] != ' ' {
-                        out.push(span(i, i + 1, Kind::Marker));
+                        out.push(span(i, i + 1, Kind::Hide));
                         out.push(span(i + 1, end, Kind::Italic));
-                        out.push(span(end, end + 1, Kind::Marker));
+                        out.push(span(end, end + 1, Kind::Hide));
                         i = end + 1;
                         continue;
                     }
@@ -220,7 +225,7 @@ mod tests {
     fn heading_marker_and_text() {
         assert_eq!(
             kinds("# План"),
-            vec![(0, 2, Kind::Marker), (2, 6, Kind::Heading(1))]
+            vec![(0, 2, Kind::Hide), (2, 6, Kind::Heading(1))]
         );
     }
 
