@@ -140,7 +140,16 @@ struct Column {
     scroll: Retained<NSScrollView>,
     doc: Retained<FlippedView>,
     /// The group titles over the cards, while the board is grouped.
-    heads: RefCell<Vec<Retained<objc2_app_kit::NSTextField>>>,
+    heads: RefCell<Vec<Head>>,
+}
+
+/// A group's title strip: the full width of its column, a row of its own. Bare at
+/// rest; a blurred band with a hairline under it while it holds under the toolbar.
+struct Head {
+    strip: Retained<FlippedView>,
+    material: Retained<objc2_app_kit::NSVisualEffectView>,
+    line: Retained<FillView>,
+    label: Retained<objc2_app_kit::NSTextField>,
 }
 
 /// How the cards of each column are grouped.
@@ -692,32 +701,45 @@ impl Board {
         let col = &self.cols[ci];
         let mut heads = col.heads.borrow_mut();
         while heads.len() < wanted.len() {
-            let l = objc2_app_kit::NSTextField::labelWithString(
+            let strip = FlippedView::new(self.mtm, NSRect::ZERO);
+            let material = objc2_app_kit::NSVisualEffectView::new(self.mtm);
+            material.setMaterial(objc2_app_kit::NSVisualEffectMaterial::HeaderView);
+            material.setBlendingMode(objc2_app_kit::NSVisualEffectBlendingMode::WithinWindow);
+            material.setState(objc2_app_kit::NSVisualEffectState::Active);
+            material.setAlphaValue(0.0);
+            let line = FillView::new(self.mtm, Fill::Separator);
+            line.setAlphaValue(0.0);
+            let label = objc2_app_kit::NSTextField::labelWithString(
                 objc2_foundation::ns_string!(""),
                 self.mtm,
             );
-            l.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize_weight(12.0, unsafe {
+            label.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize_weight(12.0, unsafe {
                 objc2_app_kit::NSFontWeightSemibold
             })));
-            l.setTextColor(Some(&objc2_app_kit::NSColor::secondaryLabelColor()));
-            // A little backing, so the cards going under it do not show through.
-            l.setWantsLayer(true);
-            if let Some(layer) = l.layer() {
-                layer.setCornerRadius(6.0);
-            }
-            l.setHidden(true);
-            col.doc.addSubview(&l);
-            heads.push(l);
+            label.setTextColor(Some(&objc2_app_kit::NSColor::secondaryLabelColor()));
+            strip.addSubview(&material);
+            strip.addSubview(&line);
+            strip.addSubview(&label);
+            strip.setHidden(true);
+            col.doc.addSubview(&strip);
+            heads.push(Head {
+                strip,
+                material,
+                line,
+                label,
+            });
             self.stacking.borrow_mut().clear();
         }
         let x = self.list_x(ci);
-        for (k, l) in heads.iter().enumerate() {
+        let width = col.doc.frame().size.width;
+        for (k, h) in heads.iter().enumerate() {
             match wanted.get(k) {
                 Some((i, title)) => {
-                    l.setStringValue(&objc2_foundation::NSString::from_str(title));
-                    // Where it lies in the list, held under the column's chip while
-                    // its group is in view and pushed up by the next title.
-                    let natural = self.list_y(ci, *i) - HEAD_H + 2.0;
+                    h.label
+                        .setStringValue(&objc2_foundation::NSString::from_str(title));
+                    // Its row in the list; held under the toolbar while its group
+                    // is in view and pushed up by the next title.
+                    let natural = self.list_y(ci, *i) - HEAD_H;
                     // The top edge of what is seen below the toolbar, in document
                     // coordinates: the clip's origin plus the inset the toolbar takes.
                     let seen_top = col.scroll.contentView().bounds().origin.y
@@ -725,37 +747,45 @@ impl Board {
                         + CHIP_STICK;
                     let mut y = natural.max(seen_top);
                     if let Some((j, _)) = wanted.get(k + 1) {
-                        y = y.min(self.list_y(ci, *j) - HEAD_H + 2.0 - HEAD_H);
+                        y = y.min(self.list_y(ci, *j) - HEAD_H - HEAD_H);
                     } else {
-                        y = y.min(
-                            self.list_y(ci, starts.len().saturating_sub(1)) + CARD_H - HEAD_H + 6.0,
-                        );
+                        y = y.min(self.list_y(ci, starts.len().saturating_sub(1)) + CARD_H - HEAD_H);
                     }
-                    // A backing only while it holds over cards going under it.
+                    // The blurred band and its hairline only while it holds over
+                    // cards going under it.
                     let stuck = y > natural + 0.5;
-                    if let Some(layer) = l.layer() {
-                        let alpha = if stuck { 0.88 } else { 0.0 };
-                        layer.setBackgroundColor(Some(
-                            &objc2_app_kit::NSColor::windowBackgroundColor()
-                                .colorWithAlphaComponent(alpha)
-                                .CGColor(),
-                        ));
+                    let want = if stuck { 1.0 } else { 0.0 };
+                    if (h.material.alphaValue() - want).abs() > 0.01 {
+                        let (m, l) = (h.material.clone(), h.line.clone());
+                        animate(true, 0.15, move || {
+                            m.animator().setAlphaValue(want);
+                            l.animator().setAlphaValue(want);
+                        });
                     }
-                    l.setFrame(NSRect::new(
-                        NSPoint::new(x + 2.0, y),
-                        NSSize::new(CARD_W - 4.0, HEAD_H - 6.0),
+                    let full = NSRect::new(NSPoint::new(0.0, y), NSSize::new(width, HEAD_H));
+                    h.strip.setFrame(full);
+                    h.material
+                        .setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(width, HEAD_H)));
+                    h.line.setFrame(NSRect::new(
+                        NSPoint::new(0.0, HEAD_H - 1.0),
+                        NSSize::new(width, 1.0),
                     ));
-                    if l.isHidden() {
+                    // The text at the cards' left edge, in the row's lower part.
+                    h.label.setFrame(NSRect::new(
+                        NSPoint::new(x + 2.0, HEAD_H - 20.0),
+                        NSSize::new((width - x - 2.0).max(0.0), 16.0),
+                    ));
+                    if h.strip.isHidden() {
                         // A title that appears (grouping switched on, a column
                         // laid out again) fades in while the cards spring to their
                         // new places, so it never flashes over one in passing.
-                        l.setAlphaValue(0.0);
-                        l.setHidden(false);
-                        let l2 = l.clone();
-                        animate(true, 0.4, move || l2.animator().setAlphaValue(1.0));
+                        h.strip.setAlphaValue(0.0);
+                        h.strip.setHidden(false);
+                        let s2 = h.strip.clone();
+                        animate(true, 0.4, move || s2.animator().setAlphaValue(1.0));
                     }
                 }
-                None => l.setHidden(true),
+                None => h.strip.setHidden(true),
             }
         }
     }
@@ -1684,7 +1714,7 @@ impl Board {
                         .heads
                         .borrow()
                         .iter()
-                        .map(|h| Retained::into_super(Retained::into_super(h.clone()))),
+                        .map(|h| Retained::into_super(h.strip.clone())),
                 );
             }
             let parent = self.parent(space);
