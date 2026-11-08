@@ -123,6 +123,16 @@ impl Workspace {
             }
             UiEvent::DeleteEntry(id) => e.delete_entry(&id),
             UiEvent::SetLook { id, color, icon } => e.execute(Command::SetLook { id, color, icon }),
+            // Unticked: back to the column it came from (the backlog if unknown).
+            UiEvent::Uncheck(id) => {
+                let to = e
+                    .board
+                    .get(id)
+                    .and_then(|t| t.status_before_done)
+                    .filter(|s| *s != Status::Done)
+                    .unwrap_or(Status::Backlog);
+                e.execute(Command::Move { id, status: to, placement: Placement::Index(0) });
+            }
             UiEvent::Paste { .. } | UiEvent::Group(_) => {
                 // A paste, or a group of moves or deletes: one step to undo.
                 let mut cmds = Vec::new();

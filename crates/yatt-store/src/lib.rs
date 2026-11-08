@@ -100,7 +100,7 @@ impl Store {
     pub fn load_tasks(&self) -> Result<Vec<Task>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, title, notes, status, position, project_id, priority, due_at, estimate_pomodoros,
-                    created_at, updated_at, completed_at, deleted_at, color, icon, archived_at
+                    created_at, updated_at, completed_at, deleted_at, color, icon, archived_at, status_before_done
              FROM tasks",
         )?;
         let rows = stmt.query_map([], task_from_row)?;
@@ -440,15 +440,15 @@ fn merged_len(sorted: Vec<(i64, i64)>) -> i64 {
 fn save_task(conn: &Connection, t: &Task) -> Result<()> {
     conn.execute(
         "INSERT INTO tasks (id, title, notes, status, position, project_id, priority, due_at, estimate_pomodoros,
-                            created_at, updated_at, completed_at, deleted_at, color, icon, archived_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+                            created_at, updated_at, completed_at, deleted_at, color, icon, archived_at, status_before_done)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
          ON CONFLICT(id) DO UPDATE SET
             title = excluded.title, notes = excluded.notes, status = excluded.status,
             position = excluded.position, project_id = excluded.project_id, priority = excluded.priority,
             due_at = excluded.due_at, estimate_pomodoros = excluded.estimate_pomodoros,
             updated_at = excluded.updated_at, completed_at = excluded.completed_at,
             deleted_at = excluded.deleted_at, color = excluded.color, icon = excluded.icon,
-            archived_at = excluded.archived_at",
+            archived_at = excluded.archived_at, status_before_done = excluded.status_before_done",
         params![
             t.id.0.to_string(),
             t.title,
@@ -466,6 +466,7 @@ fn save_task(conn: &Connection, t: &Task) -> Result<()> {
             t.color,
             t.icon,
             t.archived_at.map(ms),
+            t.status_before_done.map(|s| s.as_str()),
         ],
     )?;
     save_tags(conn, t)?;
@@ -550,6 +551,7 @@ fn task_from_row(r: &Row<'_>) -> rusqlite::Result<Result<Task>> {
         color: r.get(13)?,
         icon: r.get(14)?,
         archived_at: r.get::<_, Option<i64>>(15)?.map(ts).transpose()?,
+        status_before_done: r.get::<_, Option<String>>(16)?.and_then(|s| Status::parse(&s)),
         tags: Vec::new(),
         subtasks: Vec::new(),
     }))

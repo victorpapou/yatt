@@ -152,6 +152,8 @@ pub enum UiEvent {
     },
     /// Several moves or deletes made together: undone and redone as one.
     Group(Vec<UiEvent>),
+    /// A done task unticked: back to the column it came from.
+    Uncheck(TaskId),
     /// A finished time entry moved: new start and end, ms since the epoch.
     EditEntry { id: String, start_ms: i64, end_ms: i64 },
     /// A time entry added by hand to a task.

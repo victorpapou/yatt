@@ -2366,7 +2366,7 @@ impl Board {
     }
 
     /// A press on a card's checkbox (where the glyph is): done, or back to the
-    /// backlog when it was done. Returns true when it was one.
+    /// column it came from when it was done. Returns true when it was one.
     fn check_press(&self, at: NSPoint) -> bool {
         let Some(id) = self.on_check(at) else { return false };
         let order = self.order.borrow();
@@ -2375,10 +2375,10 @@ impl Board {
         if let Some(card) = self.cards.borrow().get(&id) {
             crate::notes::animate_box(&card.check_box, !done);
         }
-        (self.sink)(UiEvent::Move {
-            id,
-            status: if done { Status::Backlog } else { Status::Done },
-            index: 0,
+        (self.sink)(if done {
+            UiEvent::Uncheck(id)
+        } else {
+            UiEvent::Move { id, status: Status::Done, index: 0 }
         });
         true
     }

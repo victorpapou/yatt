@@ -92,6 +92,9 @@ pub struct Task {
     pub completed_at: Option<Timestamp>,
     /// Done tasks tucked away from the board; they keep their column.
     pub archived_at: Option<Timestamp>,
+    /// The column the task was in before it went to Done, so unticking it goes
+    /// back there (not to the backlog).
+    pub status_before_done: Option<Status>,
     /// In the trash since; emptied for good after [`TRASH_DAYS`].
     pub deleted_at: Option<Timestamp>,
 }
@@ -125,6 +128,7 @@ impl Task {
             updated_at: now,
             completed_at: (status == Status::Done).then_some(now),
             archived_at: None,
+            status_before_done: None,
             deleted_at: None,
         }
     }

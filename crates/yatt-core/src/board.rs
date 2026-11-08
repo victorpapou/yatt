@@ -79,6 +79,7 @@ pub enum Command {
         status: Status,
         position: String,
         completed_at: Option<Timestamp>,
+        before_done: Option<Status>,
     },
     Delete {
         id: TaskId,
@@ -309,9 +310,9 @@ impl Board {
                 status,
                 placement,
             } => {
-                let (old_status, old_position, old_completed) = {
+                let (old_status, old_position, old_completed, old_before) = {
                     let t = self.task_mut(id)?;
-                    (t.status, t.position.clone(), t.completed_at)
+                    (t.status, t.position.clone(), t.completed_at, t.status_before_done)
                 };
                 let position = self.position_for(status, Some(id), &placement)?;
                 let task = self.task_mut(id)?;
@@ -320,6 +321,9 @@ impl Board {
                 task.updated_at = now;
                 if status != old_status {
                     task.completed_at = (status == Status::Done).then_some(now);
+                    // Going to Done remembers where it came from; leaving it again
+                    // forgets (the move itself said where to).
+                    task.status_before_done = (status == Status::Done).then_some(old_status);
                 }
                 Ok(Applied {
                     changed: vec![id],
@@ -328,6 +332,7 @@ impl Board {
                         status: old_status,
                         position: old_position,
                         completed_at: old_completed,
+                        before_done: old_before,
                     },
                 })
             }
@@ -336,6 +341,7 @@ impl Board {
                 status,
                 position,
                 completed_at,
+                before_done,
             } => {
                 let task = self.task_mut(id)?;
                 let inverse = Command::Reposition {
@@ -343,10 +349,12 @@ impl Board {
                     status: task.status,
                     position: task.position.clone(),
                     completed_at: task.completed_at,
+                    before_done: task.status_before_done,
                 };
                 task.status = status;
                 task.position = position;
                 task.completed_at = completed_at;
+                task.status_before_done = before_done;
                 task.updated_at = now;
                 Ok(Applied {
                     changed: vec![id],
@@ -603,6 +611,25 @@ mod tests {
         )
         .unwrap();
         assert_eq!(titles(&b, Status::Backlog), ["b", "a", "c"]);
+    }
+
+    #[test]
+    fn done_remembers_the_column_it_came_from_and_undo_restores_it() {
+        let (mut b, mut h) = (Board::default(), History::default());
+        let a = create(&mut b, &mut h, "a");
+        let mv = |b: &mut Board, h: &mut History, status| {
+            h.execute(b, Command::Move { id: a, status, placement: Placement::Top }, now()).unwrap();
+        };
+        mv(&mut b, &mut h, Status::Review);
+        mv(&mut b, &mut h, Status::Done);
+        assert_eq!(b.get(a).unwrap().status_before_done, Some(Status::Review));
+        h.undo(&mut b, now()).unwrap();
+        assert_eq!(b.get(a).unwrap().status, Status::Review);
+        assert_eq!(b.get(a).unwrap().status_before_done, None);
+        h.redo(&mut b, now()).unwrap();
+        assert_eq!(b.get(a).unwrap().status_before_done, Some(Status::Review));
+        mv(&mut b, &mut h, Status::Backlog);
+        assert_eq!(b.get(a).unwrap().status_before_done, None);
     }
 
     #[test]

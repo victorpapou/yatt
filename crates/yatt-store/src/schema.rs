@@ -128,5 +128,7 @@ CREATE TABLE kv (
                 Ok(())
             },
         ),
+        // Where a task was before it went to Done.
+        M::up("ALTER TABLE tasks ADD COLUMN status_before_done TEXT;"),
     ])
 }
