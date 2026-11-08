@@ -249,6 +249,25 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             window.save_edits_then(move || sink(UiEvent::Quit));
             return;
         }
+        if std::env::var_os("YATT_DEMO_ALLCOLORS").is_some() {
+            // One task per swatch, in the order the pickers show them, spread over
+            // the columns: the cards' tints against the swatches' hues.
+            let order = [6u8, 7, 8, 3, 10, 11, 0, 13, 2, 1, 12, 9, 5];
+            let statuses = [Status::Backlog, Status::InProgress, Status::Review, Status::Done];
+            for (i, hue) in order.iter().enumerate() {
+                sink(UiEvent::NewTaskNotes {
+                    title: format!("{} · цвет {}", i + 1, hue),
+                    notes: String::new(),
+                    status: statuses[i % 4],
+                    color: Some(*hue),
+                });
+                wait(120).await;
+            }
+            wait(900).await;
+            shot("allcolors");
+            window.save_edits_then(move || sink(UiEvent::Quit));
+            return;
+        }
         if std::env::var_os("YATT_DEMO_MODAL").is_some() {
             // A card in a fan opened into the panel and closed again, the panel's
             // frame and alphas every frame and a layer capture every other.

@@ -29,8 +29,10 @@ const STATUS_Y: f64 = PAD + SWATCH_CELL * 2.0 + 18.0;
 const SEARCH_Y: f64 = STATUS_Y + 42.0;
 const SYMBOLS_Y: f64 = SEARCH_Y + 48.0;
 const ICONS_Y: f64 = SYMBOLS_Y + 22.0;
-pub(crate) const HUE_SWATCH_ORDER: [usize; style::HUE_COUNT] =
-    [6, 7, 8, 3, 4, 10, 11, 0, 13, 2, 14, 1, 5, 9, 12];
+/// The swatches the pickers show, ordered by hue (warm to cool to violet to pink),
+/// the muted ones and the grey last. Colours 4 (mint, next to teal) and 14 (purple,
+/// next to violet) are no longer offered, though cards that have them keep them.
+pub(crate) const HUE_SWATCH_ORDER: [usize; 13] = [6, 7, 8, 3, 10, 11, 0, 13, 2, 1, 12, 9, 5];
 
 fn icon_at(slot: usize, y0: f64) -> NSPoint {
     let inner_width = PAD * 2.0 + SWATCH_CELL * SWATCH_PER_ROW as f64 - 2.0 * PAD;
@@ -302,7 +304,7 @@ impl Picker {
         let hue = c.id.map(style::hue_of);
         let glyph = c.id.map(style::glyph_of);
         for (slot, b) in self.swatches.iter().enumerate() {
-            let color = HUE_SWATCH_ORDER[slot];
+            let Some(&color) = HUE_SWATCH_ORDER.get(slot) else { continue };
             let on = hue == Some(color);
             b.setContentTintColor(Some(&style::swatch(color)));
             b.setImage(

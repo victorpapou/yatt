@@ -251,7 +251,7 @@ pub fn tag_hue(name: &str) -> usize {
 
 /// The colour a tag has from its name alone.
 pub fn auto_tag_hue(name: &str) -> usize {
-    const TAG_HUES: [usize; 12] = [0, 1, 2, 3, 4, 6, 7, 8, 10, 11, 13, 14];
+    const TAG_HUES: [usize; 10] = [0, 1, 2, 3, 6, 7, 8, 10, 11, 13];
     let h = name
         .to_lowercase()
         .bytes()
@@ -338,19 +338,26 @@ pub fn tint_glass(view: &NSView, hue: usize) {
             // The palette's grey follows the appearance; lighter in the dark, so
             // the card is no white patch there.
             let strength = if dark() { 0.5 } else { 0.8 };
-            glass.setTintColor(Some(&swatch(hue).colorWithAlphaComponent(strength)));
+            glass.setTintColor(Some(&deep_swatch(hue).colorWithAlphaComponent(strength)));
         } else {
             // The reference palette, a touch softened toward white.
-            let soft = swatch(hue)
+            let soft = deep_swatch(hue)
                 .blendedColorWithFraction_ofColor(0.15, &NSColor::whiteColor())
-                .unwrap_or_else(|| swatch(hue));
+                .unwrap_or_else(|| deep_swatch(hue));
             glass.setTintColor(Some(&soft));
         }
     }
 }
 
-/// A card colour, solid: for the colour picker.
+/// A card colour as it stands on a picker or in text: the vivid one, the same in
+/// both appearances (so a swatch always shows the colour it picks, and the grey
+/// card's is a light grey, not the dark one of the deep dark-mode tints).
 pub fn swatch(hue: usize) -> Retained<NSColor> {
+    rgb(HUES[hue % HUES.len()].0, 1.0)
+}
+
+/// The card tint's colour: the palette of the appearance (deep in the dark).
+pub fn deep_swatch(hue: usize) -> Retained<NSColor> {
     rgb(palette()[hue % HUES.len()].0, 1.0)
 }
 

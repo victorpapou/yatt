@@ -63,17 +63,18 @@ impl SwatchView {
         };
         this.setWantsLayer(true);
         if let Some(layer) = this.layer() {
-            layer.setCornerRadius(D / 2.0);
-            layer.setBackgroundColor(Some(&style::swatch(hue).CGColor()));
-            // The white ring inside the colour, shown on the chosen one.
+            // The colour, a little inside the cell...
+            let dot = CALayer::new();
+            dot.setFrame(NSRect::new(NSPoint::new(3.0, 3.0), NSSize::new(D - 6.0, D - 6.0)));
+            dot.setCornerRadius((D - 6.0) / 2.0);
+            dot.setBackgroundColor(Some(&style::swatch(hue).CGColor()));
+            layer.addSublayer(&dot);
+            // ...and the chosen one has a ring round it, outside the colour.
             let ring = CALayer::new();
-            ring.setFrame(NSRect::new(
-                NSPoint::new(4.0, 4.0),
-                NSSize::new(D - 8.0, D - 8.0),
-            ));
-            ring.setCornerRadius((D - 8.0) / 2.0);
-            ring.setBorderWidth(2.5);
-            ring.setBorderColor(Some(&NSColor::whiteColor().CGColor()));
+            ring.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(D, D)));
+            ring.setCornerRadius(D / 2.0);
+            ring.setBorderWidth(2.0);
+            ring.setBorderColor(Some(&NSColor::labelColor().colorWithAlphaComponent(0.75).CGColor()));
             ring.setHidden(true);
             layer.addSublayer(&ring);
             *this.ivars().ring.borrow_mut() = Some(ring);
@@ -155,7 +156,7 @@ impl Palette {
                         let n = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .map_or(0, |d| d.subsec_nanos() as usize);
-                        pick(Some(n % style::HUE_COUNT));
+                        pick(Some(HUE_SWATCH_ORDER[n % HUE_SWATCH_ORDER.len()]));
                     } else {
                         pick(None);
                     }

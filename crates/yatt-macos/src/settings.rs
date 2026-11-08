@@ -490,8 +490,22 @@ impl SettingsWindow {
 
         // ---- Задачи ----
         let tasks = FlippedView::new(mtm, NSRect::new(NSPoint::ZERO, NSSize::new(W, 350.0)));
-        let names: Vec<String> = HUE_NAMES.iter().map(|n| n.to_string()).collect();
-        let colors = popup(mtm, &names, true, default_color());
+        let names: Vec<String> = crate::picker::HUE_SWATCH_ORDER
+            .iter()
+            .map(|h| HUE_NAMES[*h].to_string())
+            .collect();
+        let slot_of = |hue: usize| {
+            crate::picker::HUE_SWATCH_ORDER
+                .iter()
+                .position(|h| *h == hue)
+                .unwrap_or(0)
+        };
+        let colors = popup(mtm, &names, false, slot_of(default_color()));
+        for (k, hue) in crate::picker::HUE_SWATCH_ORDER.iter().enumerate() {
+            if let Some(item) = colors.itemAtIndex(k as isize) {
+                item.setImage(swatch_image(*hue).as_deref());
+            }
+        }
         let open = popup(
             mtm,
             &["В инспекторе".to_string(), "В отдельном окне".to_string()],
@@ -503,7 +517,7 @@ impl SettingsWindow {
         {
             let (changed, demo) = (changed.clone(), demo.clone());
             on_pick(mtm, &colors, &mut retained, move |i| {
-                set_default_color(i);
+                set_default_color(crate::picker::HUE_SWATCH_ORDER[i.min(crate::picker::HUE_SWATCH_ORDER.len() - 1)]);
                 demo.show(recolor_by_tag());
                 changed();
             });
@@ -562,7 +576,7 @@ impl SettingsWindow {
             let (colors, open, recolor, demo) =
                 (colors.clone(), open.clone(), recolor.clone(), demo.clone());
             refresh.borrow_mut().push(Box::new(move || {
-                colors.selectItemAtIndex(default_color() as isize);
+                colors.selectItemAtIndex(slot_of(default_color()) as isize);
                 open.selectItemAtIndex(open_in_window() as isize);
                 recolor.setState(if recolor_by_tag() {
                     NSControlStateValueOn
