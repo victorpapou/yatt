@@ -726,21 +726,12 @@ impl Board {
     /// A title strip (blur band, hairline, grey semibold label), hidden.
     fn new_head(&self, doc: &FlippedView) -> Head {
         let strip = FlippedView::new(self.mtm, NSRect::ZERO);
-        // The band under a held title is the system's Liquid Glass (as in the
-        // toolbar and Finder's headers), square-edged; the blur material only where
-        // the system has no glass.
-        let material: Retained<NSView> =
-            if objc2::runtime::AnyClass::get(c"NSGlassEffectView").is_some() {
-                let glass = objc2_app_kit::NSGlassEffectView::new(self.mtm);
-                glass.setCornerRadius(0.0);
-                Retained::into_super(glass)
-            } else {
-                let blur = objc2_app_kit::NSVisualEffectView::new(self.mtm);
-                blur.setMaterial(objc2_app_kit::NSVisualEffectMaterial::HeaderView);
-                blur.setBlendingMode(objc2_app_kit::NSVisualEffectBlendingMode::WithinWindow);
-                blur.setState(objc2_app_kit::NSVisualEffectState::Active);
-                Retained::into_super(blur)
-            };
+        // Finder's header band: the titlebar-toned blur material, square-edged.
+        let blur = objc2_app_kit::NSVisualEffectView::new(self.mtm);
+        blur.setMaterial(objc2_app_kit::NSVisualEffectMaterial::HeaderView);
+        blur.setBlendingMode(objc2_app_kit::NSVisualEffectBlendingMode::WithinWindow);
+        blur.setState(objc2_app_kit::NSVisualEffectState::FollowsWindowActiveState);
+        let material: Retained<NSView> = Retained::into_super(blur);
         material.setAlphaValue(0.0);
         let line = FillView::new(self.mtm, Fill::Separator);
         line.setAlphaValue(0.0);
@@ -814,12 +805,12 @@ impl Board {
             let y = y.max(*natural);
             // The blurred band and its hairline only while it holds over cards
             // going under it.
-            let want = if y > natural + 0.5 { 0.85 } else { 0.0 };
+            let want = if y > natural + 0.5 { 1.0 } else { 0.0 };
             if (h.material.alphaValue() - want).abs() > 0.01 {
-                // Glass only, no hairline of our own.
-                let m = h.material.clone();
+                let (m, l) = (h.material.clone(), h.line.clone());
                 animate(true, 0.15, move || {
                     m.animator().setAlphaValue(want);
+                    l.animator().setAlphaValue(want);
                 });
             }
             h.strip
