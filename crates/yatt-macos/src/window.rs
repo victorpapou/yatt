@@ -719,6 +719,8 @@ impl MainWindow {
         // z), so nothing added in a hurry ends up over them.
         let bottom_fade = BottomFade::new(mtm);
         bottom_fade.setWantsLayer(true);
+        // No gradient under the capsule.
+        bottom_fade.setHidden(true);
         pinned.addSubview(&bottom_fade);
         pinned.addSubview(&capsule);
         for (v, z) in [
@@ -1554,14 +1556,18 @@ impl Ui {
             NSSize::new(28.0, 28.0),
         );
         if animated {
-            // The editor takes its final size at once (so the text never overflows a
-            // frame that is still growing and scrolls away); the capsule and the
-            // colour button follow in the animation.
-            self.new_task.view.setFrame(field);
-            let (c, b) = (self.capsule.clone(), self.palette_button.clone());
+            // The editor, the capsule and the colour button take one and the same
+            // animation: a frame set ahead of the capsule showed for a moment taller
+            // than it (the editor's height jumped, then the capsule caught up).
+            let (c, b, e) = (
+                self.capsule.clone(),
+                self.palette_button.clone(),
+                self.new_task.view.clone(),
+            );
             animate(true, 0.22, move || {
                 c.animator().setFrame(capsule);
                 b.animator().setFrame(button);
+                e.animator().setFrame(field);
             });
         } else {
             self.capsule.setFrame(capsule);
