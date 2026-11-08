@@ -150,6 +150,8 @@ struct Head {
     material: Retained<objc2_app_kit::NSVisualEffectView>,
     line: Retained<FillView>,
     label: Retained<objc2_app_kit::NSTextField>,
+    /// The column's symbol before its name (the first title only).
+    icon: Retained<objc2_app_kit::NSImageView>,
 }
 
 /// How the cards of each column are grouped.
@@ -160,6 +162,9 @@ pub enum Grouping {
     Tag,
     Color,
 }
+
+/// A symbol for each column's name: backlog, in progress, review, done.
+const COLUMN_SYMBOLS: [&str; 4] = ["tray.full", "hammer", "eye", "checkmark.seal"];
 
 /// The height of a group's title row in a list.
 const HEAD_H: f64 = 26.0;
@@ -724,10 +729,14 @@ impl Board {
         label.setTextColor(Some(&objc2_app_kit::NSColor::secondaryLabelColor()));
         strip.addSubview(&material);
         strip.addSubview(&line);
+        let icon = objc2_app_kit::NSImageView::new(self.mtm);
+        icon.setContentTintColor(Some(&objc2_app_kit::NSColor::secondaryLabelColor()));
+        icon.setHidden(true);
+        strip.addSubview(&icon);
         strip.addSubview(&label);
         strip.setHidden(true);
         doc.addSubview(&strip);
-        Head { strip, material, line, label }
+        Head { strip, material, line, label, icon }
     }
 
     /// Puts a column's titles in one row of headers: its own name first, then
@@ -796,9 +805,29 @@ impl Board {
                 NSPoint::new(0.0, HEAD_H - 1.0),
                 NSSize::new(width, 1.0),
             ));
+            // The first title is the column's own: its symbol stands before the name.
+            let symbol = (k == 0 && is_list).then(|| COLUMN_SYMBOLS[ci.min(COLUMN_SYMBOLS.len() - 1)]);
+            let shift = if let Some(name) = symbol {
+                let img = objc2_app_kit::NSImage::imageWithSystemSymbolName_accessibilityDescription(
+                    &objc2_foundation::NSString::from_str(name),
+                    None,
+                );
+                let config = objc2_app_kit::NSImageSymbolConfiguration::configurationWithPointSize_weight(
+                    11.0,
+                    unsafe { objc2_app_kit::NSFontWeightSemibold },
+                );
+                h.icon.setImage(img.and_then(|i| i.imageWithSymbolConfiguration(&config)).as_deref());
+                h.icon.setHidden(false);
+                h.icon
+                    .setFrame(NSRect::new(NSPoint::new(x, HEAD_H - 21.0), NSSize::new(16.0, 16.0)));
+                20.0
+            } else {
+                h.icon.setHidden(true);
+                0.0
+            };
             h.label.setFrame(NSRect::new(
-                NSPoint::new(x - 2.0, HEAD_H - 20.0),
-                NSSize::new((width - x).max(0.0), 16.0),
+                NSPoint::new(x - 2.0 + shift, HEAD_H - 20.0),
+                NSSize::new((width - x - shift).max(0.0), 16.0),
             ));
             if h.strip.isHidden() {
                 h.strip.setAlphaValue(0.0);

@@ -1466,8 +1466,27 @@ impl Ui {
     /// The capsule's colour for the next new card.
     fn set_new_color(&self, hue: usize) {
         self.new_color.set(hue);
-        self.palette_button
-            .setContentTintColor(Some(&style::swatch(hue)));
+        // The button is the colour itself: a round swatch of the chosen colour,
+        // a layer of its own in the middle of the button.
+        self.palette_button.setImage(None);
+        self.palette_button.setWantsLayer(true);
+        if let Some(layer) = self.palette_button.layer() {
+            let dot = match unsafe { layer.sublayers() }.and_then(|s| s.firstObject()) {
+                Some(d) => d,
+                None => {
+                    let d = CALayer::new();
+                    d.setCornerRadius(10.0);
+                    layer.addSublayer(&d);
+                    d
+                }
+            };
+            let b = self.palette_button.bounds().size;
+            dot.setFrame(NSRect::new(
+                NSPoint::new(((b.width - 20.0) / 2.0).round(), ((b.height - 20.0) / 2.0).round()),
+                NSSize::new(20.0, 20.0),
+            ));
+            dot.setBackgroundColor(Some(&style::swatch(hue).CGColor()));
+        }
         self.palette.show_state(hue);
     }
 
@@ -1708,6 +1727,7 @@ impl Ui {
             NSPoint::new(cw - 20.0 - 28.0, ((CAPSULE_H - 28.0) / 2.0).round()),
             NSSize::new(28.0, 28.0),
         ));
+        self.set_new_color(self.new_color.get());
         // Three equal columns: the split view lays its items out (the
         // dividers have no width and nowhere to go).
         // The window lays the split view out (it is the content view).

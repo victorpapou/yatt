@@ -137,6 +137,22 @@ pub fn set_tag_color(name: &str, hue: Option<usize>) {
 }
 
 /// A round swatch of a card colour, to stand beside its name.
+pub fn swatch_image_sized(hue: usize, size: f64) -> Option<Retained<NSImage>> {
+    let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+        ns_string!("circle.fill"),
+        None,
+    )?;
+    let config = NSImageSymbolConfiguration::configurationWithPaletteColors(
+        &NSArray::from_retained_slice(&[style::swatch(hue)]),
+    )
+    .configurationByApplyingConfiguration(&NSImageSymbolConfiguration::configurationWithPointSize_weight_scale(
+        size,
+        0.0,
+        objc2_app_kit::NSImageSymbolScale::Medium,
+    ));
+    image.imageWithSymbolConfiguration(&config)
+}
+
 pub fn swatch_image(hue: usize) -> Option<Retained<NSImage>> {
     let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
         ns_string!("circle.fill"),

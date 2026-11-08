@@ -102,6 +102,48 @@ define_class!(
             }
         }
 
+        #[unsafe(method(textView:willChangeSelectionFromCharacterRange:toCharacterRange:))]
+        fn will_change_selection(&self, view: &NSTextView, old: NSRange, new: NSRange) -> NSRange {
+            if new.length > 0 {
+                return new;
+            }
+            // The checkbox is one atom: the caret stands before it or after it.
+            for (start, end) in box_markers(&view.string().to_string()) {
+                if new.location > start && new.location < end {
+                    let at = if new.location < old.location { start } else { end };
+                    return NSRange::new(at, 0);
+                }
+            }
+            new
+        }
+
+        #[unsafe(method(textView:shouldChangeTextInRange:replacementString:))]
+        fn should_change(
+            &self,
+            view: &NSTextView,
+            range: NSRange,
+            _with: Option<&NSString>,
+        ) -> Bool {
+            // An edit that touches part of a checkbox takes all of it (a Backspace
+            // after the circle turns the line plain).
+            let (rs, re) = (range.location, range.location + range.length);
+            for (start, end) in box_markers(&view.string().to_string()) {
+                let touches = if range.length == 0 {
+                    false
+                } else {
+                    rs < end && re > start
+                };
+                let contains = rs <= start && re >= end;
+                if touches && !contains {
+                    let (from, to) = (rs.min(start), re.max(end));
+                    let with = _with.map(|s| s.to_string()).unwrap_or_default();
+                    replace_range(view, NSRange::new(from, to - from), &with);
+                    return Bool::NO;
+                }
+            }
+            Bool::YES
+        }
+
         #[unsafe(method(textView:doCommandBySelector:))]
         fn do_command(&self, view: &NSTextView, sel: Sel) -> Bool {
             if sel == sel!(insertNewline:) {
@@ -460,18 +502,15 @@ fn restyle(st: &Rc<State>) {
                 }
             }
             Kind::Box { .. } => {
-                if sp.start >= caret_line.0 && sp.start <= caret_line.1 {
-                    unsafe { set(NSForegroundColorAttributeName, &dim, sp.start, sp.end) };
-                } else {
-                    // Collapsed to the width of the checkbox drawn in its place.
-                    let tiny = NSFont::systemFontOfSize(1.0);
-                    let clear = NSColor::clearColor();
-                    let kern = NSNumber::new_f64(BOX_W - 3.0);
-                    unsafe {
-                        set(NSFontAttributeName, &tiny, sp.start, sp.end);
-                        set(NSForegroundColorAttributeName, &clear, sp.start, sp.end);
-                        set(NSKernAttributeName, &kern, sp.end - 1, sp.end);
-                    }
+                // Always a circle, whoever has the caret: the marker is collapsed to
+                // the width of the checkbox drawn in its place.
+                let tiny = NSFont::systemFontOfSize(1.0);
+                let clear = NSColor::clearColor();
+                let kern = NSNumber::new_f64(BOX_W - 3.0);
+                unsafe {
+                    set(NSFontAttributeName, &tiny, sp.start, sp.end);
+                    set(NSForegroundColorAttributeName, &clear, sp.start, sp.end);
+                    set(NSKernAttributeName, &kern, sp.end - 1, sp.end);
                 }
             }
             Kind::Image => {
@@ -615,6 +654,15 @@ fn list_marker(line: &str) -> Option<(String, String)> {
 }
 
 
+/// The checkbox markers of the text: (start, end) in UTF-16 units.
+fn box_markers(string: &str) -> Vec<(usize, usize)> {
+    parse(string)
+        .into_iter()
+        .filter(|s| matches!(s.kind, Kind::Box { .. }))
+        .map(|s| (s.start, s.end))
+        .collect()
+}
+
 /// The UTF-16 range (start, end) of the line holding `loc`.
 fn line_range(string: &str, loc: usize) -> (usize, usize) {
     let units: Vec<u16> = string.encode_utf16().collect();
@@ -641,9 +689,7 @@ fn place_boxes(st: &Rc<State>) {
     let boxes: Vec<(usize, bool)> = parse(&string)
         .into_iter()
         .filter_map(|s| match s.kind {
-            Kind::Box { checked } if !(s.start >= caret.0 && s.start <= caret.1) => {
-                Some((s.start, checked))
-            }
+            Kind::Box { checked } => Some((s.start, checked)),
             _ => None,
         })
         .collect();
