@@ -40,6 +40,10 @@ pub struct Modal {
     stats: Retained<NSTextField>,
     /// The subtasks the checklist lines of the notes make, as last sent.
     subs_known: Rc<RefCell<HashMap<TaskId, Vec<(String, bool)>>>>,
+    /// The tags the #tags of the notes make, as last sent.
+    tags_known: Rc<RefCell<HashMap<TaskId, Vec<String>>>>,
+    /// The tag colours last given to the editor.
+    colors_sent: RefCell<String>,
     /// The tags, as capsules; Enter or a comma adds one.
     tags: Rc<crate::tags::Tags>,
     rules: [Retained<FillView>; 2],
@@ -126,18 +130,13 @@ impl Modal {
         let stats = small_label(mtm);
 
         let subs_known: Rc<RefCell<HashMap<TaskId, Vec<(String, bool)>>>> = Rc::default();
-        let tags = {
-            let (sink, open) = (sink.clone(), open.clone());
-            crate::tags::Tags::new(mtm, move |tags| {
-                if let Some(id) = open.get() {
-                    sink(UiEvent::SetTags { id, tags });
-                }
-            })
-        };
+        let tags_known: Rc<RefCell<HashMap<TaskId, Vec<String>>>> = Rc::default();
+        let tags = crate::tags::Tags::new(mtm);
 
         let editor = {
             let (sink, open, known) = (sink.clone(), open.clone(), notes_known.clone());
-            let (keys, subs_known) = (keys.clone(), subs_known.clone());
+            let (keys, subs_known, tags_known) =
+                (keys.clone(), subs_known.clone(), tags_known.clone());
             NotesEditor::new(mtm, move |msg| match msg {
                 EditorMsg::Notes { key, md } => {
                     // Filed under the task the notes were typed into, open or not.
@@ -151,6 +150,12 @@ impl Modal {
                         if subs_known.borrow().get(&id) != Some(&list) {
                             subs_known.borrow_mut().insert(id, list.clone());
                             sink(UiEvent::SetSubtasks { id, subtasks: list });
+                        }
+                        // The #tags are its tags.
+                        let tags = hashtags(&md);
+                        if tags_known.borrow().get(&id) != Some(&tags) {
+                            tags_known.borrow_mut().insert(id, tags.clone());
+                            sink(UiEvent::SetTags { id, tags });
                         }
                         sink(UiEvent::SetNotes(id, md));
                     }
@@ -291,6 +296,8 @@ impl Modal {
             title,
             stats,
             subs_known,
+            tags_known,
+            colors_sent: RefCell::new(String::new()),
             tags,
             rules,
             editor,
@@ -464,6 +471,21 @@ impl Modal {
             self.notes_known.borrow_mut().insert(snap.id, notes.clone());
             (self.sink)(UiEvent::SetNotes(snap.id, notes.clone()));
         }
+        // Tags set before they lived in the notes join them as #tags (once).
+        let present = hashtags(&notes);
+        let missing: Vec<&String> = snap.tags.iter().filter(|t| !present.contains(t)).collect();
+        if !missing.is_empty() {
+            if !notes.trim().is_empty() {
+                notes.push_str("\n\n");
+            }
+            let line: Vec<String> = missing.iter().map(|t| format!("#{t}")).collect();
+            notes.push_str(&line.join(" "));
+            self.notes_known.borrow_mut().insert(snap.id, notes.clone());
+            (self.sink)(UiEvent::SetNotes(snap.id, notes.clone()));
+        }
+        self.tags_known
+            .borrow_mut()
+            .insert(snap.id, hashtags(&notes));
         self.subs_known
             .borrow_mut()
             .insert(snap.id, checklist(&notes));
@@ -498,7 +520,6 @@ impl Modal {
         if let Some(window) = self.panel.window() {
             window.makeFirstResponder(None);
         }
-        self.tags.flush();
         self.open.set(None);
     }
 
@@ -540,6 +561,16 @@ impl Modal {
             self.editor.set_markdown(&snap.notes, &snap.id.to_string());
         }
         self.tags.set(&snap.tags);
+        // The capsules of the #tags in the notes, in their colours.
+        let colors: Vec<String> = hashtags(&snap.notes)
+            .iter()
+            .map(|t| format!("{}:{}", json_str(t), json_str(&style::tag_css(t))))
+            .collect();
+        let json = format!("{{{}}}", colors.join(","));
+        if *self.colors_sent.borrow() != json {
+            self.editor.set_tag_colors(&json);
+            *self.colors_sent.borrow_mut() = json;
+        }
         let stats = format!(
             "{}{}  ·  сегодня {}  ·  🍅 {}",
             if snap.tracking { "● " } else { "" },
@@ -577,6 +608,62 @@ impl Modal {
             .setContentTintColor(Some(&NSColor::secondaryLabelColor()));
         *self.all_entries.borrow_mut() = snap.entries.clone();
     }
+}
+
+/// A string as a JSON literal.
+fn json_str(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if (c as u32) < 0x20 => out.push(' '),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// The #tags written in Markdown notes, once each, in order of appearance: a `#`
+/// at the start of a word followed by letters, digits, `_` or `-` (so `# Title`
+/// is a heading, not a tag); code (fenced or inline) is left out.
+pub(crate) fn hashtags(md: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut fenced = false;
+    for line in md.lines() {
+        if line.trim_start().starts_with("```") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            continue;
+        }
+        // Without `inline code` spans.
+        let mut text = String::new();
+        let mut in_code = false;
+        for c in line.chars() {
+            if c == '`' {
+                in_code = !in_code;
+            } else if !in_code {
+                text.push(c);
+            }
+        }
+        let chars: Vec<char> = text.chars().collect();
+        for i in 0..chars.len() {
+            if chars[i] != '#' || (i > 0 && !(chars[i - 1].is_whitespace() || chars[i - 1] == '(')) {
+                continue;
+            }
+            let tag: String = chars[i + 1..]
+                .iter()
+                .take_while(|c| c.is_alphanumeric() || **c == '_' || **c == '-')
+                .collect();
+            if !tag.is_empty() && !out.contains(&tag) {
+                out.push(tag);
+            }
+        }
+    }
+    out
 }
 
 /// The checklist lines of Markdown notes (`- [ ] title`, `- [x] title`, at any
@@ -655,7 +742,7 @@ fn small_label(mtm: MainThreadMarker) -> Retained<NSTextField> {
 
 #[cfg(test)]
 mod tests {
-    use super::checklist;
+    use super::{checklist, hashtags};
 
     #[test]
     fn checklist_lines_are_the_subtasks() {
@@ -669,6 +756,12 @@ mod tests {
                 ("Готово".to_string(), true),
             ]
         );
+    }
+
+    #[test]
+    fn hashtags_are_words_after_a_hash() {
+        let md = "# Заголовок\nпро #дизайн и #motion, ещё #дизайн\n`#код` и (#в-скобках)\n```\n#вблоке\n```\nссылка a#b";
+        assert_eq!(hashtags(md), vec!["дизайн", "motion", "в-скобках"]);
     }
 
     #[test]

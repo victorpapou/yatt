@@ -35,6 +35,8 @@ pub struct NotesEditor {
     pending: Rc<RefCell<Option<(String, String)>>>,
     /// Text colour (CSS) to apply once the page is ready.
     ink: Rc<RefCell<Option<String>>>,
+    /// Tag colours (a JSON object, name to CSS colour), applied once ready.
+    tag_colors: Rc<RefCell<Option<String>>>,
     /// The page's width (points), to set once the page is ready.
     page_width: Rc<Cell<f64>>,
     _handler: Retained<ScriptHandler>,
@@ -46,6 +48,7 @@ impl NotesEditor {
         let pending: Rc<RefCell<Option<(String, String)>>> = Rc::new(RefCell::new(None));
         let ink: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
         let page_width = Rc::new(Cell::new(0.0));
+        let tag_colors: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
         // The key the next notes messages belong to, as posted from the page.
         let key = Rc::new(RefCell::new(String::new()));
         let config = unsafe { WKWebViewConfiguration::new(mtm) };
@@ -54,7 +57,7 @@ impl NotesEditor {
         };
         let handler = {
             let (ready, pending, view) = (ready.clone(), pending.clone(), view.clone());
-            let (ink, page_width) = (ink.clone(), page_width.clone());
+            let (ink, page_width, tag_colors) = (ink.clone(), page_width.clone(), tag_colors.clone());
             ScriptHandler::new(mtm, move |msg| {
                 if msg == "ready" {
                     ready.set(true);
@@ -63,6 +66,9 @@ impl NotesEditor {
                     }
                     if let Some(css) = ink.borrow().as_ref() {
                         eval(&view, &set_ink_js(css));
+                    }
+                    if let Some(json) = tag_colors.borrow().as_ref() {
+                        eval(&view, &format!("window.yatt.setTagColors({json})"));
                     }
                     if let Some((md, k)) = pending.borrow_mut().take() {
                         eval(&view, &set_markdown_js(&md, &k));
@@ -100,6 +106,7 @@ impl NotesEditor {
             ready,
             pending,
             ink,
+            tag_colors,
             page_width,
             _handler: handler,
         }
@@ -111,6 +118,17 @@ impl NotesEditor {
             eval(&self.view, &set_markdown_js(md, key));
         } else {
             *self.pending.borrow_mut() = Some((md.to_string(), key.to_string()));
+        }
+    }
+
+    /// The colours of the tags written in the notes (JSON: name to CSS colour).
+    pub fn set_tag_colors(&self, json: &str) {
+        if self.tag_colors.borrow().as_deref() == Some(json) {
+            return;
+        }
+        *self.tag_colors.borrow_mut() = Some(json.to_string());
+        if self.ready.get() {
+            eval(&self.view, &format!("window.yatt.setTagColors({json})"));
         }
     }
 

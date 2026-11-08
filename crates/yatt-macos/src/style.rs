@@ -359,6 +359,12 @@ pub fn column_color(i: usize) -> Retained<NSColor> {
     }
 }
 
+/// A tag's capsule colour as CSS, for the notes editor.
+pub fn tag_css(name: &str) -> String {
+    let (r, g, b) = palette()[tag_hue(name) % HUES.len()].0;
+    format!("rgba({r},{g},{b},0.35)")
+}
+
 /// The notes editor's ink on the window's own background: near-black in light,
 /// near-white in dark, so the text reads at full contrast.
 pub fn editor_ink_css() -> String {

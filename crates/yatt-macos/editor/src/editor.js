@@ -1,6 +1,8 @@
 // Notes editor for yatt's task modal. Runs in a WKWebView; talks to the app
 // through window.webkit.messageHandlers.yatt and window.yatt.
-import { Editor } from '@tiptap/core'
+import { Editor, Extension } from '@tiptap/core'
+import { Plugin, PluginKey } from '@tiptap/pm/state'
+import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import StarterKit from '@tiptap/starter-kit'
 import { Placeholder } from '@tiptap/extensions'
 import { Markdown } from '@tiptap/markdown'
@@ -66,6 +68,10 @@ body {
 }
 .ProseMirror img.ProseMirror-selectednode { outline: 2px solid AccentColor; }
 .ProseMirror hr { border: none; border-top: 1px solid color-mix(in srgb, CanvasText 15%, transparent); }
+.ProseMirror .tag {
+  border-radius: 10px; padding: 1px 7px;
+  background: color-mix(in srgb, CanvasText 12%, transparent);
+}
 .ProseMirror p.is-editor-empty:first-child::before {
   content: attr(data-placeholder); float: left; height: 0; pointer-events: none;
   color: color-mix(in srgb, CanvasText 35%, transparent);
@@ -74,6 +80,37 @@ body {
 const style = document.createElement('style')
 style.textContent = css
 document.head.appendChild(style)
+
+// «#тег» in the text is a tag: drawn in place as a capsule (the text stays as
+// typed). The colours come from the app (`setTagColors`).
+let tagColors = {}
+const HashTags = Extension.create({
+  name: 'hashtags',
+  addProseMirrorPlugins() {
+    return [new Plugin({
+      key: new PluginKey('hashtags'),
+      props: {
+        decorations(state) {
+          const decos = []
+          state.doc.descendants((node, pos, parent) => {
+            if (!node.isText) return
+            if (parent && parent.type.name === 'codeBlock') return
+            if (node.marks.some((m) => m.type.name === 'code')) return
+            const re = /(^|[\s(])#([\p{L}\p{N}_-]+)/gu
+            let m
+            while ((m = re.exec(node.text))) {
+              const start = pos + m.index + m[1].length
+              const end = start + 1 + m[2].length
+              const c = tagColors[m[2]]
+              decos.push(Decoration.inline(start, end, { class: 'tag', style: c ? 'background:' + c : '' }))
+            }
+          })
+          return DecorationSet.create(state.doc, decos)
+        },
+      },
+    })]
+  },
+})
 
 const post = (msg) => window.webkit?.messageHandlers?.yatt?.postMessage(msg)
 
@@ -91,6 +128,7 @@ const editor = new Editor({
     StarterKit,
     Markdown,
     TaskList,
+    HashTags,
     TaskItem.configure({ nested: true }),
     Image.configure({ allowBase64: true }),
     Placeholder.configure({ placeholder: 'Заметки… Markdown: # заголовок, - список, - [ ] подзадача, **жирный**, `код`' }),
@@ -109,6 +147,10 @@ window.yatt = {
     applying = true
     editor.commands.setContent(md || '', { contentType: 'markdown', emitUpdate: false })
     applying = false
+  },
+  setTagColors(map) {
+    tagColors = map || {}
+    editor.view.dispatch(editor.state.tr.setMeta('hashtags', true))
   },
   flush() { if (timer) flush() },
   // The caret at the end, without scrolling the notes as the panel opens.
