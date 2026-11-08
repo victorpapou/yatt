@@ -174,7 +174,13 @@ pub fn run() -> anyhow::Result<()> {
             let (window, sink) = (window.clone(), sink.clone());
             cx.spawn(async move |cx: &mut gpui::AsyncApp| {
                 cx.background_executor()
-                    .timer(std::time::Duration::from_millis(3000))
+                    .timer(std::time::Duration::from_millis(2000))
+                    .await;
+                if std::env::var_os("YATT_SHOT_SCROLL").is_some() {
+                    window.demo_scroll_to(0, 86.0);
+                }
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(1000))
                     .await;
                 eprintln!("shot: {path}: {}", window.capture_png(&path));
                 sink(yatt_macos::UiEvent::Quit);

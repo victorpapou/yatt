@@ -163,8 +163,8 @@ pub enum Grouping {
 
 /// The height of a group's title row in a list.
 const HEAD_H: f64 = 26.0;
-/// How far under the toolbar a sticky group title holds: below the column's chip.
-const CHIP_STICK: f64 = 4.0 + 16.0 + 6.0;
+/// How far under the toolbar's bottom edge a sticky group title holds: none, flush.
+const CHIP_STICK: f64 = 0.0;
 
 /// Names of the card colours, by palette index.
 const HUE_NAMES: [&str; 15] = [
@@ -1491,6 +1491,18 @@ impl Board {
                         + heads as f64 * HEAD_H
                         + LIST_BOTTOM)
                         .max(self.height.get() - 2.0 * inset);
+                    // A list that fits does not scroll at all, not even elastically; one
+                    // that overflows rubber-bands as usual.
+                    let content_h = self.doc_top()
+                        + slots as f64 * PITCH
+                        + heads as f64 * HEAD_H
+                        + LIST_BOTTOM;
+                    let overflows = content_h > self.height.get() - inset;
+                    self.cols[ci].scroll.setVerticalScrollElasticity(if overflows {
+                        NSScrollElasticity::Automatic
+                    } else {
+                        NSScrollElasticity::None
+                    });
                     let doc = &self.cols[ci].doc;
                     if doc.frame().size.height != doc_h
                         || doc.frame().size.width != self.geom.get()[ci].w
