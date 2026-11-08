@@ -281,25 +281,6 @@ impl MainWindow {
             window.titlebarSeparatorStyle(),
             window.titlebarAppearsTransparent()
         );
-        // Experiment: a hairline-high titlebar accessory whose scroll edge effect is
-        // the hard one, which is what makes the system draw its rule under the
-        // toolbar in the active window (YATT_HARD_EDGE=1).
-        if std::env::var_os("YATT_HARD_EDGE").is_some() {
-            use objc2::{class, msg_send};
-            let acc = objc2_app_kit::NSTitlebarAccessoryViewController::new(mtm);
-            let v = NSView::initWithFrame(
-                NSView::alloc(mtm),
-                NSRect::new(NSPoint::ZERO, NSSize::new(100.0, 1.0)),
-            );
-            acc.setView(&v);
-            acc.setLayoutAttribute(objc2_app_kit::NSLayoutAttribute::Bottom);
-            unsafe {
-                let hard: Retained<AnyObject> = msg_send![class!(NSScrollEdgeEffectStyle), hardStyle];
-                let _: () = msg_send![&acc, setPreferredScrollEdgeEffectStyle: &*hard];
-            }
-            window.addTitlebarAccessoryViewController(&acc);
-            eprintln!("hard-edge titlebar accessory added");
-        }
         window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
         window.setMinSize(NSSize::new(760.0, 480.0));
 
