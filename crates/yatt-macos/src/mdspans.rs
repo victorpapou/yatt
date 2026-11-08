@@ -237,8 +237,8 @@ mod tests {
         let k = kinds("a **b** *c* `d` #тег");
         assert!(k.contains(&(4, 5, Kind::Bold)));
         assert!(k.contains(&(9, 10, Kind::Italic)));
-        assert!(k.contains(&(14, 15, Kind::Code)));
-        assert!(k.contains(&(18, 22, Kind::Tag("тег".into()))));
+        assert!(k.contains(&(13, 14, Kind::Code)));
+        assert!(k.contains(&(16, 20, Kind::Tag("тег".into()))));
     }
 
     #[test]
