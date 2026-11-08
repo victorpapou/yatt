@@ -65,15 +65,15 @@ pub struct State {
 }
 
 /// One checkbox's layers: ring, accent fill and the tick drawn as a path.
-struct BoxLayer {
-    root: Retained<CALayer>,
-    fill: Retained<CALayer>,
-    ring: Retained<CAShapeLayer>,
-    tick: Retained<CAShapeLayer>,
-    checked: Cell<bool>,
+pub(crate) struct BoxLayer {
+    pub root: Retained<CALayer>,
+    pub fill: Retained<CALayer>,
+    pub ring: Retained<CAShapeLayer>,
+    pub tick: Retained<CAShapeLayer>,
+    pub checked: Cell<bool>,
 }
 
-const BOX: f64 = 16.0;
+pub(crate) const BOX: f64 = 16.0;
 /// What a collapsed `- ` takes in the line.
 const BULLET_W: f64 = 18.0;
 /// The height of a checklist line.
@@ -813,7 +813,7 @@ fn place_boxes(st: &Rc<State>) {
     place_bullets(st, &text, &lm, origin, &string);
 }
 
-fn make_box() -> BoxLayer {
+pub(crate) fn make_box() -> BoxLayer {
     let root = CALayer::new();
     root.setBounds(NSRect::new(NSPoint::ZERO, NSSize::new(BOX, BOX)));
     let fill = CALayer::new();
@@ -861,7 +861,7 @@ fn make_box() -> BoxLayer {
 }
 
 /// The fill comes in, and the tick runs along its path (0.25 s, ease-out); or back.
-fn animate_box(bl: &BoxLayer, checked: bool) {
+pub(crate) fn animate_box(bl: &BoxLayer, checked: bool) {
     let timing = CAMediaTimingFunction::functionWithName(unsafe { kCAMediaTimingFunctionEaseOut });
     let (from_end, to_end) = if checked { (0.0, 1.0) } else { (1.0, 0.0) };
     let (from_op, to_op) = if checked { (0.0, 1.0) } else { (1.0, 0.0) };

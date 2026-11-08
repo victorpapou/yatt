@@ -276,6 +276,10 @@ struct Card {
     face: Retained<FillView>,
     content: Retained<FlippedView>,
     icon: Retained<NSView>,
+    /// The checkbox that takes the glyph's place under the pointer.
+    check: Retained<FlippedView>,
+    check_box: crate::notes::BoxLayer,
+    hovered: bool,
     time: Retained<NSTextField>,
     title: Retained<NSTextField>,
     /// The tags the meta line shows (it is redrawn in a new colour with them).
@@ -1307,6 +1311,25 @@ impl Board {
             title,
         } = card_face(mtm, snap.id, &snap.title, hue);
         content.setAutoresizingMask(fill_mask);
+        // The checkbox over the glyph's place, shown while the pointer is on the card.
+        let check = FlippedView::new(
+            mtm,
+            NSRect::new(NSPoint::new(TEXT_X, 14.0), NSSize::new(22.0, 22.0)),
+        );
+        check.setWantsLayer(true);
+        let check_box = crate::notes::make_box();
+        check_box.root.setFrame(NSRect::new(NSPoint::new(3.0, 3.0), NSSize::new(16.0, 16.0)));
+        check_box
+            .ring
+            .setStrokeColor(Some(&style::text(hue).colorWithAlphaComponent(0.7).CGColor()));
+        check_box
+            .fill
+            .setBackgroundColor(Some(&objc2_app_kit::NSColor::controlAccentColor().CGColor()));
+        if let Some(layer) = check.layer() {
+            layer.addSublayer(&check_box.root);
+        }
+        check.setAlphaValue(0.0);
+        content.addSubview(&check);
 
         // While leading a group drag: the target column, and how many cards come along.
         let label = text_label(mtm, "", 22.0, unsafe { NSFontWeightMedium });
@@ -1358,6 +1381,9 @@ impl Board {
             face,
             content,
             icon,
+            check,
+            check_box,
+            hovered: false,
             time,
             title,
             tag_names: snap.tags.clone(),
@@ -2222,12 +2248,60 @@ impl Board {
                 if p.is_some() {
                     self.show_cursor(id);
                 }
-                if self.drag.borrow().is_none() && self.hover.replace(id) != id {
-                    self.retarget();
-                    self.kick();
+                if self.drag.borrow().is_none() {
+                    let old = self.hover.replace(id);
+                    if old != id {
+                        self.set_check_hover(old, false);
+                        self.set_check_hover(id, true);
+                        self.retarget();
+                        self.kick();
+                    }
                 }
             }
         }
+    }
+
+    /// Shows or hides the hover checkbox of a card.
+    fn set_check_hover(&self, id: Option<TaskId>, on: bool) {
+        let Some(id) = id else { return };
+        let done = self
+            .order
+            .borrow()
+            .get(COLS - 1)
+            .is_some_and(|col| col.contains(&id));
+        if let Some(card) = self.cards.borrow_mut().get_mut(&id) {
+            card.set_hover(on, done);
+        }
+    }
+
+    /// A press on a card's checkbox (where the glyph is): done, or back to the
+    /// backlog when it was done. Returns true when it was one.
+    fn check_press(&self, at: NSPoint) -> bool {
+        let Some(id) = self.hover.get() else { return false };
+        let local = {
+            let cards = self.cards.borrow();
+            let Some(c) = cards.get(&id) else { return false };
+            let (ox, oy) = self.offset(c.space);
+            if !c.hovered {
+                return false;
+            }
+            NSPoint::new(at.x - ox - c.body.x, at.y - oy - c.body.y)
+        };
+        if !(local.x >= TEXT_X - 6.0 && local.x <= TEXT_X + 28.0 && local.y >= 8.0 && local.y <= 42.0) {
+            return false;
+        }
+        let order = self.order.borrow();
+        let done = order.get(COLS - 1).is_some_and(|col| col.contains(&id));
+        drop(order);
+        if let Some(card) = self.cards.borrow().get(&id) {
+            crate::notes::animate_box(&card.check_box, !done);
+        }
+        (self.sink)(UiEvent::Move {
+            id,
+            status: if done { Status::Backlog } else { Status::Done },
+            index: 0,
+        });
+        true
     }
 
     /// Right-click on a card: «Удалить» for it, or for the whole selection when
@@ -2294,6 +2368,9 @@ impl Board {
     }
 
     fn on_down(self: &Rc<Self>, at: NSPoint, shift: bool, cmd: bool, clicks: isize) {
+        if !shift && !cmd && self.check_press(at) {
+            return;
+        }
         let id = self.hit(at);
         if crate::eventlog::enabled() {
             let what = id.and_then(|id| {
@@ -2791,6 +2868,28 @@ impl Card {
         self.edges.restyle();
         style::tint_glass(&self.parts[0], hue);
         self.face.repaint();
+    }
+
+    /// Under the pointer the glyph gives way to a checkbox (about 150 ms), ticked
+    /// when the task is done.
+    fn set_hover(&mut self, on: bool, done: bool) {
+        if self.hovered == on {
+            return;
+        }
+        self.hovered = on;
+        crate::motion::quietly(|| {
+            self.check_box.checked.set(done);
+            self.check_box.fill.setOpacity(if done { 1.0 } else { 0.0 });
+            self.check_box.tick.setStrokeEnd(if done { 1.0 } else { 0.0 });
+            self.check_box
+                .ring
+                .setStrokeColor(Some(&style::text(self.hue).colorWithAlphaComponent(0.7).CGColor()));
+        });
+        let (icon, check) = (self.icon.clone(), self.check.clone());
+        animate(true, 0.15, move || {
+            icon.animator().setAlphaValue(if on { 0.0 } else { 1.0 });
+            check.animator().setAlphaValue(if on { 1.0 } else { 0.0 });
+        });
     }
 
     fn set_selected(&mut self, on: bool) {
