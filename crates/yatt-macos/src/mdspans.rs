@@ -28,6 +28,8 @@ pub enum Kind {
     Done,
     /// `![alt](url)`, whole.
     Image,
+    /// The text of a link `[text](url)`; the rest of it is Hide.
+    Link,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -65,7 +67,9 @@ pub fn parse(text: &str) -> Vec<Span> {
         let trimmed_fence = line.trim_start().starts_with("```");
         if trimmed_fence {
             in_fence = !in_fence;
-            out.push(span(0, chars.len(), Kind::Marker));
+            if !chars.is_empty() {
+                out.push(span(0, chars.len(), Kind::Hide));
+            }
             base += line_units + 1;
             continue;
         }
@@ -150,6 +154,20 @@ fn inline(
                     out.push(span(i, end + 1, Kind::Image));
                     i = end + 1;
                     continue;
+                }
+            }
+        }
+        // Link: [text](url): the text stays, the rest is not drawn.
+        if c == '[' {
+            if let Some(close) = find(chars, i + 1, &[']', '(']) {
+                if let Some(end) = find(chars, close + 2, &[')']) {
+                    if close > i + 1 {
+                        out.push(span(i, i + 1, Kind::Hide));
+                        out.push(span(i + 1, close, Kind::Link));
+                        out.push(span(close, end + 1, Kind::Hide));
+                        i = end + 1;
+                        continue;
+                    }
                 }
             }
         }

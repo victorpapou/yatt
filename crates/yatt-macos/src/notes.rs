@@ -55,7 +55,9 @@ pub struct State {
     image_layers: RefCell<Vec<Retained<CALayer>>>,
     bullet_layers: RefCell<Vec<Retained<CALayer>>>,
     /// The images shown: where their text starts, the URL and the size they take.
-    image_slots: RefCell<Vec<(usize, String, f64, f64)>>,
+    image_slots: RefCell<Vec<(usize, usize, String, f64, f64)>>,
+    /// Where each picture is shown: its frame and the range of its Markdown.
+    image_hits: RefCell<Vec<(NSRect, usize, usize)>>,
     /// Where each shown checkbox is, and the index of its state character.
     hits: RefCell<Vec<(NSRect, usize)>>,
     /// The checkbox clicked last (for a Shift-click range).
@@ -157,6 +159,24 @@ define_class!(
             Bool::YES
         }
 
+        #[unsafe(method(textView:shouldSetSpellingState:range:))]
+        fn should_set_spelling(&self, view: &NSTextView, value: isize, range: NSRange) -> isize {
+            // No spelling marks on what is not text: hidden markers, pictures and
+            // their URLs, code, tags.
+            let string = view.string().to_string();
+            let (rs, re) = (range.location, range.location + range.length);
+            for sp in parse(&string) {
+                let quiet = matches!(
+                    sp.kind,
+                    Kind::Hide | Kind::Bullet | Kind::Box { .. } | Kind::Image | Kind::Code | Kind::CodeBlock | Kind::Tag(_) | Kind::Marker
+                );
+                if quiet && rs < sp.end && re > sp.start {
+                    return 0;
+                }
+            }
+            value
+        }
+
         #[unsafe(method(textView:doCommandBySelector:))]
         fn do_command(&self, view: &NSTextView, sel: Sel) -> Bool {
             if sel == sel!(insertNewline:) {
@@ -180,6 +200,8 @@ define_class!(
 pub struct TextIvars {
     on_layout: RefCell<Option<Box<dyn Fn()>>>,
     on_click: RefCell<Option<Box<dyn Fn(NSPoint, bool) -> bool>>>,
+    /// Where the pointer is an arrow (checkboxes, pictures), not the text beam.
+    cursor_rects: RefCell<Vec<NSRect>>,
 }
 
 define_class!(
@@ -195,6 +217,15 @@ define_class!(
             let _: () = unsafe { msg_send![super(self), layout] };
             if let Some(f) = self.ivars().on_layout.borrow().as_ref() {
                 f();
+            }
+        }
+
+        #[unsafe(method(resetCursorRects))]
+        fn reset_cursor_rects(&self) {
+            let _: () = unsafe { msg_send![super(self), resetCursorRects] };
+            let arrow = objc2_app_kit::NSCursor::arrowCursor();
+            for r in self.ivars().cursor_rects.borrow().iter() {
+                self.addCursorRect_cursor(*r, &arrow);
             }
         }
 
@@ -219,6 +250,7 @@ impl NotesTextView {
         let this = Self::alloc(mtm).set_ivars(TextIvars {
             on_layout: RefCell::default(),
             on_click: RefCell::default(),
+            cursor_rects: RefCell::default(),
         });
         unsafe { msg_send![super(this), initWithFrame: frame] }
     }
@@ -247,6 +279,7 @@ impl NotesEditor {
             image_layers: RefCell::default(),
             bullet_layers: RefCell::default(),
             image_slots: RefCell::default(),
+            image_hits: RefCell::default(),
             hits: RefCell::default(),
             last_box: Cell::new(None),
             internal: Cell::new(false),
@@ -385,7 +418,12 @@ impl NotesEditor {
 
     /// Development aid: clicks the centre of checkbox `k`, as the mouse would.
     pub fn debug_click_box(&self, k: usize, shift: bool) {
-        let hit = self.state.hits.borrow().get(k).map(|(r, _)| *r);
+        // k ≥ 100: the picture k − 100.
+        let hit = if k >= 100 {
+            self.state.image_hits.borrow().get(k - 100).map(|(r, _, _)| *r)
+        } else {
+            self.state.hits.borrow().get(k).map(|(r, _)| *r)
+        };
         if let Some(r) = hit {
             let c = NSPoint::new(r.origin.x + r.size.width / 2.0, r.origin.y + r.size.height / 2.0);
             eprintln!("editor: click box {k} at {:.0},{:.0}: {}", c.x, c.y, click_box(&self.state, c, shift));
@@ -482,7 +520,7 @@ fn restyle(st: &Rc<State>) {
             unsafe { storage.addAttribute_value_range(name, value, ns_range(s, e)) };
         }
     };
-    let mut slots: Vec<(usize, String, f64, f64)> = Vec::new();
+    let mut slots: Vec<(usize, usize, String, f64, f64)> = Vec::new();
     for sp in parse(&string) {
         match sp.kind {
             Kind::Marker => unsafe { set(NSForegroundColorAttributeName, &dim, sp.start, sp.end) },
@@ -545,35 +583,34 @@ fn restyle(st: &Rc<State>) {
                 unsafe { set(NSParagraphStyleAttributeName, &lp, ls, (le + 1).min(total)) };
             }
             Kind::Image => {
+                // Never the Markdown: the range is not drawn (no room, no spelling),
+                // its line is as tall as the picture, drawn over it.
                 let raw = utf16_slice(&string, sp.start, sp.end);
-                let on_caret = sel.location >= sp.start && sel.location <= sp.end;
-                let shown = (!on_caret)
-                    .then(|| url_of(&raw))
-                    .flatten()
+                let shown = url_of(&raw)
                     .and_then(|url| image_size(st, &text, &url).map(|(w, h)| (url, w, h)));
+                let tiny = NSFont::systemFontOfSize(1.0);
+                let clear = NSColor::clearColor();
+                unsafe {
+                    set(NSFontAttributeName, &tiny, sp.start, sp.end);
+                    set(NSForegroundColorAttributeName, &clear, sp.start, sp.end);
+                }
                 if let Some((url, w, h)) = shown {
-                    // The text collapses; its line is as tall as the picture, which
-                    // is drawn over it.
-                    let tiny = NSFont::systemFontOfSize(1.0);
-                    let clear = NSColor::clearColor();
                     let p = NSMutableParagraphStyle::new();
                     p.setLineBreakMode(objc2_app_kit::NSLineBreakMode::ByClipping);
                     p.setMinimumLineHeight(h + 8.0);
                     p.setMaximumLineHeight(h + 8.0);
                     p.setParagraphSpacing(4.0);
-                    unsafe {
-                        set(NSFontAttributeName, &tiny, sp.start, sp.end);
-                        set(NSForegroundColorAttributeName, &clear, sp.start, sp.end);
-                        set(NSParagraphStyleAttributeName, &p, sp.start, sp.end);
-                    }
-                    slots.push((sp.start, url, w, h));
-                } else {
-                    let f = NSFont::systemFontOfSize(6.0);
-                    let c = ink.colorWithAlphaComponent(0.25);
-                    unsafe {
-                        set(NSFontAttributeName, &f, sp.start, sp.end);
-                        set(NSForegroundColorAttributeName, &c, sp.start, sp.end);
-                    }
+                    let (ls, le) = line_range(&string, sp.start);
+                    unsafe { set(NSParagraphStyleAttributeName, &p, ls, (le + 1).min(total)) };
+                    slots.push((sp.start, sp.end, url, w, h));
+                }
+            }
+            Kind::Link => {
+                let c = NSColor::controlAccentColor();
+                let one = NSNumber::new_isize(1);
+                unsafe {
+                    set(NSForegroundColorAttributeName, &c, sp.start, sp.end);
+                    set(objc2_app_kit::NSUnderlineStyleAttributeName, &one, sp.start, sp.end);
                 }
             }
             Kind::Tag(name) => {
@@ -723,7 +760,7 @@ fn collapse(
 fn box_markers(string: &str) -> Vec<(usize, usize)> {
     parse(string)
         .into_iter()
-        .filter(|s| matches!(s.kind, Kind::Box { .. } | Kind::Hide | Kind::Bullet))
+        .filter(|s| matches!(s.kind, Kind::Box { .. } | Kind::Hide | Kind::Bullet | Kind::Image))
         .map(|s| (s.start, s.end))
         .collect()
 }
@@ -812,6 +849,20 @@ fn place_boxes(st: &Rc<State>) {
     drop(layers);
     place_images(st, &text, &lm, &container, origin);
     place_bullets(st, &text, &lm, origin, &string);
+    // Arrows over the checkboxes and pictures.
+    let mut rects: Vec<NSRect> = st
+        .hits
+        .borrow()
+        .iter()
+        .map(|(r, _)| NSRect::new(NSPoint::new(r.origin.x - 4.0, r.origin.y - 2.0), NSSize::new(r.size.width + 8.0, r.size.height + 4.0)))
+        .collect();
+    rects.extend(st.image_hits.borrow().iter().map(|(r, _, _)| *r));
+    if *text.ivars().cursor_rects.borrow() != rects {
+        *text.ivars().cursor_rects.borrow_mut() = rects;
+        if let Some(w) = text.window() {
+            w.invalidateCursorRectsForView(&text);
+        }
+    }
 }
 
 pub(crate) fn make_box() -> BoxLayer {
@@ -898,7 +949,21 @@ fn click_box(st: &Rc<State>, p: NSPoint, shift: bool) -> bool {
             && p.y >= r.origin.y - 4.0
             && p.y <= r.origin.y + r.size.height + 4.0
     });
-    let (Some(k), Some(text)) = (hit, st.text.borrow().clone()) else {
+    let Some(text) = st.text.borrow().clone() else {
+        return false;
+    };
+    let Some(k) = hit else {
+        // A picture: the click selects it whole.
+        let image = st.image_hits.borrow().iter().find(|(r, _, _)| {
+            p.x >= r.origin.x && p.x <= r.origin.x + r.size.width && p.y >= r.origin.y && p.y <= r.origin.y + r.size.height
+        }).map(|(_, s, e)| (*s, *e));
+        if let Some((s, e)) = image {
+            text.setSelectedRange(NSRange::new(s, e - s));
+            if let Some(w) = text.window() {
+                w.makeFirstResponder(Some(&text));
+            }
+            return true;
+        }
         return false;
     };
     toggle_boxes(st, &text, k, shift);
@@ -1000,6 +1065,7 @@ fn place_images(
 ) {
     let Some(layer) = text.layer() else { return };
     let slots = st.image_slots.borrow().clone();
+    let mut hits: Vec<(NSRect, usize, usize)> = Vec::new();
     let mut layers = st.image_layers.borrow_mut();
     while layers.len() < slots.len() {
         let l = CALayer::new();
@@ -1009,7 +1075,7 @@ fn place_images(
         layers.push(l);
     }
     for (k, l) in layers.iter().enumerate() {
-        let Some((start, url, w, h)) = slots.get(k) else {
+        let Some((start, end, url, w, h)) = slots.get(k) else {
             l.setHidden(true);
             continue;
         };
@@ -1030,14 +1096,21 @@ fn place_images(
             NSSize::new(*w, *h),
         );
         let img = st.images.borrow().get(url).cloned().flatten();
+        hits.push((frame, *start, *end));
+        // Selected as a whole: a ring in the accent colour, as in Notes.
+        let sel = text.selectedRange();
+        let selected = sel.location == *start && sel.length == end - start;
         l.setHidden(false);
         crate::motion::quietly(|| {
             l.setFrame(frame);
+            l.setBorderWidth(if selected { 3.0 } else { 0.0 });
+            l.setBorderColor(Some(&NSColor::controlAccentColor().CGColor()));
             if let Some(img) = img {
                 unsafe { l.setContents(Some(&img)) };
             }
         });
     }
+    *st.image_hits.borrow_mut() = hits;
 }
 
 /// The bullets of list items, drawn in the room their `- ` leaves.
