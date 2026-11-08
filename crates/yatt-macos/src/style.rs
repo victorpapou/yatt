@@ -333,7 +333,12 @@ pub fn fill(hue: usize) -> Retained<NSColor> {
 pub fn tint_glass(view: &NSView, hue: usize) {
     if let Some(glass) = view.downcast_ref::<NSGlassEffectView>() {
         if hue % HUES.len() == NEUTRAL_HUE {
-            glass.setTintColor(None);
+            // The grey card is tinted too, softly, so it frosts like the coloured
+            // ones (in an inactive window as well) instead of being bare glass.
+            // The palette's grey follows the appearance; lighter in the dark, so
+            // the card is no white patch there.
+            let strength = if dark() { 0.5 } else { 0.8 };
+            glass.setTintColor(Some(&swatch(hue).colorWithAlphaComponent(strength)));
         } else {
             // The reference palette, a touch softened toward white.
             let soft = swatch(hue)
