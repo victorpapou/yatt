@@ -671,6 +671,8 @@ impl MainWindow {
             b
         };
         style::set_recolor_by_tag(crate::settings::recolor_by_tag());
+        style::set_tag_colors(crate::settings::tag_colors());
+        style::set_tag_colors(crate::settings::tag_colors());
         board.addSubview(&cards.overlay);
         // The cards fade out under the capsule: the fade and the capsule above
         // every card, flying and dragged ones too, explicitly (own layers, own
@@ -700,12 +702,31 @@ impl MainWindow {
         };
         let settings = {
             let ui_slot = inspector_ui.clone();
+            let tags_slot = inspector_ui.clone();
             crate::settings::SettingsWindow::new(
                 mtm,
                 Rc::new(move || {
                     if let Some(ui) = ui_slot.borrow().as_ref().and_then(|w| w.upgrade()) {
                         ui.apply_settings();
                     }
+                }),
+                Rc::new(move || {
+                    // Every tag on the board, once, in order of first appearance.
+                    let mut out: Vec<String> = Vec::new();
+                    if let Some(ui) = tags_slot.borrow().as_ref().and_then(|w| w.upgrade())
+                        && let Some(snap) = ui.last.borrow().as_ref()
+                    {
+                        for col in &snap.columns {
+                            for card in &col.cards {
+                                for t in &card.tags {
+                                    if !out.contains(t) {
+                                        out.push(t.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    out
                 }),
             )
         };
@@ -1511,6 +1532,8 @@ impl Ui {
             }
         }
         style::set_recolor_by_tag(crate::settings::recolor_by_tag());
+        style::set_tag_colors(crate::settings::tag_colors());
+        self.modal.refresh_tag_colors();
         self.cards.restyle();
         if let Some(snap) = self.last.borrow().clone() {
             self.sync_modal(&snap);

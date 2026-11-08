@@ -7,6 +7,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use objc2::rc::{Retained, Weak as ObjcWeak};
+use objc2::runtime::ProtocolObject;
 use objc2::runtime::AnyObject;
 use objc2::{MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
@@ -28,6 +29,7 @@ const OPEN_KEY: &str = "openTaskIn";
 const RECOLOR_KEY: &str = "recolorByTag";
 const GROUPING_KEY: &str = "grouping";
 const STACKS_KEY: &str = "yatt.stacked";
+const TAG_COLORS_KEY: &str = "tagColors";
 
 /// A new card's colour unless one is picked: yellow (an index into the palette).
 pub const DEFAULT_COLOR: usize = 8;
@@ -93,6 +95,47 @@ pub fn set_stacked(on: bool) {
     defaults().setBool_forKey(on, &NSString::from_str(STACKS_KEY));
 }
 
+/// The colours picked for tags (name to palette index).
+pub fn tag_colors() -> std::collections::HashMap<String, usize> {
+    let mut out = std::collections::HashMap::new();
+    if let Some(dict) = defaults().dictionaryForKey(&NSString::from_str(TAG_COLORS_KEY)) {
+        for key in dict.allKeys().iter() {
+            if let Some(v) = dict.objectForKey(&key)
+                && let Ok(n) = v.downcast::<objc2_foundation::NSNumber>()
+            {
+                out.insert(key.to_string(), n.integerValue().max(0) as usize);
+            }
+        }
+    }
+    out
+}
+
+/// Picks a colour for a tag (`None`: back to the one from its name).
+pub fn set_tag_color(name: &str, hue: Option<usize>) {
+    let mut map = tag_colors();
+    match hue {
+        Some(h) => {
+            map.insert(name.to_string(), h);
+        }
+        None => {
+            map.remove(name);
+        }
+    }
+    let dict = objc2_foundation::NSMutableDictionary::<NSString, objc2_foundation::NSNumber>::new();
+    for (k, v) in &map {
+        unsafe {
+            dict.setObject_forKey(
+                &objc2_foundation::NSNumber::new_isize(*v as isize),
+                ProtocolObject::from_ref(&*NSString::from_str(k)),
+            );
+        }
+    }
+    unsafe {
+        defaults().setObject_forKey(Some(&dict), &NSString::from_str(TAG_COLORS_KEY));
+    }
+    style::set_tag_colors(map);
+}
+
 /// A round swatch of a card colour, to stand beside its name.
 pub fn swatch_image(hue: usize) -> Option<Retained<NSImage>> {
     let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
@@ -112,7 +155,7 @@ const ROW: f64 = 38.0;
 fn label(mtm: MainThreadMarker, text: &str, y: f64) -> Retained<NSTextField> {
     let l = NSTextField::labelWithString(&NSString::from_str(text), mtm);
     l.setAlignment(NSTextAlignment::Left);
-    l.setFrame(NSRect::new(NSPoint::new(PAD, y + 6.0), NSSize::new(300.0, 20.0)));
+    l.setFrame(NSRect::new(NSPoint::new(PAD, y + 6.0), NSSize::new(W - 2.0 * PAD, 20.0)));
     l
 }
 
@@ -285,7 +328,11 @@ pub struct SettingsWindow {
 
 impl SettingsWindow {
     /// `changed` is called after any setting changed (the board reads them again).
-    pub fn new(mtm: MainThreadMarker, changed: Rc<dyn Fn()>) -> Self {
+    pub fn new(
+        mtm: MainThreadMarker,
+        changed: Rc<dyn Fn()>,
+        tags_provider: Rc<dyn Fn() -> Vec<String>>,
+    ) -> Self {
         let mut retained: Vec<Retained<AnyObject>> = Vec::new();
         let refresh: Rc<RefCell<Vec<Box<dyn Fn()>>>> = Rc::default();
 
@@ -390,10 +437,82 @@ impl SettingsWindow {
         }
         let view_tab = tab(mtm, "Вид", "rectangle.3.group", &view, 130.0, &mut retained);
 
+        // ---- Теги ----
+        let tags_pane = FlippedView::new(mtm, NSRect::new(NSPoint::ZERO, NSSize::new(W, 300.0)));
+        let scroll = objc2_app_kit::NSScrollView::new(mtm);
+        scroll.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(W, 300.0)));
+        scroll.setDrawsBackground(false);
+        scroll.setHasVerticalScroller(true);
+        let doc = FlippedView::new(mtm, NSRect::new(NSPoint::ZERO, NSSize::new(W, 300.0)));
+        scroll.setDocumentView(Some(&doc));
+        tags_pane.addSubview(&scroll);
+        let empty = label(mtm, "Тегов пока нет: напишите #тег в заметке задачи", 16.0);
+        empty.setTextColor(Some(&NSColor::secondaryLabelColor()));
+        doc.addSubview(&empty);
+        {
+            let (doc, changed, provider, empty) =
+                (doc.clone(), changed.clone(), tags_provider.clone(), empty.clone());
+            let held: Rc<RefCell<Vec<Retained<AnyObject>>>> = Rc::default();
+            refresh.borrow_mut().push(Box::new(move || {
+                held.borrow_mut().clear();
+                for v in doc.subviews().iter() {
+                    if !std::ptr::eq(&*v, &*empty as &NSView) {
+                        v.removeFromSuperview();
+                    }
+                }
+                let tags = provider();
+                empty.setHidden(!tags.is_empty());
+                let picked = tag_colors();
+                for (i, tag) in tags.iter().enumerate() {
+                    let y = 12.0 + i as f64 * ROW;
+                    // The tag as its capsule, in its colour now.
+                    let hue = style::tag_hue(tag);
+                    let cap = NSTextField::labelWithString(&NSString::from_str(tag), mtm);
+                    cap.setAlignment(NSTextAlignment::Center);
+                    cap.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize(12.0)));
+                    cap.setWantsLayer(true);
+                    if let Some(layer) = cap.layer() {
+                        layer.setCornerRadius(9.0);
+                        layer.setBackgroundColor(Some(
+                            &style::swatch(hue).colorWithAlphaComponent(0.55).CGColor(),
+                        ));
+                    }
+                    let w = (cap.fittingSize().width + 18.0).min(240.0);
+                    cap.setFrame(NSRect::new(NSPoint::new(PAD, y + 7.0), NSSize::new(w, 20.0)));
+                    doc.addSubview(&cap);
+                    let mut titles = vec!["По названию".to_string()];
+                    titles.extend(HUE_NAMES.iter().map(|n| n.to_string()));
+                    let p = popup(mtm, y, &titles, false, picked.get(tag).map_or(0, |h| h + 1));
+                    // Swatches from the second item on.
+                    for k in 1..titles.len() {
+                        if let Some(item) = p.itemAtIndex(k as isize) {
+                            item.setImage(swatch_image(k - 1).as_deref());
+                        }
+                    }
+                    let (name, changed) = (tag.clone(), changed.clone());
+                    let mut mine: Vec<Retained<AnyObject>> = Vec::new();
+                    on_pick(mtm, &p, &mut mine, move |k| {
+                        set_tag_color(&name, if k == 0 { None } else { Some(k - 1) });
+                        changed();
+                    });
+                    held.borrow_mut().extend(mine);
+                    doc.addSubview(&p);
+                }
+                let h = (24.0 + tags.len() as f64 * ROW).max(300.0);
+                doc.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(W, h)));
+            }));
+        }
+        let tags_tab = tab(mtm, "Теги", "tag", &tags_pane, 300.0, &mut retained);
+
         let tabs = NSTabViewController::new(mtm);
         tabs.setTabStyle(NSTabViewControllerTabStyle::Toolbar);
         tabs.addTabViewItem(&tasks_tab);
+        tabs.addTabViewItem(&tags_tab);
         tabs.addTabViewItem(&view_tab);
+        // `YATT_SETTINGS_TAB=n`: opens on that tab (for the demo's captures).
+        if let Some(n) = std::env::var("YATT_SETTINGS_TAB").ok().and_then(|v| v.parse::<isize>().ok()) {
+            tabs.setSelectedTabViewItemIndex(n);
+        }
         let window = NSWindow::windowWithContentViewController(&tabs);
         window.setTitle(ns_string!("Настройки"));
         window.setStyleMask(NSWindowStyleMask::Titled | NSWindowStyleMask::Closable);
@@ -403,6 +522,7 @@ impl SettingsWindow {
         retained.push(Retained::<AnyObject>::from(Retained::into_super(Retained::into_super(tabs))));
         retained.push(Retained::<AnyObject>::from(Retained::into_super(tasks_tab)));
         retained.push(Retained::<AnyObject>::from(Retained::into_super(view_tab)));
+        retained.push(Retained::<AnyObject>::from(Retained::into_super(tags_tab)));
         let _ = (NSColor::clearColor(), NSView::new(mtm), ns_string!("").copy());
         Self {
             window,

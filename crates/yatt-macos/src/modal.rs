@@ -371,6 +371,11 @@ impl Modal {
         *self.tags.on_resize.borrow_mut() = Some(Box::new(f));
     }
 
+    /// The tags' capsules in their (possibly new) colours.
+    pub fn refresh_tag_colors(&self) {
+        self.tags.refresh();
+    }
+
     pub fn open_task(&self) -> Option<TaskId> {
         self.open.get()
     }

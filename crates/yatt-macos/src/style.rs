@@ -224,8 +224,28 @@ pub fn set_recolor_by_tag(on: bool) {
     RECOLOR_BY_TAG.with(|r| r.set(on));
 }
 
-/// A tag's colour: the same name always gives the same one (never the grey).
+thread_local! {
+    /// Colours picked for tags in the settings (name to palette index).
+    static TAG_COLORS: std::cell::RefCell<std::collections::HashMap<String, usize>> =
+        Default::default();
+}
+
+/// Sets the colours picked for tags; the rest keep the one from their name.
+pub fn set_tag_colors(map: std::collections::HashMap<String, usize>) {
+    TAG_COLORS.with(|t| *t.borrow_mut() = map);
+}
+
+/// A tag's colour: the one picked in the settings, else one from its name (the
+/// same name always gives the same one, never the grey).
 pub fn tag_hue(name: &str) -> usize {
+    if let Some(h) = TAG_COLORS.with(|t| t.borrow().get(name).copied()) {
+        return h % HUES.len();
+    }
+    auto_tag_hue(name)
+}
+
+/// The colour a tag has from its name alone.
+pub fn auto_tag_hue(name: &str) -> usize {
     const TAG_HUES: [usize; 12] = [0, 1, 2, 3, 4, 6, 7, 8, 10, 11, 13, 14];
     let h = name
         .to_lowercase()

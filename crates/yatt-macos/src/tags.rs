@@ -114,6 +114,12 @@ impl Tags {
         }
     }
 
+    /// Draws the capsules again (a tag's colour was changed in the settings).
+    pub fn refresh(self: &Rc<Self>) {
+        let tags = self.known.borrow().clone();
+        self.rebuild(&tags);
+    }
+
     /// Flushes a tag still being typed (the pane is closing).
     pub fn flush(self: &Rc<Self>) {
         if !self.field.stringValue().to_string().trim().is_empty() {
