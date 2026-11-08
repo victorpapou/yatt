@@ -2018,7 +2018,26 @@ impl Ui {
             }
             c.layout_chip(c.middle.get(), self.top_inset.get() + CHIP_TOP);
         }
-        self.cards.render(&snap.columns);
+        // A tick that only moved the clocks (the board draws no times) leaves the
+        // board alone: re-laying it out each second made the toolbar's line flicker.
+        let board_same = self.last.borrow().as_ref().is_some_and(|last| {
+            last.expanded == snap.expanded
+                && last.columns.iter().zip(&snap.columns).all(|(a, b)| {
+                    a.status == b.status
+                        && a.title == b.title
+                        && a.cards.len() == b.cards.len()
+                        && a.cards.iter().zip(&b.cards).all(|(x, y)| {
+                            let mut x = x.clone();
+                            x.total_ms = y.total_ms;
+                            x.today_ms = y.today_ms;
+                            x.entries = y.entries.clone();
+                            x == *y
+                        })
+                })
+        });
+        if !board_same {
+            self.cards.render(&snap.columns);
+        }
         self.sync_modal(snap);
         self.settings.show_timer(&snap.timer);
         *self.last.borrow_mut() = Some(snap.clone());
