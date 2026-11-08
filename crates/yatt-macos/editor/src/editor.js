@@ -5,6 +5,7 @@ import StarterKit from '@tiptap/starter-kit'
 import { Placeholder } from '@tiptap/extensions'
 import { Markdown } from '@tiptap/markdown'
 import Image from '@tiptap/extension-image'
+import { TaskList, TaskItem } from '@tiptap/extension-list'
 
 const css = `
 :root { color-scheme: light dark; }
@@ -30,6 +31,19 @@ body {
 .ProseMirror h2 { font-size: 17px; margin: 12px 0 6px; }
 .ProseMirror h3 { font-size: 15px; margin: 10px 0 4px; }
 .ProseMirror ul, .ProseMirror ol { padding-left: 22px; margin: 0 0 8px; }
+/* Checklists («- [ ]» / «- [x]»): a real checkbox in front of each line, ticked
+   items struck through and dimmed. These lines are the task's subtasks. */
+.ProseMirror ul[data-type="taskList"] { list-style: none; padding-left: 2px; }
+.ProseMirror ul[data-type="taskList"] li { display: flex; align-items: flex-start; gap: 8px; margin: 2px 0; }
+.ProseMirror ul[data-type="taskList"] li > label { flex: 0 0 auto; margin-top: 3px; user-select: none; }
+.ProseMirror ul[data-type="taskList"] li > div { flex: 1 1 auto; min-width: 0; }
+.ProseMirror ul[data-type="taskList"] li > div > p { margin: 0; }
+.ProseMirror ul[data-type="taskList"] li[data-checked="true"] > div {
+  text-decoration: line-through; color: color-mix(in srgb, CanvasText 45%, transparent);
+}
+.ProseMirror ul[data-type="taskList"] input[type="checkbox"] {
+  width: 15px; height: 15px; margin: 0; accent-color: AccentColor; cursor: pointer;
+}
 .ProseMirror code {
   font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace;
   background: color-mix(in srgb, CanvasText 8%, transparent);
@@ -76,8 +90,10 @@ const editor = new Editor({
   extensions: [
     StarterKit,
     Markdown,
+    TaskList,
+    TaskItem.configure({ nested: true }),
     Image.configure({ allowBase64: true }),
-    Placeholder.configure({ placeholder: 'Заметки… Markdown: # заголовок, - список, **жирный**, `код`' }),
+    Placeholder.configure({ placeholder: 'Заметки… Markdown: # заголовок, - список, - [ ] подзадача, **жирный**, `код`' }),
   ],
   content: '',
   onUpdate: () => {

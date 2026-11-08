@@ -38,8 +38,8 @@ pub struct Modal {
     /// Covers the header; a click on it starts editing the title.
     rename: Retained<NSButton>,
     stats: Retained<NSTextField>,
-    /// The subtasks, between the header and the notes.
-    subs: Rc<crate::subtasks::Subtasks>,
+    /// The subtasks the checklist lines of the notes make, as last sent.
+    subs_known: Rc<RefCell<HashMap<TaskId, Vec<(String, bool)>>>>,
     /// The tags, as capsules; Enter or a comma adds one.
     tags: Rc<crate::tags::Tags>,
     rules: [Retained<FillView>; 2],
@@ -125,14 +125,7 @@ impl Modal {
 
         let stats = small_label(mtm);
 
-        let subs = {
-            let (sink, open) = (sink.clone(), open.clone());
-            crate::subtasks::Subtasks::new(mtm, move |items| {
-                if let Some(id) = open.get() {
-                    sink(UiEvent::SetSubtasks { id, subtasks: items });
-                }
-            })
-        };
+        let subs_known: Rc<RefCell<HashMap<TaskId, Vec<(String, bool)>>>> = Rc::default();
         let tags = {
             let (sink, open) = (sink.clone(), open.clone());
             crate::tags::Tags::new(mtm, move |tags| {
@@ -144,7 +137,7 @@ impl Modal {
 
         let editor = {
             let (sink, open, known) = (sink.clone(), open.clone(), notes_known.clone());
-            let keys = keys.clone();
+            let (keys, subs_known) = (keys.clone(), subs_known.clone());
             NotesEditor::new(mtm, move |msg| match msg {
                 EditorMsg::Notes { key, md } => {
                     // Filed under the task the notes were typed into, open or not.
@@ -153,6 +146,12 @@ impl Modal {
                     };
                     if known.borrow().get(&id) != Some(&md) {
                         known.borrow_mut().insert(id, md.clone());
+                        // The checklist lines are the task's subtasks.
+                        let list = checklist(&md);
+                        if subs_known.borrow().get(&id) != Some(&list) {
+                            subs_known.borrow_mut().insert(id, list.clone());
+                            sink(UiEvent::SetSubtasks { id, subtasks: list });
+                        }
                         sink(UiEvent::SetNotes(id, md));
                     }
                 }
@@ -270,14 +269,13 @@ impl Modal {
             FillView::new(mtm, Fill::Separator),
             FillView::new(mtm, Fill::Separator),
         ];
-        let views: [&NSView; 10] = [
+        let views: [&NSView; 9] = [
             &rename,
             &title,
             &stats,
             tags.as_view(),
             &look,
             &rules[0],
-            subs.as_view(),
             &editor_clip,
             &rules[1],
             &times,
@@ -292,7 +290,7 @@ impl Modal {
             material,
             title,
             stats,
-            subs,
+            subs_known,
             tags,
             rules,
             editor,
@@ -368,9 +366,8 @@ impl Modal {
         );
     }
 
-    /// Lets the subtasks' relayout reach the pane (set once the window exists).
+    /// Lets the tags' relayout reach the pane (set once the window exists).
     pub fn on_subtasks_resize(&self, f: impl Fn() + Clone + 'static) {
-        *self.subs.on_resize.borrow_mut() = Some(Box::new(f.clone()));
         *self.tags.on_resize.borrow_mut() = Some(Box::new(f));
     }
 
@@ -418,13 +415,7 @@ impl Modal {
             NSPoint::new(0.0, top + header_h),
             NSSize::new(w, 1.0),
         ));
-        let subs_h = self.subs.height();
-        self.subs.view.setFrame(NSRect::new(
-            NSPoint::new(0.0, top + header_h + 1.0 + 6.0),
-            NSSize::new(w, subs_h),
-        ));
-        self.subs.layout(w);
-        let editor_top = top + header_h + 1.0 + 6.0 + subs_h + 6.0;
+        let editor_top = top + header_h + 1.0;
         let editor_size = NSSize::new(w, (h - editor_top - FOOTER_H).max(0.0));
         self.editor_clip
             .setFrame(NSRect::new(NSPoint::new(0.0, editor_top), editor_size));
@@ -452,7 +443,26 @@ impl Modal {
             .borrow_mut()
             .insert(snap.id, snap.notes.clone());
         self.title.setStringValue(&NSString::from_str(&snap.title));
-        self.editor.set_markdown(&snap.notes, &key);
+        // Subtasks made before the checklist lived in the notes join them as
+        // checklist lines (once; the notes are then the one place for them).
+        let mut notes = snap.notes.clone();
+        if !snap.subtasks.is_empty() && checklist(&notes).is_empty() {
+            if !notes.trim().is_empty() {
+                notes.push_str("\n\n");
+            }
+            let lines: Vec<String> = snap
+                .subtasks
+                .iter()
+                .map(|(t, d)| format!("- [{}] {t}", if *d { "x" } else { " " }))
+                .collect();
+            notes.push_str(&lines.join("\n"));
+            self.notes_known.borrow_mut().insert(snap.id, notes.clone());
+            (self.sink)(UiEvent::SetNotes(snap.id, notes.clone()));
+        }
+        self.subs_known
+            .borrow_mut()
+            .insert(snap.id, checklist(&notes));
+        self.editor.set_markdown(&notes, &key);
         self.update(snap, status);
         self.layout(self.top.get());
         if let Some(window) = self.panel.window() {
@@ -484,7 +494,6 @@ impl Modal {
             window.makeFirstResponder(None);
         }
         self.tags.flush();
-        self.subs.flush();
         self.open.set(None);
     }
 
@@ -526,7 +535,6 @@ impl Modal {
             self.editor.set_markdown(&snap.notes, &snap.id.to_string());
         }
         self.tags.set(&snap.tags);
-        self.subs.set(&snap.subtasks);
         let stats = format!(
             "{}{}  ·  сегодня {}  ·  🍅 {}",
             if snap.tracking { "● " } else { "" },
@@ -564,6 +572,26 @@ impl Modal {
             .setContentTintColor(Some(&NSColor::secondaryLabelColor()));
         *self.all_entries.borrow_mut() = snap.entries.clone();
     }
+}
+
+/// The checklist lines of Markdown notes (`- [ ] title`, `- [x] title`, at any
+/// indent, also with `*`): the task's subtasks, title and whether it is ticked.
+pub(crate) fn checklist(md: &str) -> Vec<(String, bool)> {
+    md.lines()
+        .filter_map(|line| {
+            let t = line.trim_start();
+            let rest = t.strip_prefix("- ").or_else(|| t.strip_prefix("* "))?;
+            let (done, title) = if let Some(r) = rest.strip_prefix("[ ] ") {
+                (false, r)
+            } else if let Some(r) = rest.strip_prefix("[x] ").or_else(|| rest.strip_prefix("[X] ")) {
+                (true, r)
+            } else {
+                return None;
+            };
+            let title = title.trim();
+            (!title.is_empty()).then(|| (title.to_string(), done))
+        })
+        .collect()
 }
 
 fn plural(n: usize, one: &'static str, few: &'static str, many: &'static str) -> &'static str {
@@ -618,4 +646,31 @@ fn small_label(mtm: MainThreadMarker) -> Retained<NSTextField> {
     )));
     l.setTextColor(Some(&NSColor::secondaryLabelColor()));
     l
+}
+
+#[cfg(test)]
+mod tests {
+    use super::checklist;
+
+    #[test]
+    fn checklist_lines_are_the_subtasks() {
+        let md = "# План\n\n- [x] Макеты\n- [ ] Сверстать\n  - [ ] вложенная\n* [X] Готово\n- обычный пункт\n- [ ] \nтекст";
+        assert_eq!(
+            checklist(md),
+            vec![
+                ("Макеты".to_string(), true),
+                ("Сверстать".to_string(), false),
+                ("вложенная".to_string(), false),
+                ("Готово".to_string(), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn two_tasks_keep_their_own_checklists() {
+        let a = "- [x] a1\n- [ ] a2";
+        let b = "заметка без подзадач";
+        assert_eq!(checklist(a).len(), 2);
+        assert!(checklist(b).is_empty());
+    }
 }

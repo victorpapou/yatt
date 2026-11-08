@@ -391,4 +391,43 @@ mod tests {
         ws.handle(UiEvent::Undo);
         assert_eq!(ws.snapshot().columns[3].cards.len(), 1);
     }
+
+    #[test]
+    fn subtasks_stay_with_their_own_task_when_switching() {
+        let mut ws = workspace();
+        for title in ["A", "B"] {
+            ws.handle(UiEvent::NewTask {
+                title: title.into(),
+                status: Status::Backlog,
+                color: None,
+            });
+        }
+        let cards = ws.snapshot().columns[0].cards.clone();
+        let (b, a) = (cards[0].id, cards[1].id);
+        ws.handle(UiEvent::OpenTask(a));
+        ws.handle(UiEvent::SetSubtasks {
+            id: a,
+            subtasks: vec![("one".into(), false), ("two".into(), true)],
+        });
+        // Switch to B: A's list must not follow.
+        ws.handle(UiEvent::OpenTask(b));
+        let snap = ws.snapshot();
+        let find = |id| {
+            snap.columns[0]
+                .cards
+                .iter()
+                .find(|c| c.id == id)
+                .unwrap()
+                .subtasks
+                .clone()
+        };
+        assert_eq!(find(a), vec![("one".to_string(), false), ("two".to_string(), true)]);
+        assert!(find(b).is_empty());
+        ws.handle(UiEvent::SetSubtasks {
+            id: b,
+            subtasks: vec![("only b".into(), false)],
+        });
+        let snap = ws.snapshot();
+        assert_eq!(snap.columns[0].cards.iter().find(|c| c.id == a).unwrap().subtasks.len(), 2);
+    }
 }
