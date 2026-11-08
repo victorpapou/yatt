@@ -141,6 +141,8 @@ struct Column {
     doc: Retained<FlippedView>,
     /// The group titles over the cards, while the board is grouped.
     heads: RefCell<Vec<Head>>,
+    /// The column's own name as the first, sticky title.
+    title_head: RefCell<Option<Head>>,
 }
 
 /// A group's title strip: the full width of its column, a row of its own. Bare at
@@ -372,6 +374,7 @@ pub struct Board {
     outer: RefCell<Option<Retained<NSScrollView>>>,
     /// Per column, per slot: the title of the group that starts there.
     group_starts: RefCell<[Vec<Option<String>>; COLS]>,
+    col_titles: RefCell<[String; COLS]>,
     /// Scroll observers of the columns, kept for as long as the board.
     observers: RefCell<Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>>,
     statuses: [Status; COLS],
@@ -465,6 +468,7 @@ impl Board {
                 scroll,
                 doc,
                 heads: RefCell::new(Vec::new()),
+                title_head: RefCell::new(None),
             }
         });
         let board = Rc::new(Self {
@@ -478,6 +482,7 @@ impl Board {
             grouping: Cell::new(Grouping::None),
             outer: RefCell::new(None),
             group_starts: RefCell::new(Default::default()),
+            col_titles: RefCell::new(Default::default()),
             observers: RefCell::new(Vec::new()),
             statuses: Status::ALL,
             titles: RefCell::new(Default::default()),
@@ -521,10 +526,8 @@ impl Board {
                     b.cull_lists();
                     b.report_scroll();
                     // The group titles stick under the column's chip as it scrolls.
-                    if b.grouping.get() != Grouping::None
-                        && b.layouts.get()[ci] == Layout::List
-                    {
-                        b.place_heads(ci, true);
+                    if b.layouts.get()[ci] == Layout::List {
+                        b.place_heads(ci, b.grouping.get() != Grouping::None);
                     }
                 }
             });
@@ -601,9 +604,9 @@ impl Board {
         // Grouped, the first title sits right under the toolbar (its row is the
         // gap); ungrouped, the first card keeps its breathing room.
         if self.grouping.get() == Grouping::None {
-            LIST_TOP
+            HEAD_H + 8.0
         } else {
-            0.0
+            HEAD_H
         }
     }
 
@@ -704,6 +707,70 @@ impl Board {
         (out, starts)
     }
 
+    /// A title strip (blur band, hairline, grey semibold label), hidden.
+    fn new_head(&self, doc: &FlippedView) -> Head {
+        let strip = FlippedView::new(self.mtm, NSRect::ZERO);
+        let material = objc2_app_kit::NSVisualEffectView::new(self.mtm);
+        material.setMaterial(objc2_app_kit::NSVisualEffectMaterial::HeaderView);
+        material.setBlendingMode(objc2_app_kit::NSVisualEffectBlendingMode::WithinWindow);
+        material.setState(objc2_app_kit::NSVisualEffectState::Active);
+        material.setAlphaValue(0.0);
+        let line = FillView::new(self.mtm, Fill::Separator);
+        line.setAlphaValue(0.0);
+        let label = objc2_app_kit::NSTextField::labelWithString(
+            objc2_foundation::ns_string!(""),
+            self.mtm,
+        );
+        label.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize_weight(12.0, unsafe {
+            objc2_app_kit::NSFontWeightSemibold
+        })));
+        label.setTextColor(Some(&objc2_app_kit::NSColor::secondaryLabelColor()));
+        strip.addSubview(&material);
+        strip.addSubview(&line);
+        strip.addSubview(&label);
+        strip.setHidden(true);
+        doc.addSubview(&strip);
+        Head { strip, material, line, label }
+    }
+
+    /// Puts a column's own name at the top of its list, held under the toolbar.
+    fn place_title(&self, ci: usize) {
+        let col = &self.cols[ci];
+        let mut slot = col.title_head.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(self.new_head(&col.doc));
+        }
+        let h = slot.as_ref().unwrap();
+        if self.layouts.get()[ci] != Layout::List {
+            h.strip.setHidden(true);
+            return;
+        }
+        let title = self.col_titles.borrow()[ci].clone();
+        h.label.setStringValue(&objc2_foundation::NSString::from_str(&title));
+        let x = self.list_x(ci);
+        let width = col.doc.frame().size.width;
+        let seen_top = col.scroll.contentView().bounds().origin.y
+            + col.scroll.contentInsets().top
+            + CHIP_STICK;
+        let y = seen_top.max(0.0);
+        let want = if y > 0.5 { 1.0 } else { 0.0 };
+        if (h.material.alphaValue() - want).abs() > 0.01 {
+            let (m, l) = (h.material.clone(), h.line.clone());
+            animate(true, 0.15, move || {
+                m.animator().setAlphaValue(want);
+                l.animator().setAlphaValue(want);
+            });
+        }
+        h.strip.setFrame(NSRect::new(NSPoint::new(0.0, y), NSSize::new(width, HEAD_H)));
+        h.material.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(width, HEAD_H)));
+        h.line.setFrame(NSRect::new(NSPoint::new(0.0, HEAD_H - 1.0), NSSize::new(width, 1.0)));
+        h.label.setFrame(NSRect::new(
+            NSPoint::new(x + 2.0, HEAD_H - 20.0),
+            NSSize::new((width - x - 2.0).max(0.0), 16.0),
+        ));
+        h.strip.setHidden(false);
+    }
+
     /// Puts a column's group titles over their groups (or hides them).
     fn place_heads(&self, ci: usize, show: bool) {
         let starts = self.group_starts.borrow()[ci].clone();
@@ -719,33 +786,8 @@ impl Board {
         let col = &self.cols[ci];
         let mut heads = col.heads.borrow_mut();
         while heads.len() < wanted.len() {
-            let strip = FlippedView::new(self.mtm, NSRect::ZERO);
-            let material = objc2_app_kit::NSVisualEffectView::new(self.mtm);
-            material.setMaterial(objc2_app_kit::NSVisualEffectMaterial::HeaderView);
-            material.setBlendingMode(objc2_app_kit::NSVisualEffectBlendingMode::WithinWindow);
-            material.setState(objc2_app_kit::NSVisualEffectState::Active);
-            material.setAlphaValue(0.0);
-            let line = FillView::new(self.mtm, Fill::Separator);
-            line.setAlphaValue(0.0);
-            let label = objc2_app_kit::NSTextField::labelWithString(
-                objc2_foundation::ns_string!(""),
-                self.mtm,
-            );
-            label.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize_weight(12.0, unsafe {
-                objc2_app_kit::NSFontWeightSemibold
-            })));
-            label.setTextColor(Some(&objc2_app_kit::NSColor::secondaryLabelColor()));
-            strip.addSubview(&material);
-            strip.addSubview(&line);
-            strip.addSubview(&label);
-            strip.setHidden(true);
-            col.doc.addSubview(&strip);
-            heads.push(Head {
-                strip,
-                material,
-                line,
-                label,
-            });
+            let h = self.new_head(&col.doc);
+            heads.push(h);
             self.stacking.borrow_mut().clear();
         }
         let x = self.list_x(ci);
@@ -762,7 +804,8 @@ impl Board {
                     // coordinates: the clip's origin plus the inset the toolbar takes.
                     let seen_top = col.scroll.contentView().bounds().origin.y
                         + col.scroll.contentInsets().top
-                        + CHIP_STICK;
+                        + CHIP_STICK
+                        + HEAD_H;
                     let mut y = natural.max(seen_top);
                     if let Some((j, _)) = wanted.get(k + 1) {
                         y = y.min(self.list_y(ci, *j) - HEAD_H - HEAD_H);
@@ -806,6 +849,8 @@ impl Board {
                 None => h.strip.setHidden(true),
             }
         }
+        drop(heads);
+        self.place_title(ci);
     }
 
     /// The top of slot `i` of a list column: the group titles above it count.
@@ -825,6 +870,9 @@ impl Board {
         }
         let (grouped, starts) = self.grouped(columns);
         *self.group_starts.borrow_mut() = starts;
+        for (i, c) in columns.iter().enumerate() {
+            self.col_titles.borrow_mut()[i] = c.title.clone();
+        }
         let columns = &grouped;
         let dragging: HashSet<TaskId> = self.dragged().into_iter().collect();
         let mut seen = HashSet::new();

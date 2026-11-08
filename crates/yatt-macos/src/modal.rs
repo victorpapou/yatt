@@ -145,6 +145,9 @@ impl Modal {
                     };
                     if known.borrow().get(&id) != Some(&md) {
                         known.borrow_mut().insert(id, md.clone());
+                        // The notes first: a render between the events below must
+                        // not see the old text and reload the editor under the caret.
+                        sink(UiEvent::SetNotes(id, md.clone()));
                         // The checklist lines are the task's subtasks.
                         let list = checklist(&md);
                         if subs_known.borrow().get(&id) != Some(&list) {
@@ -157,7 +160,6 @@ impl Modal {
                             tags_known.borrow_mut().insert(id, tags.clone());
                             sink(UiEvent::SetTags { id, tags });
                         }
-                        sink(UiEvent::SetNotes(id, md));
                     }
                 }
                 EditorMsg::Close => {

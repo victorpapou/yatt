@@ -152,6 +152,8 @@ const editor = new Editor({
 
 window.yatt = {
   setMarkdown(md) {
+    // Same text (the app echoing what was typed): leave the document and caret be.
+    if ((md || '').trim() === editor.getMarkdown().trim()) return
     applying = true
     editor.commands.setContent(md || '', { contentType: 'markdown', emitUpdate: false })
     applying = false
