@@ -278,6 +278,7 @@ struct Card {
     icon: Retained<NSView>,
     time: Retained<NSTextField>,
     title: Retained<NSTextField>,
+    tags: Retained<NSTextField>,
     label: Retained<NSTextField>,
     /// "3 задачи" under the label while leading a group drag.
     count: Retained<NSTextField>,
@@ -1298,6 +1299,7 @@ impl Board {
             icon,
             time,
             title,
+            tags,
         } = card_face(mtm, snap.id, &snap.title, hue);
         content.setAutoresizingMask(fill_mask);
 
@@ -1353,6 +1355,7 @@ impl Board {
             icon,
             time,
             title,
+            tags,
             label,
             count,
             hue,
@@ -2745,6 +2748,7 @@ impl Card {
             self.restyle();
         }
         set_title(&self.title, &snap.title);
+        set_tags(&self.tags, &snap.tags);
         set_meta(&self.time, &time_text(snap));
         self.tracking = snap.tracking;
         self.refill();
@@ -3090,6 +3094,8 @@ pub(crate) struct Face {
     pub icon: Retained<NSView>,
     pub time: Retained<NSTextField>,
     pub title: Retained<NSTextField>,
+    /// The task's tags, in their colours, beside the glyph.
+    pub tags: Retained<NSTextField>,
 }
 
 /// A task's fixed random seed (its id's random tail).
@@ -3139,7 +3145,15 @@ pub(crate) fn card_face(mtm: MainThreadMarker, id: TaskId, title: &str, hue: usi
     set_title(&title_label, title);
     let title = title_label;
 
-    for v in [&*icon as &NSView, &time, &title] {
+    // Tags: a row of their own, beside the glyph, small like the meta line.
+    let tags = text_label(mtm, "", 11.0, unsafe { NSFontWeightMedium });
+    tags.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+    tags.setFrame(NSRect::new(
+        NSPoint::new(TEXT_X + 30.0, 18.0),
+        NSSize::new(CARD_W - 2.0 * TEXT_X - 30.0, 14.0),
+    ));
+
+    for v in [&*icon as &NSView, &time, &title, &tags] {
         content.addSubview(v);
     }
     Face {
@@ -3147,6 +3161,7 @@ pub(crate) fn card_face(mtm: MainThreadMarker, id: TaskId, title: &str, hue: usi
         icon,
         time,
         title,
+        tags,
     }
 }
 
@@ -3185,6 +3200,7 @@ fn fit_title(label: &NSTextField) {
         for v in parent.subviews().iter() {
             if let Ok(meta) = v.downcast::<NSTextField>()
                 && &*meta as *const NSTextField != label as *const NSTextField
+                && meta.frame().origin.y > 36.0
             {
                 let f = meta.frame();
                 meta.setFrame(NSRect::new(
@@ -3199,6 +3215,39 @@ fn fit_title(label: &NSTextField) {
 /// A card's meta line, tracked.
 pub(crate) fn set_meta(label: &NSTextField, text: &str) {
     style::set_tracked(label, text, META_KERN);
+}
+
+/// The tags' names (no «#»), each in its own colour, one space between.
+pub(crate) fn set_tags(label: &NSTextField, tags: &[String]) {
+    use objc2::AnyThread;
+    use objc2_foundation::{NSAttributedString, NSDictionary, NSMutableAttributedString};
+    let joined = tags.join("  ");
+    let out = NSMutableAttributedString::new();
+    let font = NSFont::systemFontOfSize_weight(11.0, unsafe { NSFontWeightMedium });
+    for (i, t) in tags.iter().enumerate() {
+        let piece = if i + 1 < tags.len() {
+            format!("{t}  ")
+        } else {
+            t.clone()
+        };
+        let color = style::swatch(style::tag_hue(t));
+        let keys = unsafe { [objc2_app_kit::NSForegroundColorAttributeName, objc2_app_kit::NSFontAttributeName] };
+        let vals: [Retained<objc2::runtime::AnyObject>; 2] = [
+            Retained::into_super(Retained::into_super(color)),
+            Retained::into_super(Retained::into_super(font.clone())),
+        ];
+        let attrs = NSDictionary::from_retained_objects(&keys, &vals);
+        let a = unsafe {
+            NSAttributedString::initWithString_attributes(
+                NSAttributedString::alloc(),
+                &NSString::from_str(&piece),
+                Some(&attrs),
+            )
+        };
+        out.appendAttributedString(&a);
+    }
+    let _ = joined;
+    label.setAttributedStringValue(&out);
 }
 
 pub(crate) fn refresh_title(label: &NSTextField) {
