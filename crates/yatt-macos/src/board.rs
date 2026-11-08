@@ -3210,3 +3210,73 @@ fn text_label(mtm: MainThreadMarker, text: &str, size: f64, weight: f64) -> Reta
     l.setFont(Some(&NSFont::systemFontOfSize_weight(size, weight)));
     l
 }
+
+/// A card as the canvas draws it (glass, tint, edges, glyph, time, title), for the
+/// settings' preview: the same parts in the same order, only without a board.
+pub(crate) struct CardPreview {
+    pub view: Retained<FlippedView>,
+    glass: Retained<NSView>,
+    face: Retained<FillView>,
+    content: RefCell<Retained<FlippedView>>,
+    id: TaskId,
+    title: String,
+    mtm: MainThreadMarker,
+}
+
+impl CardPreview {
+    pub fn new(mtm: MainThreadMarker, title: &str, hue: usize) -> Self {
+        let id = TaskId::new();
+        let bounds = NSRect::new(NSPoint::ZERO, NSSize::new(CARD_W, CARD_H));
+        let view = FlippedView::new(mtm, bounds);
+        view.setAutoresizesSubviews(false);
+        view.setWantsLayer(true);
+        let face = FillView::new(
+            mtm,
+            Fill::Card {
+                hue,
+                tracking: false,
+                selected: false,
+            },
+        );
+        face.setFrame(bounds);
+        let glass = style::card_blur(mtm);
+        style::tint_glass(&glass, hue);
+        glass.setFrame(bounds);
+        let content = Self::face_for(mtm, id, title, hue);
+        let edges = style::Edges::new(mtm);
+        for v in [&*edges.lift, &edges.ring, &edges.outer, &glass, &face, &edges.inner, &content] {
+            view.addSubview(v);
+        }
+        Self {
+            view,
+            glass,
+            face,
+            content: RefCell::new(content),
+            id,
+            title: title.to_string(),
+            mtm,
+        }
+    }
+
+    fn face_for(mtm: MainThreadMarker, id: TaskId, title: &str, hue: usize) -> Retained<FlippedView> {
+        let Face { content, time, .. } = card_face(mtm, id, title, hue);
+        set_meta(&time, "0:00:00");
+        content
+    }
+
+    /// Eases to the card's colour (text and glyph included).
+    pub fn set_hue(&self, hue: usize, eased: bool) {
+        if eased {
+            crate::motion::soften(&self.glass);
+        }
+        style::tint_glass(&self.glass, hue);
+        self.face.set_fill(Fill::Card {
+            hue,
+            tracking: false,
+            selected: false,
+        });
+        let new = Self::face_for(self.mtm, self.id, &self.title, hue);
+        let old = self.content.replace(new.clone());
+        self.view.replaceSubview_with(&old, &new);
+    }
+}

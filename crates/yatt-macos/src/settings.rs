@@ -374,36 +374,15 @@ fn tab(
 /// glass, with a tag capsule, that eases from the default colour to its tag's
 /// colour and back as the switch is flipped.
 struct DemoCard {
+    card: crate::board::CardPreview,
     glass: Retained<NSView>,
 }
 
 impl DemoCard {
     fn new(mtm: MainThreadMarker) -> Self {
-        let glass = style::card_blur(mtm);
-        glass.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(200.0, 82.0)));
-        if let Some(g) = glass.downcast_ref::<objc2_app_kit::NSGlassEffectView>() {
-            g.setCornerRadius(18.0);
-        }
-        // The card's own text and tag, over its glass.
-        let content = FlippedView::new(mtm, NSRect::new(NSPoint::ZERO, NSSize::new(200.0, 82.0)));
-        let title = NSTextField::labelWithString(ns_string!("Сверстать доску"), mtm);
-        title.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize_weight(14.0, unsafe {
-            objc2_app_kit::NSFontWeightSemibold
-        })));
-        title.setFrame(NSRect::new(NSPoint::new(16.0, 16.0), NSSize::new(168.0, 18.0)));
-        content.addSubview(&title);
-        let tag = crate::tags::badge(mtm, "дизайн");
-        tag.setFrame(NSRect::new(NSPoint::new(16.0, 46.0), tag.frame().size));
-        content.addSubview(&tag);
-        // The glass hosts the content when it is the system's; else it lies under.
-        if let Some(g) = glass.downcast_ref::<objc2_app_kit::NSGlassEffectView>() {
-            g.setContentView(Some(&content));
-        } else {
-            glass.addSubview(&content);
-        }
-        let this = Self { glass };
-        this.paint(false, false);
-        this
+        let card = crate::board::CardPreview::new(mtm, "Сверстать доску", default_color());
+        let glass = Retained::into_super(card.view.clone());
+        Self { card, glass }
     }
 
     fn paint(&self, by_tag: bool, eased: bool) {
@@ -412,10 +391,7 @@ impl DemoCard {
         } else {
             default_color()
         };
-        if eased {
-            crate::motion::soften(&self.glass);
-        }
-        style::tint_glass(&self.glass, hue);
+        self.card.set_hue(hue, eased);
     }
 
     /// Eases to the card's colour with or without the tag's.
@@ -445,7 +421,7 @@ impl SettingsWindow {
         let refresh: Rc<RefCell<Vec<Box<dyn Fn()>>>> = Rc::default();
 
         // ---- Задачи ----
-        let tasks = FlippedView::new(mtm, NSRect::new(NSPoint::ZERO, NSSize::new(W, 330.0)));
+        let tasks = FlippedView::new(mtm, NSRect::new(NSPoint::ZERO, NSSize::new(W, 350.0)));
         let names: Vec<String> = HUE_NAMES.iter().map(|n| n.to_string()).collect();
         let colors = popup(mtm, &names, true, default_color());
         let open = popup(
@@ -480,7 +456,7 @@ impl SettingsWindow {
             });
         }
         // The preview row: the card, centred in the group.
-        let preview_h = 124.0;
+        let preview_h = 141.0;
         let card_frame = demo.glass.frame();
         demo.glass.setFrame(NSRect::new(
             NSPoint::new(((BOX_W - card_frame.size.width) / 2.0).round(), 20.0),
@@ -528,7 +504,7 @@ impl SettingsWindow {
                 demo.show(recolor_by_tag());
             }));
         }
-        let tasks_tab = tab(mtm, "Задачи", "checklist", &tasks, 330.0, &mut retained);
+        let tasks_tab = tab(mtm, "Задачи", "checklist", &tasks, 350.0, &mut retained);
 
         // ---- Вид ----
         let view = FlippedView::new(mtm, NSRect::new(NSPoint::ZERO, NSSize::new(W, 150.0)));

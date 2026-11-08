@@ -1,15 +1,14 @@
 //! The new-task capsule's colour: a small popover off the palette button, a
-//! grid of round swatches (Freeform's), the chosen one ringed, hover swells.
+//! grid of round swatches (Freeform's), the chosen one ringed.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use objc2::rc::Retained;
 use objc2::runtime::NSObjectProtocol;
-use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSColor, NSEvent, NSPopover, NSPopoverBehavior, NSTrackingArea,
-    NSTrackingAreaOptions, NSView, NSViewController,
+    NSColor, NSEvent, NSPopover, NSPopoverBehavior, NSView, NSViewController,
 };
 use objc2_foundation::{NSPoint, NSRect, NSRectEdge, NSSize};
 use objc2_quartz_core::CALayer;
@@ -27,7 +26,6 @@ pub struct SwatchIvars {
     on_pick: Box<dyn Fn()>,
     selected: Cell<bool>,
     ring: RefCell<Option<Retained<CALayer>>>,
-    tracking: RefCell<Option<Retained<NSTrackingArea>>>,
 }
 
 define_class!(
@@ -47,37 +45,6 @@ define_class!(
         fn accepts_first_mouse(&self, _event: Option<&NSEvent>) -> bool {
             true
         }
-
-        #[unsafe(method(mouseEntered:))]
-        fn mouse_entered(&self, _event: &NSEvent) {
-            self.swell(1.12);
-        }
-
-        #[unsafe(method(mouseExited:))]
-        fn mouse_exited(&self, _event: &NSEvent) {
-            self.swell(1.0);
-        }
-
-        #[unsafe(method(updateTrackingAreas))]
-        fn update_tracking_areas(&self) {
-            let _: () = unsafe { msg_send![super(self), updateTrackingAreas] };
-            if let Some(old) = self.ivars().tracking.borrow_mut().take() {
-                self.removeTrackingArea(&old);
-            }
-            let area = unsafe {
-                NSTrackingArea::initWithRect_options_owner_userInfo(
-                    NSTrackingArea::alloc(),
-                    self.bounds(),
-                    NSTrackingAreaOptions::MouseEnteredAndExited
-                        | NSTrackingAreaOptions::ActiveAlways
-                        | NSTrackingAreaOptions::InVisibleRect,
-                    Some(self),
-                    None,
-                )
-            };
-            self.addTrackingArea(&area);
-            *self.ivars().tracking.borrow_mut() = Some(area);
-        }
     }
 
     unsafe impl NSObjectProtocol for SwatchView {}
@@ -90,7 +57,6 @@ impl SwatchView {
             on_pick: Box::new(on_pick),
             selected: Cell::new(false),
             ring: RefCell::new(None),
-            tracking: RefCell::new(None),
         });
         let this: Retained<Self> = unsafe {
             msg_send![super(this), initWithFrame: NSRect::new(NSPoint::ZERO, NSSize::new(D, D))]
@@ -119,19 +85,6 @@ impl SwatchView {
         self.ivars().selected.set(on);
         if let Some(ring) = self.ivars().ring.borrow().as_ref() {
             ring.setHidden(!on);
-        }
-    }
-
-    fn swell(&self, scale: f64) {
-        if let Some(layer) = self.layer() {
-            layer.setAffineTransform(objc2_core_foundation::CGAffineTransform {
-                a: scale,
-                b: 0.0,
-                c: 0.0,
-                d: scale,
-                tx: 0.0,
-                ty: 0.0,
-            });
         }
     }
 }

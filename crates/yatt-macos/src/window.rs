@@ -672,7 +672,7 @@ impl MainWindow {
         let palette_button = {
             let b = NSButton::new(mtm);
             b.setBordered(false);
-            b.setImage(symbol("paintpalette.fill", "Цвет новой задачи").as_deref());
+            b.setImage(symbol("circle.fill", "Цвет новой задачи").as_deref());
             b.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageOnly);
             b.setToolTip(Some(ns_string!("Цвет новой задачи")));
             capsule_content.addSubview(&b);
