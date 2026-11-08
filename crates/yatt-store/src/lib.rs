@@ -44,6 +44,15 @@ pub struct TimeEntry {
     pub ended_at: Option<Timestamp>,
 }
 
+/// One tracked interval with its id, for editing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryRow {
+    pub id: String,
+    pub task: TaskId,
+    pub started_at: Timestamp,
+    pub ended_at: Option<Timestamp>,
+}
+
 pub struct Store {
     conn: Connection,
 }
@@ -277,6 +286,72 @@ impl Store {
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Every time entry of the task, newest first, with ids.
+    pub fn entries(&self, task: TaskId) -> Result<Vec<EntryRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, started_at, ended_at FROM time_entries WHERE task_id = ?1
+             ORDER BY started_at DESC",
+        )?;
+        let rows = stmt.query_map(params![task.0.to_string()], |r| {
+            Ok(EntryRow {
+                id: r.get(0)?,
+                task,
+                started_at: ts(r.get(1)?)?,
+                ended_at: r.get::<_, Option<i64>>(2)?.map(ts).transpose()?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// One entry by id.
+    pub fn entry(&self, id: &str) -> Result<Option<EntryRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT task_id, started_at, ended_at FROM time_entries WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![id], |r| {
+            let task: Option<String> = r.get(0)?;
+            Ok((
+                task,
+                ts(r.get(1)?)?,
+                r.get::<_, Option<i64>>(2)?.map(ts).transpose()?,
+            ))
+        })?;
+        match rows.next().transpose()? {
+            Some((Some(task), started_at, ended_at)) => Ok(Some(EntryRow {
+                id: id.to_string(),
+                task: TaskId(uuid(task)?),
+                started_at,
+                ended_at,
+            })),
+            _ => Ok(None),
+        }
+    }
+
+    /// Moves an entry's start and end.
+    pub fn set_entry(&self, id: &str, start: Timestamp, end: Option<Timestamp>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE time_entries SET started_at = ?2, ended_at = ?3 WHERE id = ?1",
+            params![id, ms(start), end.map(ms)],
+        )?;
+        Ok(())
+    }
+
+    /// Adds an entry written by hand.
+    pub fn add_entry(&self, id: &str, task: TaskId, start: Timestamp, end: Timestamp) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO time_entries (id, task_id, started_at, ended_at, source)
+             VALUES (?1, ?2, ?3, ?4, 'manual')",
+            params![id, task.0.to_string(), ms(start), ms(end)],
+        )?;
+        Ok(())
+    }
+
+    /// Removes an entry.
+    pub fn delete_entry(&self, id: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM time_entries WHERE id = ?1", params![id])?;
+        Ok(())
     }
 
     /// Wall-clock time worked in `[from, to)`. Parallel entries on several tasks

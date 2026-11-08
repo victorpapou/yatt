@@ -681,6 +681,11 @@ impl MainWindow {
 
         // The new-task capsule floats over the cards, under the dragged ones.
         let (capsule, capsule_content) = style::glass(mtm, CAPSULE_H / 2.0);
+        // Nothing of the editor shows outside the capsule while it grows.
+        capsule_content.setWantsLayer(true);
+        if let Some(l) = capsule_content.layer() {
+            l.setMasksToBounds(true);
+        }
         // The capsule is a small editor of the same native kind as the notes: the first
         // line is the task's name, lines after it may be checklists, lists, #tags.
         let new_task = crate::notes::NotesEditor::new(mtm, |_| {});
@@ -1556,18 +1561,15 @@ impl Ui {
             NSSize::new(28.0, 28.0),
         );
         if animated {
-            // The editor, the capsule and the colour button take one and the same
-            // animation: a frame set ahead of the capsule showed for a moment taller
-            // than it (the editor's height jumped, then the capsule caught up).
-            let (c, b, e) = (
-                self.capsule.clone(),
-                self.palette_button.clone(),
-                self.new_task.view.clone(),
-            );
+            // The editor takes its final size at once, so the text stands still in
+            // the window while the capsule grows round it (the capsule's content is
+            // clipped to it, so a line not yet inside shows only as it comes in);
+            // the capsule and the colour button follow in the animation.
+            self.new_task.view.setFrame(field);
+            let (c, b) = (self.capsule.clone(), self.palette_button.clone());
             animate(true, 0.22, move || {
                 c.animator().setFrame(capsule);
                 b.animator().setFrame(button);
-                e.animator().setFrame(field);
             });
         } else {
             self.capsule.setFrame(capsule);
@@ -2599,6 +2601,12 @@ impl Header {
                     continue;
                 }
                 let d = &digits[i];
+                // Diagnostic: with YATT_NO_DIGIT_ANIM set the digit just changes, to
+                // tell whether the toolbar line's flicker comes from the animation.
+                if std::env::var_os("YATT_NO_DIGIT_ANIM").is_some() {
+                    d.setStringValue(&NSString::from_str(&ch.to_string()));
+                    continue;
+                }
                 // The system's numeric transition: the old glyph shrinks, blurs and
                 // fades away upwards on a ghost copy, the new one grows in from
                 // below, sharpening. Only this digit moves.

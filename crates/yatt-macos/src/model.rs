@@ -21,6 +21,15 @@ pub struct ColumnSnap {
     pub cards: Vec<CardSnap>,
 }
 
+/// One tracked interval, for the time editor. Times in ms since the epoch;
+/// `end_ms` is `None` while it runs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LogEntry {
+    pub id: String,
+    pub start_ms: i64,
+    pub end_ms: Option<i64>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CardSnap {
     pub id: TaskId,
@@ -33,6 +42,8 @@ pub struct CardSnap {
     pub tracking: bool,
     /// Latest time entries, formatted ("20:08 – 20:31 · 0:23:00"). Filled only for the expanded card.
     pub entries: Vec<String>,
+    /// Every entry of the expanded card, newest first, to edit.
+    pub log: Vec<LogEntry>,
     /// The card's own colour and icon, when it chose them.
     pub color: Option<u8>,
     pub icon: Option<String>,
@@ -141,6 +152,12 @@ pub enum UiEvent {
     },
     /// Several moves or deletes made together: undone and redone as one.
     Group(Vec<UiEvent>),
+    /// A finished time entry moved: new start and end, ms since the epoch.
+    EditEntry { id: String, start_ms: i64, end_ms: i64 },
+    /// A time entry added by hand to a task.
+    AddEntry { task: TaskId, start_ms: i64, end_ms: i64 },
+    /// A finished time entry removed.
+    DeleteEntry(String),
     /// Copies of tasks, `(title, notes)` in order, on top of `status`.
     Paste {
         items: Vec<(String, String)>,

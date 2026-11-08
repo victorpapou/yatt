@@ -111,6 +111,17 @@ impl Workspace {
                 e.execute(Command::Rename { id, title })
             }
             UiEvent::SetNotes(id, notes) => e.execute(Command::SetNotes { id, notes }),
+            UiEvent::EditEntry { id, start_ms, end_ms } => {
+                if let (Ok(a), Ok(b)) = (Timestamp::from_millisecond(start_ms), Timestamp::from_millisecond(end_ms)) {
+                    e.edit_entry(&id, a, b);
+                }
+            }
+            UiEvent::AddEntry { task, start_ms, end_ms } => {
+                if let (Ok(a), Ok(b)) = (Timestamp::from_millisecond(start_ms), Timestamp::from_millisecond(end_ms)) {
+                    e.add_entry(task, a, b);
+                }
+            }
+            UiEvent::DeleteEntry(id) => e.delete_entry(&id),
             UiEvent::SetLook { id, color, icon } => e.execute(Command::SetLook { id, color, icon }),
             UiEvent::Paste { .. } | UiEvent::Group(_) => {
                 // A paste, or a group of moves or deletes: one step to undo.
@@ -211,6 +222,18 @@ impl Workspace {
                             e.recent_entries(t.id, ENTRIES_SHOWN)
                                 .into_iter()
                                 .map(|en| entry_label(en.started_at, en.ended_at, now))
+                                .collect()
+                        } else {
+                            Vec::new()
+                        },
+                        log: if expanded {
+                            e.entries(t.id)
+                                .into_iter()
+                                .map(|en| yatt_macos::LogEntry {
+                                    id: en.id,
+                                    start_ms: en.started_at.as_millisecond(),
+                                    end_ms: en.ended_at.map(|t| t.as_millisecond()),
+                                })
                                 .collect()
                         } else {
                             Vec::new()

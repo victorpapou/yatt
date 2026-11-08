@@ -32,6 +32,7 @@ mod picker;
 mod settings;
 mod taskwindow;
 mod tags;
+mod timeedit;
 #[cfg(target_os = "macos")]
 mod style;
 #[cfg(target_os = "macos")]
@@ -40,7 +41,7 @@ mod window;
 #[cfg(target_os = "macos")]
 pub use alert::alert;
 pub use model::{
-    CardSnap, ColumnSnap, Snapshot, TimerSnap, UiEvent, format_clock, format_duration, moves_into,
+    CardSnap, ColumnSnap, LogEntry, Snapshot, TimerSnap, UiEvent, format_clock, format_duration, moves_into,
 };
 #[cfg(target_os = "macos")]
 pub use notify::MacNotifier;

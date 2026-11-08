@@ -16,7 +16,15 @@ use jiff::tz::TimeZone;
 use yatt_core::{
     Board, Command, Effect, Filter, History, Mode, Phase, Placement, Status, TaskId, Timer,
 };
-use yatt_store::{Store, TaskTime, TimeEntry};
+use yatt_store::{EntryRow, Store, TaskTime, TimeEntry};
+
+/// A change to the time log, kept for undo beside the board's own history.
+#[derive(Debug, Clone)]
+enum TimeEdit {
+    Set { id: String, start: Timestamp, end: Timestamp },
+    Add { id: String, task: TaskId, start: Timestamp, end: Timestamp },
+    Delete { id: String },
+}
 
 pub type Clock = Box<dyn Fn() -> Timestamp>;
 
@@ -41,6 +49,12 @@ pub struct Engine {
     day: Option<jiff::civil::Date>,
     /// Told when a phase ends: the phase that finished and the one that follows.
     pub on_phase_finished: Option<Box<dyn FnMut(Phase, Phase)>>,
+    /// Which history each undo step belongs to, oldest first: `true` for a time
+    /// edit, `false` for a board command; and the same for redo.
+    order_undo: Vec<bool>,
+    order_redo: Vec<bool>,
+    time_undo: Vec<TimeEdit>,
+    time_redo: Vec<TimeEdit>,
 }
 
 impl Engine {
@@ -67,6 +81,10 @@ impl Engine {
             max_gap_ms: 15_000,
             day: None,
             on_phase_finished: None,
+            order_undo: Vec::new(),
+            order_redo: Vec::new(),
+            time_undo: Vec::new(),
+            time_redo: Vec::new(),
         };
         // Catch up on phases that ended while the app was closed.
         engine.purge_expired();
@@ -112,27 +130,137 @@ impl Engine {
     pub fn execute(&mut self, cmd: Command) {
         let now = self.now();
         match self.history.execute(&mut self.board, cmd, now) {
-            Ok(applied) => self.after_change(&applied.changed),
+            Ok(applied) => {
+                self.order_undo.push(false);
+                self.order_redo.clear();
+                self.time_redo.clear();
+                self.after_change(&applied.changed)
+            }
             Err(e) => eprintln!("command failed: {e}"),
         }
     }
 
     pub fn undo(&mut self) {
-        let now = self.now();
-        match self.history.undo(&mut self.board, now) {
-            Ok(Some(applied)) => self.after_change(&applied.changed),
-            Ok(None) => {}
-            Err(e) => eprintln!("undo failed: {e}"),
+        while let Some(time) = self.order_undo.pop() {
+            if time {
+                if let Some(edit) = self.time_undo.pop() {
+                    if let Some(inverse) = self.apply_time_edit(edit) {
+                        self.time_redo.push(inverse);
+                        self.order_redo.push(true);
+                    }
+                    return;
+                }
+                continue;
+            }
+            let now = self.now();
+            match self.history.undo(&mut self.board, now) {
+                Ok(Some(applied)) => {
+                    self.order_redo.push(false);
+                    self.after_change(&applied.changed);
+                    return;
+                }
+                Ok(None) => continue,
+                Err(e) => {
+                    eprintln!("undo failed: {e}");
+                    return;
+                }
+            }
         }
     }
 
     pub fn redo(&mut self) {
-        let now = self.now();
-        match self.history.redo(&mut self.board, now) {
-            Ok(Some(applied)) => self.after_change(&applied.changed),
-            Ok(None) => {}
-            Err(e) => eprintln!("redo failed: {e}"),
+        while let Some(time) = self.order_redo.pop() {
+            if time {
+                if let Some(edit) = self.time_redo.pop() {
+                    if let Some(inverse) = self.apply_time_edit(edit) {
+                        self.time_undo.push(inverse);
+                        self.order_undo.push(true);
+                    }
+                    return;
+                }
+                continue;
+            }
+            let now = self.now();
+            match self.history.redo(&mut self.board, now) {
+                Ok(Some(applied)) => {
+                    self.order_undo.push(false);
+                    self.after_change(&applied.changed);
+                    return;
+                }
+                Ok(None) => continue,
+                Err(e) => {
+                    eprintln!("redo failed: {e}");
+                    return;
+                }
+            }
         }
+    }
+
+    // ---- the time log ----
+
+    /// Every entry of the task, newest first, with ids.
+    pub fn entries(&self, task: TaskId) -> Vec<EntryRow> {
+        self.store.entries(task).unwrap_or_else(|e| {
+            eprintln!("reading entries failed: {e}");
+            Vec::new()
+        })
+    }
+
+    /// Applies one time edit and returns its inverse; `None` when it could not apply.
+    fn apply_time_edit(&mut self, edit: TimeEdit) -> Option<TimeEdit> {
+        let (inverse, task) = match edit {
+            TimeEdit::Set { id, start, end } => {
+                let old = self.store.entry(&id).ok().flatten()?;
+                let old_end = old.ended_at?;
+                self.store.set_entry(&id, start, Some(end)).ok()?;
+                (TimeEdit::Set { id, start: old.started_at, end: old_end }, old.task)
+            }
+            TimeEdit::Add { id, task, start, end } => {
+                self.store.add_entry(&id, task, start, end).ok()?;
+                (TimeEdit::Delete { id }, task)
+            }
+            TimeEdit::Delete { id } => {
+                let old = self.store.entry(&id).ok().flatten()?;
+                let end = old.ended_at?;
+                self.store.delete_entry(&id).ok()?;
+                (
+                    TimeEdit::Add { id, task: old.task, start: old.started_at, end },
+                    old.task,
+                )
+            }
+        };
+        self.refresh_times_of(vec![task]);
+        Some(inverse)
+    }
+
+    fn record_time_edit(&mut self, edit: TimeEdit) {
+        if let Some(inverse) = self.apply_time_edit(edit) {
+            self.time_undo.push(inverse);
+            self.time_redo.clear();
+            self.order_undo.push(true);
+            self.order_redo.clear();
+        }
+    }
+
+    /// Moves a finished entry's start and end. A running entry, or one that
+    /// would end before it starts, is left alone.
+    pub fn edit_entry(&mut self, id: &str, start: Timestamp, end: Timestamp) {
+        if end > start {
+            self.record_time_edit(TimeEdit::Set { id: id.to_string(), start, end });
+        }
+    }
+
+    /// Adds a finished entry written by hand.
+    pub fn add_entry(&mut self, task: TaskId, start: Timestamp, end: Timestamp) {
+        if end > start {
+            let id = uuid::Uuid::now_v7().to_string();
+            self.record_time_edit(TimeEdit::Add { id, task, start, end });
+        }
+    }
+
+    /// Removes a finished entry.
+    pub fn delete_entry(&mut self, id: &str) {
+        self.record_time_edit(TimeEdit::Delete { id: id.to_string() });
     }
 
     /// A new task on top of `status`.
