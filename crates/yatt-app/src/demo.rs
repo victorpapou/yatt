@@ -63,9 +63,9 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
                 match line {
                     0..=3 => {
                         if line > 0 {
-                            window.demo_capsule_type("\n");
+                            window.demo_capsule_key("", true);
                         }
-                        window.demo_capsule_type(&format!("строка {line}"));
+                        window.demo_capsule_key(&format!("строка {line}"), false);
                     }
                     // A long line that wraps, then several lines pasted at once.
                     4 => window.demo_capsule_type(&"длинное слово ".repeat(20)),
@@ -73,6 +73,16 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
                 }
                 for f in 0..56 {
                     eprintln!("capgrow,{line},{f},{}", window.demo_capsule_probe());
+                    wait(8).await;
+                }
+            }
+            // Then lines deleted with the backspace key: the capsule shrinks.
+            for chunk in 0..8 {
+                for _ in 0..12 {
+                    window.demo_capsule_key("\u{8}", false);
+                }
+                for f in 0..56 {
+                    eprintln!("capshrink,{chunk},{f},{}", window.demo_capsule_probe());
                     wait(8).await;
                 }
             }

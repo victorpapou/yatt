@@ -1200,6 +1200,38 @@ impl MainWindow {
         self.ui.new_task.debug_type(text);
     }
 
+    /// Development aid: a real ⇧↩ (posted to the event queue, so the run loop
+    /// delivers it as it would a key) into the capsule, or plain typed `text` as
+    /// key events when `text` is not empty.
+    pub fn demo_capsule_key(&self, text: &str, shift_return: bool) {
+        use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType};
+        let Some(window) = self.ui.root.window() else { return };
+        window.makeFirstResponder(Some(self.ui.new_task.responder()));
+        let mtm = self.ui.mtm;
+        let app = NSApplication::sharedApplication(mtm);
+        let post = |chars: &str, code: u16, flags: NSEventModifierFlags| {
+            let s = NSString::from_str(chars);
+            for kind in [NSEventType::KeyDown, NSEventType::KeyUp] {
+                if let Some(e) = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+                    kind, NSPoint::ZERO, flags, 0.0, window.windowNumber(), None, &s, &s, false, code,
+                ) {
+                    app.postEvent_atStart(&e, false);
+                }
+            }
+        };
+        if shift_return {
+            post("\r", 36, NSEventModifierFlags::Shift);
+        }
+        if text == "\u{8}" {
+            // Backspace.
+            post("\u{7f}", 51, NSEventModifierFlags::empty());
+            return;
+        }
+        for ch in text.chars() {
+            post(&ch.to_string(), 0, NSEventModifierFlags::empty());
+        }
+    }
+
     /// Development aid: one sample of the capsule while it grows, from the
     /// presentation layers (what is on screen), in the window's coordinates:
     /// the capsule's edges, the first text line's, and their distances.
