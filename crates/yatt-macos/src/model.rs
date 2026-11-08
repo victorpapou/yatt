@@ -38,6 +38,8 @@ pub struct CardSnap {
     pub icon: Option<String>,
     /// Tag names, in order.
     pub tags: Vec<String>,
+    /// The steps inside the task: title and whether it is ticked.
+    pub subtasks: Vec<(String, bool)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -87,6 +89,11 @@ pub enum UiEvent {
         status: Status,
         /// The card's colour (an index into the palette); `None`: the default.
         color: Option<u8>,
+    },
+    /// The subtasks of a task, as a whole list.
+    SetSubtasks {
+        id: TaskId,
+        subtasks: Vec<(String, bool)>,
     },
     /// The tags of a task, in order.
     SetTags {

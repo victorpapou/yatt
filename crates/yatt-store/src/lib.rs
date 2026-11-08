@@ -105,8 +105,21 @@ impl Store {
             let (task, name) = row?;
             tags.entry(task).or_default().push(name);
         }
+        let mut steps: std::collections::HashMap<String, Vec<yatt_core::Subtask>> = Default::default();
+        let mut stmt = self.conn.prepare(
+            "SELECT task_id, title, done FROM subtasks WHERE deleted_at IS NULL
+             ORDER BY task_id, position, created_at",
+        )?;
+        for row in stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, bool>(2)?))
+        })? {
+            let (task, title, done) = row?;
+            steps.entry(task).or_default().push(yatt_core::Subtask { title, done });
+        }
         for t in &mut tasks {
-            t.tags = tags.remove(&t.id.0.to_string()).unwrap_or_default();
+            let key = t.id.0.to_string();
+            t.tags = tags.remove(&key).unwrap_or_default();
+            t.subtasks = steps.remove(&key).unwrap_or_default();
         }
         Ok(tasks)
     }
@@ -380,7 +393,29 @@ fn save_task(conn: &Connection, t: &Task) -> Result<()> {
             t.archived_at.map(ms),
         ],
     )?;
-    save_tags(conn, t)
+    save_tags(conn, t)?;
+    save_subtasks(conn, t)
+}
+
+/// Rewrites the task's subtasks (their order is their position).
+fn save_subtasks(conn: &Connection, t: &Task) -> Result<()> {
+    let id = t.id.0.to_string();
+    conn.execute("DELETE FROM subtasks WHERE task_id = ?1", [&id])?;
+    for (i, s) in t.subtasks.iter().enumerate() {
+        conn.execute(
+            "INSERT INTO subtasks (id, task_id, title, done, position, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+            params![
+                Uuid::now_v7().to_string(),
+                id,
+                s.title,
+                s.done,
+                format!("{i:06}"),
+                ms(t.updated_at)
+            ],
+        )?;
+    }
+    Ok(())
 }
 
 /// Rewrites the task's tag list (tag names are shared, one row each).
@@ -441,6 +476,7 @@ fn task_from_row(r: &Row<'_>) -> rusqlite::Result<Result<Task>> {
         icon: r.get(14)?,
         archived_at: r.get::<_, Option<i64>>(15)?.map(ts).transpose()?,
         tags: Vec::new(),
+        subtasks: Vec::new(),
     }))
 }
 
@@ -639,6 +675,23 @@ mod tests {
     fn merge_overlapping_spans() {
         assert_eq!(merged_len(vec![(0, 10), (5, 15), (20, 30)]), 25);
         assert_eq!(merged_len(vec![]), 0);
+    }
+
+    #[test]
+    fn subtasks_roundtrip_in_order() {
+        let mut store = Store::open_in_memory().unwrap();
+        let mut a = Task::new(TaskId::new(), "a", Status::Backlog, "a0".into(), t(0));
+        a.subtasks = vec![
+            yatt_core::Subtask { title: "one".into(), done: true },
+            yatt_core::Subtask { title: "two".into(), done: false },
+        ];
+        store.save_task(&a).unwrap();
+        a.subtasks.remove(0);
+        store.save_task(&a).unwrap();
+        let loaded = store.load_tasks().unwrap();
+        assert_eq!(loaded[0].subtasks.len(), 1);
+        assert_eq!(loaded[0].subtasks[0].title, "two");
+        assert!(!loaded[0].subtasks[0].done);
     }
 
     #[test]

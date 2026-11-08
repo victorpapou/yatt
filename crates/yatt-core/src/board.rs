@@ -10,7 +10,7 @@ use jiff::Timestamp;
 
 use crate::ids::{ProjectId, TaskId};
 use crate::position::{self, PositionError};
-use crate::task::{Priority, Status, Task};
+use crate::task::{Priority, Status, Subtask, Task};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Placement {
@@ -55,6 +55,11 @@ pub enum Command {
         id: TaskId,
         color: Option<u8>,
         icon: Option<String>,
+    },
+    /// The task's subtasks, as a whole list.
+    SetSubtasks {
+        id: TaskId,
+        subtasks: Vec<Subtask>,
     },
     /// The card's tags.
     SetTags {
@@ -279,6 +284,15 @@ impl Board {
                         color: old_color,
                         icon: old_icon,
                     },
+                })
+            }
+            Command::SetSubtasks { id, subtasks } => {
+                let task = self.task_mut(id)?;
+                let old = std::mem::replace(&mut task.subtasks, subtasks);
+                task.updated_at = now;
+                Ok(Applied {
+                    changed: vec![id],
+                    inverse: Command::SetSubtasks { id, subtasks: old },
                 })
             }
             Command::SetTags { id, tags } => {

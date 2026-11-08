@@ -8,5 +8,5 @@ pub mod timer;
 
 pub use board::{Applied, Board, BoardError, Command, Filter, History, Placement};
 pub use ids::{ProjectId, SessionId, TaskId};
-pub use task::{Priority, Status, Task};
+pub use task::{Priority, Status, Subtask, Task};
 pub use timer::{Effect, Mode, Outcome, Phase, SessionKind, Timer, TimerSettings};

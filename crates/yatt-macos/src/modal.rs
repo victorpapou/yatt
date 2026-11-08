@@ -39,6 +39,8 @@ pub struct Modal {
     /// Covers the header; a click on it starts editing the title.
     rename: Retained<NSButton>,
     stats: Retained<NSTextField>,
+    /// The subtasks, between the header and the notes.
+    subs: Rc<crate::subtasks::Subtasks>,
     /// The tags, as tokens; a comma ends one.
     tags: Retained<objc2_app_kit::NSTokenField>,
     /// Tags known to match the store, to tell edits from echoes.
@@ -116,6 +118,14 @@ impl Modal {
 
         let stats = small_label(mtm);
 
+        let subs = {
+            let (sink, open) = (sink.clone(), open.clone());
+            crate::subtasks::Subtasks::new(mtm, move |items| {
+                if let Some(id) = open.get() {
+                    sink(UiEvent::SetSubtasks { id, subtasks: items });
+                }
+            })
+        };
         let tags_known: Rc<RefCell<Vec<String>>> = Rc::default();
         let tags = {
             let f = unsafe { objc2_app_kit::NSTokenField::initWithFrame(objc2_app_kit::NSTokenField::alloc(mtm), NSRect::ZERO) };
@@ -276,13 +286,14 @@ impl Modal {
             FillView::new(mtm, Fill::Separator),
             FillView::new(mtm, Fill::Separator),
         ];
-        let views: [&NSView; 9] = [
+        let views: [&NSView; 10] = [
             &rename,
             &title,
             &stats,
             &tags,
             &look,
             &rules[0],
+            subs.as_view(),
             &editor_clip,
             &rules[1],
             &times,
@@ -296,6 +307,7 @@ impl Modal {
             panel,
             title,
             stats,
+            subs,
             tags,
             tags_known,
             rules,
@@ -372,6 +384,11 @@ impl Modal {
         );
     }
 
+    /// Lets the subtasks' relayout reach the pane (set once the window exists).
+    pub fn on_subtasks_resize(&self, f: impl Fn() + 'static) {
+        *self.subs.on_resize.borrow_mut() = Some(Box::new(f));
+    }
+
     pub fn open_task(&self) -> Option<TaskId> {
         self.open.get()
     }
@@ -411,7 +428,13 @@ impl Modal {
             NSPoint::new(0.0, top + HEADER_H),
             NSSize::new(w, 1.0),
         ));
-        let editor_top = top + HEADER_H + 1.0;
+        let subs_h = self.subs.height();
+        self.subs.view.setFrame(NSRect::new(
+            NSPoint::new(0.0, top + HEADER_H + 1.0 + 6.0),
+            NSSize::new(w, subs_h),
+        ));
+        self.subs.layout(w);
+        let editor_top = top + HEADER_H + 1.0 + 6.0 + subs_h + 6.0;
         let editor_size = NSSize::new(w, (h - editor_top - FOOTER_H).max(0.0));
         self.editor_clip
             .setFrame(NSRect::new(NSPoint::new(0.0, editor_top), editor_size));
@@ -481,6 +504,7 @@ impl Modal {
             window.makeFirstResponder(None);
         }
         self.commit_tags();
+        self.subs.flush();
         self.open.set(None);
     }
 
@@ -528,6 +552,7 @@ impl Modal {
             unsafe { self.tags.setObjectValue(Some(&arr)) };
         }
         *self.tags_known.borrow_mut() = snap.tags.clone();
+        self.subs.set(&snap.subtasks);
         let stats = format!(
             "{}{}  ·  сегодня {}  ·  🍅 {}",
             if snap.tracking { "● " } else { "" },

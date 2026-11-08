@@ -1152,6 +1152,14 @@ impl Ui {
         }));
         this.fit_root();
         this.set_new_color(DEFAULT_NEW_COLOR);
+        {
+            let weak = weak.clone();
+            this.modal.on_subtasks_resize(move || {
+                if let Some(ui) = weak.upgrade() {
+                    ui.modal.layout(ui.top_inset.get());
+                }
+            });
+        }
         this.cards.set_grouping(load_grouping());
         {
             let weak = weak.clone();

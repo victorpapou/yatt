@@ -218,6 +218,14 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             wait(500).await;
             let backlog = ids(cx, 0);
             sink(UiEvent::SetNotes(backlog[0], notes(0)));
+            sink(UiEvent::SetSubtasks {
+                id: backlog[0],
+                subtasks: vec![("Макеты".into(), true), ("Сверстать".into(), false)],
+            });
+            sink(UiEvent::SetTags {
+                id: backlog[0],
+                tags: vec!["motion".into(), "маркетинг".into()],
+            });
             // `YATT_DEMO_MODAL=flat`: from a card in the list, upright, so the
             // corners can be compared pixel by pixel.
             if std::env::var("YATT_DEMO_MODAL").as_deref() != Ok("flat") {

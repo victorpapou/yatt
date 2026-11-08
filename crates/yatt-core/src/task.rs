@@ -60,6 +60,13 @@ impl Priority {
     }
 }
 
+/// A step inside a task: a checkbox with a title.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Subtask {
+    pub title: String,
+    pub done: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Task {
     pub id: TaskId,
@@ -78,6 +85,8 @@ pub struct Task {
     pub icon: Option<String>,
     /// Tag names, in the order given: the first one can colour the card.
     pub tags: Vec<String>,
+    /// The task's steps, in order.
+    pub subtasks: Vec<Subtask>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
     pub completed_at: Option<Timestamp>,
@@ -111,6 +120,7 @@ impl Task {
             color: None,
             icon: None,
             tags: Vec::new(),
+            subtasks: Vec::new(),
             created_at: now,
             updated_at: now,
             completed_at: (status == Status::Done).then_some(now),

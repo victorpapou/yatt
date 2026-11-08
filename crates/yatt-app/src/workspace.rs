@@ -46,6 +46,13 @@ impl Workspace {
                 e.create_task_coloured(title, status, color.unwrap_or(DEFAULT_COLOR));
             }
             UiEvent::SetTags { id, tags } => e.execute(Command::SetTags { id, tags }),
+            UiEvent::SetSubtasks { id, subtasks } => e.execute(Command::SetSubtasks {
+                id,
+                subtasks: subtasks
+                    .into_iter()
+                    .map(|(title, done)| yatt_core::Subtask { title, done })
+                    .collect(),
+            }),
             UiEvent::Move { id, status, index } => {
                 e.move_task(id, status, Placement::Index(index));
             }
@@ -173,6 +180,11 @@ impl Workspace {
                         color: t.color,
                         icon: t.icon.clone(),
                         tags: t.tags.clone(),
+                        subtasks: t
+                            .subtasks
+                            .iter()
+                            .map(|s| (s.title.clone(), s.done))
+                            .collect(),
                     }
                 })
                 .collect(),
