@@ -62,6 +62,8 @@ pub struct State {
     hits: RefCell<Vec<(NSRect, usize)>>,
     /// The checkbox clicked last (for a Shift-click range).
     last_box: Cell<Option<usize>>,
+    /// The checkbox the button went down on (ticks on release).
+    pressed_box: Cell<Option<usize>>,
     /// Our own edit in progress: the guard of the atomic markers stands aside.
     internal: Cell<bool>,
 }
@@ -199,7 +201,7 @@ define_class!(
 
 pub struct TextIvars {
     on_layout: RefCell<Option<Box<dyn Fn()>>>,
-    on_click: RefCell<Option<Box<dyn Fn(NSPoint, bool) -> bool>>>,
+    on_click: RefCell<Option<Box<dyn Fn(NSPoint, bool, bool) -> bool>>>,
     /// Where the pointer is an arrow (checkboxes, pictures), not the text beam.
     cursor_rects: RefCell<Vec<NSRect>>,
 }
@@ -237,9 +239,24 @@ define_class!(
                 .on_click
                 .borrow()
                 .as_ref()
-                .is_some_and(|f| f(p, event.modifierFlags().contains(objc2_app_kit::NSEventModifierFlags::Shift)));
+                .is_some_and(|f| f(p, event.modifierFlags().contains(objc2_app_kit::NSEventModifierFlags::Shift), false));
             if !hit {
                 let _: () = unsafe { msg_send![super(self), mouseDown: event] };
+            }
+        }
+
+        #[unsafe(method(mouseUp:))]
+        fn mouse_up(&self, event: &objc2_app_kit::NSEvent) {
+            // A checkbox ticks on release inside it, as a button does.
+            let p = self.convertPoint_fromView(event.locationInWindow(), None);
+            let hit = self
+                .ivars()
+                .on_click
+                .borrow()
+                .as_ref()
+                .is_some_and(|f| f(p, event.modifierFlags().contains(objc2_app_kit::NSEventModifierFlags::Shift), true));
+            if !hit {
+                let _: () = unsafe { msg_send![super(self), mouseUp: event] };
             }
         }
     }
@@ -282,6 +299,7 @@ impl NotesEditor {
             image_hits: RefCell::default(),
             hits: RefCell::default(),
             last_box: Cell::new(None),
+            pressed_box: Cell::new(None),
             internal: Cell::new(false),
         });
         let scroll = NSScrollView::new(mtm);
@@ -331,8 +349,8 @@ impl NotesEditor {
                 }
             }));
             let weak = Rc::downgrade(&state);
-            *text.ivars().on_click.borrow_mut() = Some(Box::new(move |p, shift| {
-                weak.upgrade().is_some_and(|st| click_box(&st, p, shift))
+            *text.ivars().on_click.borrow_mut() = Some(Box::new(move |p, shift, release| {
+                weak.upgrade().is_some_and(|st| click_box(&st, p, shift, release))
             }));
         }
         Self {
@@ -426,7 +444,9 @@ impl NotesEditor {
         };
         if let Some(r) = hit {
             let c = NSPoint::new(r.origin.x + r.size.width / 2.0, r.origin.y + r.size.height / 2.0);
-            eprintln!("editor: click box {k} at {:.0},{:.0}: {}", c.x, c.y, click_box(&self.state, c, shift));
+            let down = click_box(&self.state, c, shift, false);
+            let up = click_box(&self.state, c, shift, true);
+            eprintln!("editor: click box {k} at {:.0},{:.0}: {down} {up}", c.x, c.y);
         } else {
             eprintln!("editor: no box {k} ({} boxes)", self.state.hits.borrow().len());
         }
@@ -942,17 +962,29 @@ pub(crate) fn animate_box(bl: &BoxLayer, checked: bool) {
 /// A click on a checkbox ticks or unticks its line (an edit of the text, so undoable).
 /// With Shift, every checkbox from the last one clicked to this one takes the new
 /// state, in one edit.
-fn click_box(st: &Rc<State>, p: NSPoint, shift: bool) -> bool {
-    let hit = st.hits.borrow().iter().position(|(r, _)| {
-        p.x >= r.origin.x - 4.0
-            && p.x <= r.origin.x + r.size.width + 4.0
-            && p.y >= r.origin.y - 4.0
-            && p.y <= r.origin.y + r.size.height + 4.0
-    });
+fn click_box(st: &Rc<State>, p: NSPoint, shift: bool, release: bool) -> bool {
+    let box_at = |p: NSPoint| {
+        st.hits.borrow().iter().position(|(r, _)| {
+            p.x >= r.origin.x - 4.0
+                && p.x <= r.origin.x + r.size.width + 4.0
+                && p.y >= r.origin.y - 4.0
+                && p.y <= r.origin.y + r.size.height + 4.0
+        })
+    };
     let Some(text) = st.text.borrow().clone() else {
         return false;
     };
-    let Some(k) = hit else {
+    if release {
+        // The button came up: it counts when it is still over the circle it went down on.
+        let Some(k) = st.pressed_box.take() else {
+            return false;
+        };
+        if box_at(p) == Some(k) {
+            toggle_boxes(st, &text, k, shift);
+        }
+        return true;
+    }
+    let Some(k) = box_at(p) else {
         // A picture: the click selects it whole.
         let image = st.image_hits.borrow().iter().find(|(r, _, _)| {
             p.x >= r.origin.x && p.x <= r.origin.x + r.size.width && p.y >= r.origin.y && p.y <= r.origin.y + r.size.height
@@ -966,7 +998,7 @@ fn click_box(st: &Rc<State>, p: NSPoint, shift: bool) -> bool {
         }
         return false;
     };
-    toggle_boxes(st, &text, k, shift);
+    st.pressed_box.set(Some(k));
     true
 }
 

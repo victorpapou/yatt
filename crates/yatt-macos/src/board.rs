@@ -343,6 +343,8 @@ struct Press {
     /// No modifiers: a click opens the card (or fans its stack).
     plain: bool,
     clicks: isize,
+    /// Pressed on a card's checkbox: it ticks on release inside it, not on the press.
+    check: bool,
 }
 
 struct Drag {
@@ -2205,6 +2207,7 @@ impl Board {
                     match press.id {
                         Some(id) if far => {
                             crate::eventlog::log(format!("board: drag starts with {id:?}"));
+                            self.set_check_pressed(false);
                             self.begin_drag(id, press.start, p)
                         }
                         _ => {
@@ -2236,10 +2239,14 @@ impl Board {
                 ));
                 if self.drag.borrow().is_some() {
                     self.drop_at(p);
-                } else if let Some(press) = self.press.borrow_mut().take()
-                    && press.plain
-                {
-                    self.click(press.id, press.clicks);
+                } else if let Some(press) = self.press.borrow_mut().take() {
+                    self.set_check_pressed(false);
+                    if press.check {
+                        // Like a button: it counts on release, inside the circle.
+                        self.check_press(p);
+                    } else if press.plain {
+                        self.click(press.id, press.clicks);
+                    }
                 }
             }
             CanvasMsg::Scroll(s) => self.on_scroll(s),
@@ -2286,6 +2293,16 @@ impl Board {
         let local = NSPoint::new(at.x - ox - c.body.x, at.y - oy - c.body.y);
         (local.x >= TEXT_X - 6.0 && local.x <= TEXT_X + 28.0 && local.y >= 8.0 && local.y <= 42.0)
             .then_some(id)
+    }
+
+    /// The checkbox of the hovered card looks pressed (dimmer) while the button is down.
+    fn set_check_pressed(&self, on: bool) {
+        if let Some(id) = self.hover.get()
+            && let Some(card) = self.cards.borrow().get(&id)
+            && card.hovered
+        {
+            card.check.setAlphaValue(if on { 0.55 } else { 1.0 });
+        }
     }
 
     /// A press on a card's checkbox (where the glyph is): done, or back to the
@@ -2370,9 +2387,6 @@ impl Board {
     }
 
     fn on_down(self: &Rc<Self>, at: NSPoint, shift: bool, cmd: bool, clicks: isize) {
-        if !shift && !cmd && self.check_press(at) {
-            return;
-        }
         let id = self.hit(at);
         if crate::eventlog::enabled() {
             let what = id.and_then(|id| {
@@ -2414,7 +2428,11 @@ impl Board {
             start: at,
             plain: !cmd && !shift,
             clicks,
+            check: !cmd && !shift && self.on_check(at).is_some(),
         });
+        if !cmd && !shift && self.on_check(at).is_some() {
+            self.set_check_pressed(true);
+        }
     }
 
     /// ⇧-click: everything between the anchor and `id` in the anchor's column.
