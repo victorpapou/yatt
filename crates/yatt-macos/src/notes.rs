@@ -260,6 +260,7 @@ impl NotesEditor {
             NSRect::new(NSPoint::ZERO, NSSize::new(300.0, 300.0)),
         );
         text.setWantsLayer(true);
+        crate::classes::enable_inline_prediction(&text);
         text.setDrawsBackground(false);
         text.setRichText(true);
         text.setImportsGraphics(false);

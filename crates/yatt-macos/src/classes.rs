@@ -1060,3 +1060,37 @@ impl HoldButton {
         unsafe { msg_send![super(this), init] }
     }
 }
+
+/// The system's inline text predictions (macOS 14+) for a text view or field, when
+/// it takes them; older systems and views that cannot are left as they are.
+pub fn enable_inline_prediction(obj: &AnyObject) {
+    let sel = sel!(setInlinePredictionType:);
+    let responds: bool = unsafe { msg_send![obj, respondsToSelector: sel] };
+    if responds {
+        // NSTextInputTraitTypeYes
+        let _: () = unsafe { msg_send![obj, setInlinePredictionType: 2isize] };
+    }
+}
+
+/// Every text field of ours gets the system's inline predictions in its field
+/// editor when editing begins (the fields themselves do not take the setting).
+/// Returns the observer token, to be kept.
+pub fn predictions_in_field_editors() -> Retained<objc2::runtime::ProtocolObject<dyn NSObjectProtocol>> {
+    let block = block2::RcBlock::new(|note: std::ptr::NonNull<objc2_foundation::NSNotification>| {
+        let note = unsafe { note.as_ref() };
+        if let Some(info) = note.userInfo()
+            && let Some(editor) = info.objectForKey(&*NSString::from_str("NSFieldEditor"))
+        {
+            enable_inline_prediction(&editor);
+        }
+    });
+    unsafe {
+        objc2_foundation::NSNotificationCenter::defaultCenter()
+            .addObserverForName_object_queue_usingBlock(
+                Some(&NSString::from_str("NSControlTextDidBeginEditingNotification")),
+                None,
+                None,
+                &block,
+            )
+    }
+}

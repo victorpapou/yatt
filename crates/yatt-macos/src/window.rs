@@ -280,6 +280,9 @@ impl MainWindow {
 
         let mut retained: Vec<Retained<AnyObject>> = Vec::new();
         retained.extend(crate::eventlog::install());
+        // The system's inline predictions in every text field of ours (kept for the
+        // life of the app).
+        std::mem::forget(crate::classes::predictions_in_field_editors());
         let header = Header::new(mtm, &sink, &mut retained);
         let status = {
             let (a, b, c) = (sink.clone(), sink.clone(), sink.clone());
