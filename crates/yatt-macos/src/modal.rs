@@ -28,7 +28,7 @@ use crate::style;
 use crate::window::Sink;
 
 /// The time entries' line at the bottom.
-const FOOTER_H: f64 = 56.0;
+const FOOTER_H: f64 = 52.0;
 const PANEL_PAD: f64 = 20.0;
 
 pub struct Modal {
@@ -394,6 +394,8 @@ impl Modal {
     /// down, below the toolbar.
     pub fn layout(&self, top: f64) {
         self.top.set(top);
+        // The footer is as tall as the toolbar over the top of the board.
+        let footer_h = if top > 30.0 { top } else { FOOTER_H };
         self.material.setFrame(self.panel.bounds());
         let size = self.panel.bounds().size;
         let (w, h) = (size.width, size.height);
@@ -433,7 +435,7 @@ impl Modal {
             NSSize::new(w, 1.0),
         ));
         let editor_top = top + header_h + 1.0;
-        let editor_size = NSSize::new(w, (h - editor_top - FOOTER_H).max(0.0));
+        let editor_size = NSSize::new(w, (h - editor_top - footer_h).max(0.0));
         self.editor_clip
             .setFrame(NSRect::new(NSPoint::new(0.0, editor_top), editor_size));
         self.editor
@@ -441,11 +443,11 @@ impl Modal {
             .setFrame(NSRect::new(NSPoint::ZERO, editor_size));
         self.editor.set_page_width(w);
         self.rules[1].setFrame(NSRect::new(
-            NSPoint::new(0.0, h - FOOTER_H),
+            NSPoint::new(0.0, h - footer_h),
             NSSize::new(w, 1.0),
         ));
         self.times.setFrame(NSRect::new(
-            NSPoint::new(pad, h - FOOTER_H + (FOOTER_H - 20.0) / 2.0),
+            NSPoint::new(pad, h - footer_h + (footer_h - 20.0) / 2.0),
             NSSize::new(iw, 20.0),
         ));
     }

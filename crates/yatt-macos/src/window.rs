@@ -91,7 +91,7 @@ const CHIP_GAP: f64 = 1.0;
 const CAPSULE_H: f64 = 36.0;
 const CAPSULE_MAX_W: f64 = 460.0;
 /// The bottom bar's height, as the toolbar's; the capsule is centred in it.
-const BOTTOM_BAR_H: f64 = 56.0;
+const BOTTOM_BAR_H: f64 = 52.0;
 const CAPSULE_BOTTOM: f64 = (BOTTOM_BAR_H - CAPSULE_H) / 2.0;
 /// The fade under the capsule: from clear to the background over this height.
 const BOTTOM_FADE_H: f64 = 72.0;
@@ -671,7 +671,9 @@ impl MainWindow {
         capsule_content.addSubview(&new_task);
         let palette_button = {
             let b = NSButton::new(mtm);
-            b.setBordered(false);
+            b.setBordered(true);
+            b.setBezelStyle(objc2_app_kit::NSBezelStyle::Toolbar);
+            b.setShowsBorderOnlyWhileMouseInside(true);
             b.setImage(symbol("circle.fill", "Цвет новой задачи").as_deref());
             b.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageOnly);
             b.setToolTip(Some(ns_string!("Цвет новой задачи")));
@@ -1467,26 +1469,20 @@ impl Ui {
     fn set_new_color(&self, hue: usize) {
         self.new_color.set(hue);
         // The button is the colour itself: a round swatch of the chosen colour,
-        // a layer of its own in the middle of the button.
-        self.palette_button.setImage(None);
-        self.palette_button.setWantsLayer(true);
-        if let Some(layer) = self.palette_button.layer() {
-            let dot = match unsafe { layer.sublayers() }.and_then(|s| s.firstObject()) {
-                Some(d) => d,
-                None => {
-                    let d = CALayer::new();
-                    d.setCornerRadius(10.0);
-                    layer.addSublayer(&d);
-                    d
-                }
-            };
-            let b = self.palette_button.bounds().size;
-            dot.setFrame(NSRect::new(
-                NSPoint::new(((b.width - 20.0) / 2.0).round(), ((b.height - 20.0) / 2.0).round()),
-                NSSize::new(20.0, 20.0),
-            ));
-            dot.setBackgroundColor(Some(&style::swatch(hue).CGColor()));
-        }
+        // drawn as an image, with the toolbar buttons' hover state.
+        let color = style::swatch(hue);
+        let block = block2::RcBlock::new(move |rect: NSRect| {
+            color.setFill();
+            objc2_app_kit::NSBezierPath::bezierPathWithOvalInRect(rect).fill();
+            objc2::runtime::Bool::YES
+        });
+        let image = objc2_app_kit::NSImage::imageWithSize_flipped_drawingHandler(
+            NSSize::new(18.0, 18.0),
+            false,
+            &block,
+        );
+        self.palette_button.setImage(Some(&image));
+        self.palette_button.setContentTintColor(None);
         self.palette.show_state(hue);
     }
 
@@ -1714,7 +1710,7 @@ impl Ui {
         self.capsule.setFrame(NSRect::new(
             NSPoint::new(
                 ((view_w - cw) / 2.0).round(),
-                board_h - CAPSULE_BOTTOM - CAPSULE_H,
+                board_h - (self.top_inset.get() - CAPSULE_H) / 2.0 - CAPSULE_H,
             ),
             NSSize::new(cw, CAPSULE_H),
         ));

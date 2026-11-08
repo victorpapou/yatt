@@ -164,7 +164,7 @@ pub enum Grouping {
 }
 
 /// A symbol for each column's name: backlog, in progress, review, done.
-const COLUMN_SYMBOLS: [&str; 4] = ["tray.full", "hammer", "eye", "checkmark.seal"];
+const COLUMN_SYMBOLS: [&str; 4] = ["tray.full.fill", "hammer.fill", "eye.fill", "checkmark.seal.fill"];
 
 /// The height of a group's title row in a list.
 const HEAD_H: f64 = 26.0;
