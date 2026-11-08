@@ -518,6 +518,9 @@ impl MainWindow {
         toolbar.setDelegate(Some(ProtocolObject::from_ref(&*toolbar_delegate)));
         toolbar.setDisplayMode(NSToolbarDisplayMode::IconOnly);
         toolbar.setAllowsUserCustomization(false);
+        // No baseline rule under the toolbar, in any section.
+        #[allow(deprecated)]
+        toolbar.setShowsBaselineSeparator(false);
         retained.push(Retained::into_super(Retained::into_super(toolbar_delegate)));
 
         // The board tints the column under a dragged card through a weak handle,

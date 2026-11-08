@@ -699,7 +699,6 @@ impl Board {
             // A little backing, so the cards going under it do not show through.
             l.setWantsLayer(true);
             if let Some(layer) = l.layer() {
-                layer.setBackgroundColor(Some(&objc2_app_kit::NSColor::windowBackgroundColor().colorWithAlphaComponent(0.92).CGColor()));
                 layer.setCornerRadius(6.0);
             }
             col.doc.addSubview(&l);
@@ -714,8 +713,10 @@ impl Board {
                     // Where it lies in the list, held under the column's chip while
                     // its group is in view and pushed up by the next title.
                     let natural = self.list_y(ci, *i) - HEAD_H + 2.0;
+                    // The top edge of what is seen below the toolbar, in document
+                    // coordinates: the clip's origin plus the inset the toolbar takes.
                     let seen_top = col.scroll.contentView().bounds().origin.y
-                        + self.top.get()
+                        + col.scroll.contentInsets().top
                         + CHIP_STICK;
                     let mut y = natural.max(seen_top);
                     if let Some((j, _)) = wanted.get(k + 1) {
@@ -725,8 +726,18 @@ impl Board {
                             self.list_y(ci, starts.len().saturating_sub(1)) + CARD_H - HEAD_H + 6.0,
                         );
                     }
+                    // A backing only while it holds over cards going under it.
+                    let stuck = y > natural + 0.5;
+                    if let Some(layer) = l.layer() {
+                        let alpha = if stuck { 0.88 } else { 0.0 };
+                        layer.setBackgroundColor(Some(
+                            &objc2_app_kit::NSColor::windowBackgroundColor()
+                                .colorWithAlphaComponent(alpha)
+                                .CGColor(),
+                        ));
+                    }
                     l.setFrame(NSRect::new(
-                        NSPoint::new(x + 2.0, y.max(natural.min(y))),
+                        NSPoint::new(x + 2.0, y),
                         NSSize::new(CARD_W - 4.0, HEAD_H - 6.0),
                     ));
                     l.setHidden(false);

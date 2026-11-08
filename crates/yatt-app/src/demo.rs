@@ -207,7 +207,11 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
         }
         if std::env::var_os("YATT_DEMO_STICKY").is_some() {
             // A long backlog in two tag groups, scrolled: the group title sticks.
-            for i in 0..14 {
+            let n: usize = std::env::var("YATT_DEMO_STICKY")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(14);
+            for i in 0..n {
                 sink(UiEvent::NewTask {
                     color: None,
                     title: format!("Задача {}", i + 1),
