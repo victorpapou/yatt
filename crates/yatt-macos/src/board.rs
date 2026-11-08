@@ -701,6 +701,7 @@ impl Board {
             if let Some(layer) = l.layer() {
                 layer.setCornerRadius(6.0);
             }
+            l.setHidden(true);
             col.doc.addSubview(&l);
             heads.push(l);
             self.stacking.borrow_mut().clear();
@@ -740,7 +741,15 @@ impl Board {
                         NSPoint::new(x + 2.0, y),
                         NSSize::new(CARD_W - 4.0, HEAD_H - 6.0),
                     ));
-                    l.setHidden(false);
+                    if l.isHidden() {
+                        // A title that appears (grouping switched on, a column
+                        // laid out again) fades in while the cards spring to their
+                        // new places, so it never flashes over one in passing.
+                        l.setAlphaValue(0.0);
+                        l.setHidden(false);
+                        let l2 = l.clone();
+                        animate(true, 0.4, move || l2.animator().setAlphaValue(1.0));
+                    }
                 }
                 None => l.setHidden(true),
             }
