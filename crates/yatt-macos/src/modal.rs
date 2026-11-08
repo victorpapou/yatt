@@ -20,7 +20,8 @@ use objc2_foundation::{NSPoint, NSRect, NSSize, NSString, ns_string};
 use yatt_core::{Status, TaskId};
 
 use crate::classes::{ActionTarget, Fill, FillView, FlippedView, PanelView};
-use crate::editor::{EditorMsg, NotesEditor};
+use crate::editor::EditorMsg;
+use crate::notes::AnyEditor;
 use crate::model::{CardSnap, UiEvent, format_duration};
 use crate::picker::{Current, Picker};
 use crate::style;
@@ -47,7 +48,7 @@ pub struct Modal {
     /// The tags, as capsules; Enter or a comma adds one.
     tags: Rc<crate::tags::Tags>,
     rules: [Retained<FillView>; 2],
-    editor: NotesEditor,
+    editor: AnyEditor,
     editor_clip: Retained<FlippedView>,
     /// The time entries' one line, and every entry, as written.
     times: Retained<NSButton>,
@@ -137,7 +138,7 @@ impl Modal {
             let (sink, open, known) = (sink.clone(), open.clone(), notes_known.clone());
             let (keys, subs_known, tags_known) =
                 (keys.clone(), subs_known.clone(), tags_known.clone());
-            NotesEditor::new(mtm, move |msg| match msg {
+            AnyEditor::new(mtm, move |msg| match msg {
                 EditorMsg::Notes { key, md } => {
                     // Filed under the task the notes were typed into, open or not.
                     let Some(id) = keys.borrow().get(&key).copied() else {
@@ -177,11 +178,11 @@ impl Modal {
         if let Some(layer) = editor_clip.layer() {
             layer.setMasksToBounds(true);
         }
-        editor.view.setWantsLayer(true);
-        if let Some(layer) = editor.view.layer() {
+        editor.view().setWantsLayer(true);
+        if let Some(layer) = editor.view().layer() {
             layer.setMasksToBounds(true);
         }
-        editor_clip.addSubview(&editor.view);
+        editor_clip.addSubview(&editor.view());
 
         // The look and status, in a popover off a small button in the header.
         let picker = Rc::new(Picker::new(mtm, sink));
@@ -362,8 +363,8 @@ impl Modal {
     pub fn debug_editor_geometry(&self) {
         let f = self
             .editor
-            .view
-            .convertRect_toView(self.editor.view.bounds(), Some(&self.panel));
+            .view()
+            .convertRect_toView(self.editor.view().bounds(), Some(&self.panel));
         eprintln!(
             "editor view in panel: x {:.1} y {:.1} w {:.1} h {:.1}; panel w {:.1} h {:.1}",
             f.origin.x,
@@ -436,7 +437,7 @@ impl Modal {
         self.editor_clip
             .setFrame(NSRect::new(NSPoint::new(0.0, editor_top), editor_size));
         self.editor
-            .view
+            .view()
             .setFrame(NSRect::new(NSPoint::ZERO, editor_size));
         self.editor.set_page_width(w);
         self.rules[1].setFrame(NSRect::new(
@@ -497,7 +498,7 @@ impl Modal {
         self.update(snap, status);
         self.layout(self.top.get());
         if let Some(window) = self.panel.window() {
-            window.makeFirstResponder(Some(&self.editor.view));
+            window.makeFirstResponder(Some(&self.editor.responder()));
         }
         self.editor.focus();
     }
