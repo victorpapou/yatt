@@ -270,7 +270,12 @@ impl MainWindow {
         window.setTitlebarAppearsTransparent(false);
         // The system's own separator, as in Finder: the line shows when content has
         // gone under the toolbar and not before.
-        window.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::Automatic);
+        window.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::Line);
+        eprintln!(
+            "window titlebar separator style: {:?}, titlebar transparent: {}",
+            window.titlebarSeparatorStyle(),
+            window.titlebarAppearsTransparent()
+        );
         window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
         window.setMinSize(NSSize::new(760.0, 480.0));
 
@@ -616,7 +621,7 @@ impl MainWindow {
             let item = objc2_app_kit::NSSplitViewItem::splitViewItemWithViewController(&vc);
             item.setCanCollapse(false);
             item.setMinimumThickness(MIN_BOARD_W);
-            item.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::Automatic);
+            item.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::Line);
             split_vc.addSplitViewItem(&item);
             unsafe { retained.push(Retained::cast_unchecked::<AnyObject>(vc)) };
         }
@@ -631,7 +636,7 @@ impl MainWindow {
             item.setPreferredThicknessFraction(0.0);
             item.setCanCollapse(true);
             item.setCollapsed(true);
-            item.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::Automatic);
+            item.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::Line);
             split_vc.addSplitViewItem(&item);
             let vc_keep = vc.clone();
             unsafe { retained.push(Retained::cast_unchecked::<AnyObject>(vc)) };
@@ -1177,6 +1182,7 @@ impl MainWindow {
     pub fn demo_capsule_text(&self, text: &str) {
         self.ui.new_task.set_text(text);
         self.ui.update_capsule_height();
+        eprintln!("capsule: h {:.1}; {}", self.ui.capsule_h.get(), self.ui.new_task.debug_geometry());
     }
 
     pub fn demo_editor_self_test(&self) -> String {
@@ -1573,8 +1579,21 @@ impl Ui {
             self.capsule_h.set(want);
             self.place_capsule(true);
         }
-        // What fits shows from its top; the editor scrolls only when it must.
+        // What fits shows from its top; the editor scrolls only when it must. Again a
+        // moment later: the text view scrolls its caret into view after the edit that
+        // brought us here, and again while the capsule is still growing.
         self.new_task.keep_in_view(want);
+        for delay in [0.03, 0.27] {
+            let weak = self.new_task.weak_view();
+            let block = RcBlock::new(move |_: NonNull<objc2_foundation::NSTimer>| {
+                if let Some((view, h)) = weak() {
+                    crate::notes::keep_in_view_of(&view, h);
+                }
+            });
+            let _ = unsafe {
+                objc2_foundation::NSTimer::scheduledTimerWithTimeInterval_repeats_block(delay, false, &block)
+            };
+        }
     }
 
     /// The capsule's colour for the next new card.

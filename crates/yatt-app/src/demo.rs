@@ -249,6 +249,24 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             window.save_edits_then(move || sink(UiEvent::Quit));
             return;
         }
+        if std::env::var_os("YATT_DEMO_TAGS").is_some() {
+            // Yellow and neutral cards with one, three and five tags.
+            let tags = ["design", "motion", "маркетинг", "код", "срочно"];
+            for (i, (hue, n)) in [(8u8, 1usize), (8, 3), (8, 5), (5, 1), (5, 3), (5, 5)].iter().enumerate() {
+                let notes = tags[..*n].iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join(" ");
+                sink(UiEvent::NewTaskNotes {
+                    title: format!("{} тегов", n),
+                    notes,
+                    status: [Status::Backlog, Status::InProgress][i % 2],
+                    color: Some(*hue),
+                });
+                wait(150).await;
+            }
+            wait(900).await;
+            shot("tags");
+            window.save_edits_then(move || sink(UiEvent::Quit));
+            return;
+        }
         if std::env::var_os("YATT_DEMO_ALLCOLORS").is_some() {
             // One task per swatch, in the order the pickers show them, spread over
             // the columns: the cards' tints against the swatches' hues.

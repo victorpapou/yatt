@@ -147,7 +147,7 @@ struct Column {
 /// rest; a blurred band with a hairline under it while it holds under the toolbar.
 struct Head {
     strip: Retained<FlippedView>,
-    material: Retained<objc2_app_kit::NSVisualEffectView>,
+    material: Retained<NSView>,
     line: Retained<FillView>,
     label: Retained<objc2_app_kit::NSTextField>,
     /// The column's symbol before its name (the first title only).
@@ -283,6 +283,7 @@ struct Card {
     time: Retained<NSTextField>,
     title: Retained<NSTextField>,
     /// The tags the meta line shows (it is redrawn in a new colour with them).
+    dots: Retained<objc2_app_kit::NSImageView>,
     tag_names: Vec<String>,
     label: Retained<NSTextField>,
     /// "3 задачи" under the label while leading a group drag.
@@ -725,10 +726,21 @@ impl Board {
     /// A title strip (blur band, hairline, grey semibold label), hidden.
     fn new_head(&self, doc: &FlippedView) -> Head {
         let strip = FlippedView::new(self.mtm, NSRect::ZERO);
-        let material = objc2_app_kit::NSVisualEffectView::new(self.mtm);
-        material.setMaterial(objc2_app_kit::NSVisualEffectMaterial::HeaderView);
-        material.setBlendingMode(objc2_app_kit::NSVisualEffectBlendingMode::WithinWindow);
-        material.setState(objc2_app_kit::NSVisualEffectState::Active);
+        // The band under a held title is the system's Liquid Glass (as in the
+        // toolbar and Finder's headers), square-edged; the blur material only where
+        // the system has no glass.
+        let material: Retained<NSView> =
+            if objc2::runtime::AnyClass::get(c"NSGlassEffectView").is_some() {
+                let glass = objc2_app_kit::NSGlassEffectView::new(self.mtm);
+                glass.setCornerRadius(0.0);
+                Retained::into_super(glass)
+            } else {
+                let blur = objc2_app_kit::NSVisualEffectView::new(self.mtm);
+                blur.setMaterial(objc2_app_kit::NSVisualEffectMaterial::HeaderView);
+                blur.setBlendingMode(objc2_app_kit::NSVisualEffectBlendingMode::WithinWindow);
+                blur.setState(objc2_app_kit::NSVisualEffectState::Active);
+                Retained::into_super(blur)
+            };
         material.setAlphaValue(0.0);
         let line = FillView::new(self.mtm, Fill::Separator);
         line.setAlphaValue(0.0);
@@ -736,7 +748,7 @@ impl Board {
             objc2_foundation::ns_string!(""),
             self.mtm,
         );
-        label.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize_weight(12.0, unsafe {
+        label.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize_weight(13.0, unsafe {
             objc2_app_kit::NSFontWeightSemibold
         })));
         label.setTextColor(Some(&objc2_app_kit::NSColor::secondaryLabelColor()));
@@ -804,10 +816,10 @@ impl Board {
             // going under it.
             let want = if y > natural + 0.5 { 1.0 } else { 0.0 };
             if (h.material.alphaValue() - want).abs() > 0.01 {
-                let (m, l) = (h.material.clone(), h.line.clone());
+                // Glass only, no hairline of our own.
+                let m = h.material.clone();
                 animate(true, 0.15, move || {
                     m.animator().setAlphaValue(want);
-                    l.animator().setAlphaValue(want);
                 });
             }
             h.strip
@@ -1311,6 +1323,7 @@ impl Board {
             icon,
             time,
             title,
+            dots,
         } = card_face(mtm, snap.id, &snap.title, hue);
         content.setAutoresizingMask(fill_mask);
         // The checkbox over the glyph's place, shown while the pointer is on the card.
@@ -1397,6 +1410,7 @@ impl Board {
             hovered: false,
             time,
             title,
+            dots,
             tag_names: snap.tags.clone(),
             label,
             count,
@@ -2895,7 +2909,8 @@ impl Card {
         }
         set_title(&self.title, &snap.title);
         self.tag_names = snap.tags.clone();
-        set_tags(&self.time, &snap.tags, snap.tracking);
+        set_tracking_dot(&self.time, snap.tracking);
+        set_tag_dots(&self.dots, &snap.tags, self.hue);
         self.tracking = snap.tracking;
         self.refill();
     }
@@ -2910,7 +2925,8 @@ impl Card {
             self.time
                 .setTextColor(Some(&ink.colorWithAlphaComponent(0.5)));
             refresh_title(&self.title);
-            set_tags(&self.time, &self.tag_names, self.tracking);
+            set_tracking_dot(&self.time, self.tracking);
+            set_tag_dots(&self.dots, &self.tag_names, self.hue);
             self.label.setTextColor(Some(&ink));
             self.count
                 .setTextColor(Some(&ink.colorWithAlphaComponent(0.7)));
@@ -3262,6 +3278,8 @@ pub(crate) struct Face {
     pub icon: Retained<NSView>,
     pub time: Retained<NSTextField>,
     pub title: Retained<NSTextField>,
+    /// The task's tags as Finder-style dots on the meta line.
+    pub dots: Retained<objc2_app_kit::NSImageView>,
 }
 
 /// A task's fixed random seed (its id's random tail).
@@ -3311,7 +3329,16 @@ pub(crate) fn card_face(mtm: MainThreadMarker, id: TaskId, title: &str, hue: usi
     set_title(&title_label, title);
     let title = title_label;
 
-    for v in [&*icon as &NSView, &time, &title] {
+    // The tag dots on the meta line (the time is gone from the card; its place
+    // shows the tags, and only a running timer's dot in the label).
+    let dots = objc2_app_kit::NSImageView::new(mtm);
+    dots.setFrame(NSRect::new(
+        NSPoint::new(TEXT_X, META_Y),
+        NSSize::new(CARD_W - 2.0 * TEXT_X, 14.0),
+    ));
+    dots.setImageAlignment(objc2_app_kit::NSImageAlignment::AlignLeft);
+    dots.setImageScaling(objc2_app_kit::NSImageScaling::ScaleNone);
+    for v in [&*icon as &NSView, &time, &title, &dots] {
         content.addSubview(v);
     }
     Face {
@@ -3319,6 +3346,7 @@ pub(crate) fn card_face(mtm: MainThreadMarker, id: TaskId, title: &str, hue: usi
         icon,
         time,
         title,
+        dots,
     }
 }
 
@@ -3355,6 +3383,15 @@ fn fit_title(label: &NSTextField) {
     ));
     if let Some(parent) = unsafe { label.superview() } {
         for v in parent.subviews().iter() {
+            if let Some(dots) = v.downcast_ref::<objc2_app_kit::NSImageView>() {
+                let f = dots.frame();
+                if f.origin.y > 36.0 {
+                    dots.setFrame(NSRect::new(
+                        NSPoint::new(f.origin.x, META_Y - lift * 0.8),
+                        f.size,
+                    ));
+                }
+            }
             if let Ok(meta) = v.downcast::<NSTextField>()
                 && &*meta as *const NSTextField != label as *const NSTextField
                 && meta.frame().origin.y > 36.0
@@ -3374,48 +3411,60 @@ pub(crate) fn set_meta(label: &NSTextField, text: &str) {
     style::set_tracked(label, text, META_KERN);
 }
 
-/// The tags' names (no «#»), each in its own colour, one space between.
-pub(crate) fn set_tags(label: &NSTextField, tags: &[String], tracking: bool) {
-    use objc2::AnyThread;
-    use objc2_foundation::{NSAttributedString, NSDictionary, NSMutableAttributedString};
-    let joined = tags.join("  ");
-    let out = NSMutableAttributedString::new();
-    // The meta line's own font: small, medium, digits tabular.
-    let font = NSFont::monospacedDigitSystemFontOfSize_weight(11.0, unsafe { NSFontWeightMedium });
-    let mut tags_shown: Vec<String> = Vec::new();
-    if tracking {
-        tags_shown.push("●".to_string());
+/// A running timer's dot, in the meta label where the time used to be.
+pub(crate) fn set_tracking_dot(label: &NSTextField, tracking: bool) {
+    label.setStringValue(&NSString::from_str(if tracking { "●" } else { "" }));
+}
+
+/// The tags as Finder's tag dots: small filled circles in the tags' colours, each
+/// next one over the one before it with a ring cut out round it; the names are
+/// the tooltip.
+pub(crate) fn set_tag_dots(view: &objc2_app_kit::NSImageView, tags: &[String], hue: usize) {
+    if tags.is_empty() {
+        view.setImage(None);
+        view.setToolTip(None);
+        return;
     }
-    tags_shown.extend(tags.iter().cloned());
-    let tags = &tags_shown[..];
-    for (i, t) in tags.iter().enumerate() {
-        let piece = if i + 1 < tags.len() {
-            format!("{t}  ")
-        } else {
-            t.clone()
-        };
-        let color = if tracking && i == 0 {
-            style::text(0).colorWithAlphaComponent(0.8)
-        } else {
-            style::swatch(style::tag_hue(t))
-        };
-        let keys = unsafe { [objc2_app_kit::NSForegroundColorAttributeName, objc2_app_kit::NSFontAttributeName] };
-        let vals: [Retained<objc2::runtime::AnyObject>; 2] = [
-            Retained::into_super(Retained::into_super(color)),
-            Retained::into_super(Retained::into_super(font.clone())),
-        ];
-        let attrs = NSDictionary::from_retained_objects(&keys, &vals);
-        let a = unsafe {
-            NSAttributedString::initWithString_attributes(
-                NSAttributedString::alloc(),
-                &NSString::from_str(&piece),
-                Some(&attrs),
-            )
-        };
-        out.appendAttributedString(&a);
-    }
-    let _ = joined;
-    label.setAttributedStringValue(&out);
+    const D: f64 = 12.0;
+    const STEP: f64 = 8.0;
+    let colors: Vec<Retained<objc2_app_kit::NSColor>> =
+        tags.iter().take(6).map(|t| style::swatch(style::tag_hue(t))).collect();
+    let rim = style::text(hue).colorWithAlphaComponent(0.35);
+    let n = colors.len();
+    let width = D + STEP * (n as f64 - 1.0);
+    let block = block2::RcBlock::new(move |_rect: NSRect| {
+        // From the last to the first, so the first lies on top.
+        for i in (0..n).rev() {
+            let r = NSRect::new(NSPoint::new(1.0 + STEP * i as f64, 1.0), NSSize::new(D, D));
+            // The cut-out: a little wider than the dot, clearing what lies under it.
+            if i + 1 < n {
+                if let Some(ctx) = objc2_app_kit::NSGraphicsContext::currentContext() {
+                    ctx.saveGraphicsState();
+                    ctx.setCompositingOperation(objc2_app_kit::NSCompositingOperation::Clear);
+                    let cut = NSRect::new(
+                        NSPoint::new(r.origin.x - 1.5, r.origin.y - 1.5),
+                        NSSize::new(D + 3.0, D + 3.0),
+                    );
+                    objc2_app_kit::NSBezierPath::bezierPathWithOvalInRect(cut).fill();
+                    ctx.restoreGraphicsState();
+                }
+            }
+            colors[i].setFill();
+            let dot = objc2_app_kit::NSBezierPath::bezierPathWithOvalInRect(r);
+            dot.fill();
+            rim.setStroke();
+            dot.setLineWidth(0.75);
+            dot.stroke();
+        }
+        objc2::runtime::Bool::YES
+    });
+    let image = objc2_app_kit::NSImage::imageWithSize_flipped_drawingHandler(
+        NSSize::new(width + 2.0, D + 2.0),
+        false,
+        &block,
+    );
+    view.setImage(Some(&image));
+    view.setToolTip(Some(&NSString::from_str(&tags.join(", "))));
 }
 
 pub(crate) fn refresh_title(label: &NSTextField) {
@@ -3505,8 +3554,8 @@ impl CardPreview {
     }
 
     fn face_for(mtm: MainThreadMarker, id: TaskId, title: &str, hue: usize) -> Retained<FlippedView> {
-        let Face { content, time, .. } = card_face(mtm, id, title, hue);
-        set_tags(&time, &["дизайн".to_string()], false);
+        let Face { content, dots, .. } = card_face(mtm, id, title, hue);
+        set_tag_dots(&dots, &["дизайн".to_string()], hue);
         content
     }
 

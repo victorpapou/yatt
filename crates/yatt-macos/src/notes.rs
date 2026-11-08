@@ -455,6 +455,17 @@ impl NotesEditor {
         }
     }
 
+    /// A handle to look at the editor later without keeping it alive.
+    pub fn weak_view(&self) -> impl Fn() -> Option<(Retained<NSScrollView>, f64)> + 'static {
+        let weak = objc2::rc::Weak::from_retained(&self.view);
+        let text = objc2::rc::Weak::from_retained(&self.text);
+        move || {
+            let view = weak.load()?;
+            let text = text.load()?;
+            Some((view, content_height_of(&text)))
+        }
+    }
+
     /// The text's margins inside the view (the lines start flush with them).
     pub fn set_inset(&self, size: NSSize) {
         self.text.setTextContainerInset(size);
@@ -608,6 +619,13 @@ impl NotesEditor {
         } else {
             eprintln!("editor: no box {k} ({} boxes)", self.state.hits.borrow().len());
         }
+    }
+
+    /// Development aid: where the scroll view and the text sit.
+    pub fn debug_geometry(&self) -> String {
+        let clip = self.view.contentView().bounds();
+        let tf = self.text.frame();
+        format!("clip origin y {:.1} h {:.1}; text frame y {:.1} h {:.1}; content_height {:.1}; view h {:.1}", clip.origin.y, clip.size.height, tf.origin.y, tf.size.height, self.content_height(), self.view.frame().size.height)
     }
 
     /// Development aid: what the editor holds.
@@ -1355,6 +1373,26 @@ fn place_bullets(
             l.setFrame(frame);
             l.setBackgroundColor(Some(&ink.CGColor()));
         });
+    }
+}
+
+/// The room the text of `text` takes, insets included.
+fn content_height_of(text: &NSTextView) -> f64 {
+    let (Some(lm), Some(container)) = (unsafe { text.layoutManager() }, unsafe { text.textContainer() }) else {
+        return 0.0;
+    };
+    unsafe { lm.ensureLayoutForTextContainer(&container) };
+    let used = unsafe { lm.usedRectForTextContainer(&container) };
+    let extra = unsafe { lm.extraLineFragmentRect() };
+    (used.origin.y + used.size.height).max(extra.origin.y + extra.size.height)
+        + 2.0 * text.textContainerInset().height
+}
+
+/// Shows the text of the scroll view from its top when it fits `h` (its frame).
+pub(crate) fn keep_in_view_of(view: &NSScrollView, content_h: f64) {
+    if content_h <= view.frame().size.height + 0.5 {
+        view.contentView().scrollToPoint(NSPoint::ZERO);
+        view.reflectScrolledClipView(&view.contentView());
     }
 }
 
