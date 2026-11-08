@@ -621,6 +621,32 @@ mod tests {
     }
 
     #[test]
+    fn time_entries_can_be_added_edited_deleted_and_undone() {
+        let mut f = Fixture::new();
+        let a = f.task("a", Status::Backlog);
+        let t = |s: i64| Timestamp::from_second(1_800_000_000 + s).unwrap();
+        f.engine.add_entry(a, t(0), t(600));
+        assert_eq!(f.total(a), 600_000);
+        let id = f.engine.entries(a)[0].id.clone();
+        f.engine.edit_entry(&id, t(0), t(1200));
+        assert_eq!(f.total(a), 1_200_000);
+        f.engine.delete_entry(&id);
+        assert_eq!(f.total(a), 0);
+        f.engine.undo(); // the delete
+        assert_eq!(f.total(a), 1_200_000);
+        f.engine.undo(); // the edit
+        assert_eq!(f.total(a), 600_000);
+        f.engine.redo();
+        assert_eq!(f.total(a), 1_200_000);
+        f.engine.undo();
+        f.engine.undo(); // the add
+        assert_eq!(f.total(a), 0);
+        // An entry ending before it starts is refused.
+        f.engine.add_entry(a, t(100), t(50));
+        assert!(f.engine.entries(a).is_empty());
+    }
+
+    #[test]
     fn done_closes_entry_and_undo_resumes_it() {
         let mut f = Fixture::new();
         let a = f.task("a", Status::InProgress);

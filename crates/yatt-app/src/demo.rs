@@ -55,6 +55,23 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
         };
 
         wait(600).await;
+        // `YATT_DEMO_CAPGROW=1`: lines typed into the capsule one by one, the
+        // capsule sampled every 8 ms for 450 ms after each.
+        if std::env::var_os("YATT_DEMO_CAPGROW").is_some() {
+            let mut text = String::new();
+            for line in 0..4 {
+                if line > 0 {
+                    text.push('\n');
+                }
+                text.push_str(&format!("строка {line}"));
+                window.demo_capsule_text(&text);
+                for f in 0..56 {
+                    eprintln!("capgrow,{line},{f},{}", window.demo_capsule_probe());
+                    wait(8).await;
+                }
+            }
+            return;
+        }
         if std::env::var_os("YATT_DEMO_COMPARE").is_some() {
             // The reference clip's actions, frame by frame at a fixed 1/60 s:
             // each action 50 frames, a layer capture and a CSV line per frame

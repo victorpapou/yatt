@@ -1193,6 +1193,29 @@ impl MainWindow {
         self.ui.submit_new_task(in_progress);
     }
 
+    /// Development aid: one sample of the capsule while it grows, from the
+    /// presentation layers (what is on screen), in the window's coordinates:
+    /// the capsule's edges, the first text line's, and their distances.
+    pub fn demo_capsule_probe(&self) -> String {
+        use objc2_quartz_core::CALayer;
+        let pres = |l: &CALayer| unsafe { l.presentationLayer() }.unwrap_or_else(|| objc2::Message::retain(l));
+        let Some(root) = self.ui.root.layer() else { return "no root layer".into() };
+        let root = pres(&root);
+        let Some(cl) = self.ui.capsule.layer() else { return "no capsule layer".into() };
+        let cap = pres(&cl).convertRect_toLayer(self.ui.capsule.bounds(), Some(&root));
+        let Some((line, tl)) = self.ui.new_task.debug_first_line() else { return "no text".into() };
+        let ln = pres(&tl).convertRect_toLayer(line, Some(&root));
+        format!(
+            "cap y {:.2}..{:.2} line y {:.2}..{:.2} d_min {:.2} d_max {:.2}",
+            cap.origin.y,
+            cap.origin.y + cap.size.height,
+            ln.origin.y,
+            ln.origin.y + ln.size.height,
+            ln.origin.y - cap.origin.y,
+            (cap.origin.y + cap.size.height) - (ln.origin.y + ln.size.height),
+        )
+    }
+
     /// Development aid: prints the notes editor's rendered HTML to stderr.
     pub fn demo_capsule_text(&self, text: &str) {
         self.ui.new_task.set_text(text);
@@ -2039,6 +2062,7 @@ impl Ui {
                             x.total_ms = y.total_ms;
                             x.today_ms = y.today_ms;
                             x.entries = y.entries.clone();
+                            x.log = y.log.clone();
                             x == *y
                         })
                 })
@@ -2601,9 +2625,9 @@ impl Header {
                     continue;
                 }
                 let d = &digits[i];
-                // Diagnostic: with YATT_NO_DIGIT_ANIM set the digit just changes, to
-                // tell whether the toolbar line's flicker comes from the animation.
-                if std::env::var_os("YATT_NO_DIGIT_ANIM").is_some() {
+                // In the toolbar the digit just changes: animated layers there made
+                // the toolbar's separator line flicker on every change (measured).
+                if !self.minimal.get() {
                     d.setStringValue(&NSString::from_str(&ch.to_string()));
                     continue;
                 }

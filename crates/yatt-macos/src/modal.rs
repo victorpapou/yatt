@@ -53,6 +53,9 @@ pub struct Modal {
     /// The time entries' one line, and every entry, as written.
     times: Retained<NSButton>,
     all_entries: Rc<RefCell<Vec<String>>>,
+    /// The open task's time log, for the time editor.
+    log: Rc<RefCell<(Option<TaskId>, Vec<crate::model::LogEntry>)>>,
+    time_editor: Rc<crate::timeedit::TimeEditor>,
     look: Retained<NSButton>,
     picker: Rc<Picker>,
     /// The open task's colour.
@@ -216,14 +219,24 @@ impl Modal {
         // The time entries: one quiet line; a click lists them to copy, one or
         // all, exactly as written. A menu, so it scrolls however many there are.
         let all_entries: Rc<RefCell<Vec<String>>> = Rc::default();
+        let log: Rc<RefCell<(Option<TaskId>, Vec<crate::model::LogEntry>)>> = Rc::default();
+        let time_editor = crate::timeedit::TimeEditor::new(mtm, sink);
         let times = {
             let entries = all_entries.clone();
+            let (log, editor) = (log.clone(), time_editor.clone());
             let slot: Rc<RefCell<Option<Retained<NSButton>>>> = Rc::default();
             let anchor = slot.clone();
             let target = ActionTarget::new(mtm, move || {
                 let list = entries.borrow().clone();
                 if let Some(b) = anchor.borrow().as_ref() {
-                    copy_menu(mtm, b, &list);
+                    // A click edits the time; with Option held it copies instead.
+                    let option = objc2_app_kit::NSEvent::modifierFlags_class()
+                        .contains(objc2_app_kit::NSEventModifierFlags::Option);
+                    if option {
+                        copy_menu(mtm, b, &list);
+                    } else if let (Some(id), l) = &*log.borrow() {
+                        editor.show(b, *id, l);
+                    }
                 }
             });
             let b = unsafe {
@@ -240,7 +253,7 @@ impl Modal {
                 12.0,
                 unsafe { NSFontWeightRegular },
             )));
-            b.setToolTip(Some(ns_string!("Скопировать время")));
+            b.setToolTip(Some(ns_string!("Изменить время (с ⌥ — скопировать)")));
             *slot.borrow_mut() = Some(b.clone());
             retained.push(Retained::into_super(Retained::into_super(target)));
             b
@@ -307,6 +320,8 @@ impl Modal {
             editor_clip,
             times,
             all_entries,
+            log,
+            time_editor,
             look,
             picker,
             hue: Cell::new(0),
@@ -622,6 +637,8 @@ impl Modal {
         self.times
             .setContentTintColor(Some(&NSColor::secondaryLabelColor()));
         *self.all_entries.borrow_mut() = snap.entries.clone();
+        *self.log.borrow_mut() = (Some(snap.id), snap.log.clone());
+        self.time_editor.refresh(snap.id, &snap.log);
     }
 }
 

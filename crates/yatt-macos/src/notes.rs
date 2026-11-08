@@ -628,6 +628,16 @@ impl NotesEditor {
         format!("clip origin y {:.1} h {:.1}; text frame y {:.1} h {:.1}; content_height {:.1}; view h {:.1}", clip.origin.y, clip.size.height, tf.origin.y, tf.size.height, self.content_height(), self.view.frame().size.height)
     }
 
+    /// Development aid: the first text line's rectangle, in the text view's
+    /// coordinates, and the text view's layer.
+    pub fn debug_first_line(&self) -> Option<(NSRect, Retained<objc2_quartz_core::CALayer>)> {
+        let lm = unsafe { self.text.layoutManager() }?;
+        let r = unsafe { lm.lineFragmentRectForGlyphAtIndex_effectiveRange(0, std::ptr::null_mut()) };
+        let o = self.text.textContainerOrigin();
+        let rect = NSRect::new(NSPoint::new(r.origin.x + o.x, r.origin.y + o.y), r.size);
+        Some((rect, self.text.layer()?))
+    }
+
     /// Development aid: what the editor holds.
     pub fn debug_print_html(&self) {
         eprintln!("editor: {}", self.text.string());
