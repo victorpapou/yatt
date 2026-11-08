@@ -200,6 +200,42 @@ impl FlippedView {
     }
 }
 
+pub struct PanelIvars {
+    pub on_layout: RefCell<Option<Box<dyn Fn()>>>,
+}
+
+define_class!(
+    /// The inspector's content view: flipped, tells its owner when it is resized.
+    // SAFETY: NSView has no subclassing requirements; no Drop impl.
+    #[unsafe(super(NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = PanelIvars]
+    pub struct PanelView;
+
+    impl PanelView {
+        #[unsafe(method(isFlipped))]
+        fn is_flipped(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(resizeSubviewsWithOldSize:))]
+        fn resize_subviews(&self, _old: objc2_foundation::NSSize) {
+            if let Some(f) = self.ivars().on_layout.borrow().as_ref() {
+                f();
+            }
+        }
+    }
+);
+
+impl PanelView {
+    pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(PanelIvars {
+            on_layout: RefCell::new(None),
+        });
+        unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] }
+    }
+}
+
 /// The standard edit commands as they reach the board: from the Edit menu (or
 /// its shortcuts) when no text field is editing, and Delete/Backspace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -225,12 +261,18 @@ pub struct RootIvars {
     pub on_appearance: RefCell<Option<Box<dyn Fn()>>>,
 }
 
+pub struct SplitIvars {
+    /// Called after every layout pass of the split view (its items' frames moved).
+    pub on_layout: RefCell<Option<Box<dyn Fn()>>>,
+}
+
 define_class!(
-    /// The board's three columns side by side with no divider of their own (the
-    /// board draws its fading lines) and nothing to drag.
+    /// The board's columns and the inspector side by side with no divider of
+    /// their own (the board draws its fading lines) and nothing to drag.
     // SAFETY: NSSplitView has no subclassing requirements; no Drop impl.
     #[unsafe(super(objc2_app_kit::NSSplitView, NSView, NSResponder, NSObject))]
     #[thread_kind = MainThreadOnly]
+    #[ivars = SplitIvars]
     pub struct ColumnsSplit;
 
     impl ColumnsSplit {
@@ -241,12 +283,22 @@ define_class!(
 
         #[unsafe(method(drawDividerInRect:))]
         fn draw_divider(&self, _rect: NSRect) {}
+
+        #[unsafe(method(layout))]
+        fn layout(&self) {
+            let _: () = unsafe { msg_send![super(self), layout] };
+            if let Some(f) = self.ivars().on_layout.borrow().as_ref() {
+                f();
+            }
+        }
     }
 );
 
 impl ColumnsSplit {
     pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(());
+        let this = Self::alloc(mtm).set_ivars(SplitIvars {
+            on_layout: RefCell::new(None),
+        });
         unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] }
     }
 }

@@ -72,6 +72,10 @@ const TOOLBAR_H: f64 = 40.0;
 const RING_D_MINI: f64 = 34.0;
 const RING_LINE: f64 = 3.0;
 const PAD: f64 = 16.0;
+/// A column never gets narrower than this; the window grows for the inspector.
+const COLUMN_MIN_W: f64 = 240.0;
+/// The inspector's width.
+const INSPECTOR_W: f64 = 340.0;
 /// Column chips: height and distance from the top of the board.
 const CHIP_H: f64 = 16.0;
 const CHIP_TOP: f64 = 4.0;
@@ -130,6 +134,14 @@ struct Ui {
     new_task: Retained<NSTextField>,
     cards: Rc<Board>,
     modal: Modal,
+    /// The inspector pane on the right: the open task.
+    inspector: Retained<objc2_app_kit::NSSplitViewItem>,
+    /// The toolbar items of the inspector's section.
+    inspector_items: Vec<Retained<NSToolbarItem>>,
+    /// How much the window grew to make room for the inspector.
+    grew: Cell<f64>,
+    /// Set once the `Ui` exists, for the toolbar items' actions.
+    _inspector_ui: Rc<RefCell<Option<std::rc::Weak<Ui>>>>,
     minimal: Cell<bool>,
     /// The window frame to go back to when leaving minimal mode.
     saved_frame: Cell<NSRect>,
@@ -212,10 +224,9 @@ impl MainWindow {
         window.setOpaque(true);
         window.setBackgroundColor(Some(&NSColor::textBackgroundColor()));
         let root = RootView::new(mtm, frame);
-        root.setAutoresizingMask(
-            NSAutoresizingMaskOptions::ViewWidthSizable
-                | NSAutoresizingMaskOptions::ViewHeightSizable,
-        );
+        // The board's width follows the inspector (`Ui::fit_root`): only the
+        // height is automatic.
+        root.setAutoresizingMask(NSAutoresizingMaskOptions::ViewHeightSizable);
         // The content comes from a view controller: the columns are the items of
         // a split-view controller, as in Finder.
         let root_vc = objc2_app_kit::NSViewController::new(mtm);
@@ -348,6 +359,43 @@ impl MainWindow {
             NSToolbar::initWithIdentifier(NSToolbar::alloc(mtm), ns_string!("yatt.toolbar"));
         // … [digits] … [Старт] [Секундомер] [Пропустить] [Стоп] [▤ ⤡]
         let bar = &header.bar;
+        let inspector_ui: Rc<RefCell<Option<std::rc::Weak<Ui>>>> = Rc::new(RefCell::new(None));
+        // The inspector's own section of the toolbar (right of the inspector's
+        // tracking separator): palette, trash, close. Hidden while it is shut.
+        let inspector_items: Vec<Retained<NSToolbarItem>> = [
+            ("yatt.look", "paintpalette", "Цвет, иконка, статус"),
+            ("yatt.trash", "trash", "Удалить (⌘Z вернёт)"),
+            ("yatt.closeTask", "xmark", "Закрыть (esc)"),
+        ]
+        .iter()
+        .enumerate()
+        .map(|(i, (id, sym, tip))| {
+            let item = NSToolbarItem::initWithItemIdentifier(
+                NSToolbarItem::alloc(mtm),
+                &NSString::from_str(id),
+            );
+            item.setLabel(&NSString::from_str(tip));
+            item.setToolTip(Some(&NSString::from_str(tip)));
+            item.setImage(symbol(sym, tip).as_deref());
+            let weak = inspector_ui.clone();
+            let target = ActionTarget::new(mtm, move || {
+                if let Some(ui) = weak.borrow().as_ref().and_then(|w| w.upgrade()) {
+                    match i {
+                        0 => ui.modal.toggle_picker(),
+                        1 => ui.modal.delete_open(),
+                        _ => ui.modal.close_open(),
+                    }
+                }
+            });
+            unsafe {
+                item.setTarget(Some(&target));
+                item.setAction(Some(ActionTarget::sel()));
+            }
+            item.setHidden(true);
+            retained.push(Retained::into_super(Retained::into_super(target)));
+            item
+        })
+        .collect();
         let items: Vec<Retained<NSToolbarItem>> = vec![
             timer_item.clone(),
             bar.start.clone(),
@@ -359,6 +407,9 @@ impl MainWindow {
             Retained::into_super(search_item.clone()),
             seps[0].clone(),
             seps[1].clone(),
+            inspector_items[0].clone(),
+            inspector_items[1].clone(),
+            inspector_items[2].clone(),
         ];
         // The toolbar gives neighbouring items one shared bubble; a fixed space
         // between two items gives each its own.
@@ -368,6 +419,8 @@ impl MainWindow {
         // The timer in the middle of the toolbar (a centred item, so it stays
         // there as the window resizes), the controls on the right.
         let space2 = space.clone();
+        let (space3, space4) = (space.clone(), space.clone());
+        let flexible2 = flexible.clone();
         let order: Vec<Retained<NSString>> = vec![
             id(&items[8]),
             flexible.clone(),
@@ -386,6 +439,13 @@ impl MainWindow {
             id(&items[5]),
             space2,
             id(&items[7]),
+            unsafe { objc2_app_kit::NSToolbarInspectorTrackingSeparatorItemIdentifier }.copy(),
+            flexible2,
+            id(&items[10]),
+            space3,
+            id(&items[11]),
+            space4,
+            id(&items[12]),
         ];
         let order = if crate::model::MINIMAL_MODE {
             [order, vec![id(&items[6])]].concat()
@@ -405,6 +465,7 @@ impl MainWindow {
         let columns = [0, 1, 2].map(|i| Column::new(mtm, i));
         let split_vc = objc2_app_kit::NSSplitViewController::new(mtm);
         split_vc.setSplitView(&split_view);
+        let modal = Modal::new(mtm, &sink);
         // Created before its cards: each column's scroll view goes into the
         // column's own view controller (the canvas and the chips float over them).
         let cards = {
@@ -425,9 +486,25 @@ impl MainWindow {
             vc.setView(&c.view);
             let item = objc2_app_kit::NSSplitViewItem::splitViewItemWithViewController(&vc);
             item.setCanCollapse(false);
-            item.setMinimumThickness(120.0);
+            item.setMinimumThickness(COLUMN_MIN_W);
+            item.setPreferredThicknessFraction(1.0 / 3.0);
             split_vc.addSplitViewItem(&item);
         }
+        // The open task lives in an inspector pane on the right, as in Calendar:
+        // collapsed until a card is opened.
+        let inspector = {
+            let vc = objc2_app_kit::NSViewController::new(mtm);
+            vc.setView(&modal.panel);
+            let item = objc2_app_kit::NSSplitViewItem::inspectorWithViewController(&vc);
+            item.setMinimumThickness(INSPECTOR_W);
+            item.setMaximumThickness(640.0);
+            item.setPreferredThicknessFraction(0.0);
+            item.setCanCollapse(true);
+            item.setCollapsed(true);
+            split_vc.addSplitViewItem(&item);
+            unsafe { retained.push(Retained::cast_unchecked::<AnyObject>(vc)) };
+            item
+        };
         // The split-view controller is the window's own content controller, as in
         // Finder, so the toolbar knows the three columns and gives each one its
         // scroll edge effect. Everything else (board, modal) lies over it in
@@ -438,6 +515,23 @@ impl MainWindow {
         window.setToolbarStyle(NSWindowToolbarStyle::Unified);
         window.setContentViewController(Some(&split_vc));
         split_vc.view().layoutSubtreeIfNeeded();
+        // The three columns always share the board equally: equal widths, firmer
+        // than the split view's own holding priorities.
+        for i in 1..3 {
+            let c = unsafe {
+                objc2_app_kit::NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+                    &columns[i].view,
+                    objc2_app_kit::NSLayoutAttribute::Width,
+                    objc2_app_kit::NSLayoutRelation::Equal,
+                    Some(&columns[0].view),
+                    objc2_app_kit::NSLayoutAttribute::Width,
+                    1.0,
+                    0.0,
+                )
+            };
+            c.setPriority(900.0);
+            c.setActive(true);
+        }
         root.setFrame(split_view.bounds());
         split_view.addSubview(&root);
         unsafe {
@@ -482,9 +576,6 @@ impl MainWindow {
                 layer.setZPosition(z);
             }
         }
-        let modal = Modal::new(mtm, &sink);
-        root.addSubview(&modal.dim);
-        root.addSubview(&modal.panel);
 
         let ui = Rc::new(Ui {
             mtm,
@@ -507,6 +598,10 @@ impl MainWindow {
             new_task,
             cards,
             modal,
+            inspector,
+            inspector_items,
+            grew: Cell::new(0.0),
+            _inspector_ui: inspector_ui.clone(),
             minimal: Cell::new(false),
             saved_frame: Cell::new(NSRect::ZERO),
             last: RefCell::new(None),
@@ -514,6 +609,7 @@ impl MainWindow {
             _retained: RefCell::new(retained),
         });
         *tint_target.borrow_mut() = Some(Rc::downgrade(&ui));
+        *inspector_ui.borrow_mut() = Some(Rc::downgrade(&ui));
         Ui::wire(&ui);
 
         // The red button hides the window (the app and its timer keep running; the
@@ -944,6 +1040,25 @@ impl Ui {
                 }
             }
         }));
+        // The board is what the inspector leaves: follow the split view's and the
+        // inspector's frames (the pane animates open and shut).
+        *this.modal.panel.ivars().on_layout.borrow_mut() = Some(Box::new({
+            let weak = weak.clone();
+            move || {
+                if let Some(ui) = weak.upgrade() {
+                    ui.modal.layout(ui.top_inset.get());
+                }
+            }
+        }));
+        *this._split_view.ivars().on_layout.borrow_mut() = Some(Box::new({
+            let weak = weak.clone();
+            move || {
+                if let Some(ui) = weak.upgrade() {
+                    ui.fit_root();
+                }
+            }
+        }));
+        this.fit_root();
         *this.root.ivars().on_key.borrow_mut() = Some(Box::new({
             let weak = weak.clone();
             move |event: &NSEvent| weak.upgrade().is_some_and(|ui| ui.key_down(event))
@@ -1179,7 +1294,7 @@ impl Ui {
     fn layout(&self) {
         let bounds = self.root.bounds();
         let size = bounds.size;
-        self.modal.layout(bounds);
+        self.modal.layout(self.top_inset.get());
         if self.minimal.get() {
             self.header.view.setFrame(NSRect::new(NSPoint::ZERO, size));
             self.header.layout(size.width, size.height);
@@ -1287,7 +1402,7 @@ impl Ui {
             self.root.addSubview_positioned_relativeTo(
                 &self.header.view,
                 NSWindowOrderingMode::Below,
-                Some(&self.modal.dim),
+                None,
             );
             self.header.reset_clock();
             self.window
@@ -1414,37 +1529,78 @@ impl Ui {
             }
             return;
         }
-        if let Some(id) = open {
-            let to = self.card_rect_in_root(id);
-            // The panel shrinks back onto the card with the card's text on it; the
-            // card itself shows again when the panel lies exactly on it.
-            let weak = Rc::downgrade(self);
-            self.modal.close(to, self.cards.card_angle(id), move || {
-                if let Some(ui) = weak.upgrade() {
-                    ui.cards.set_hidden(None);
-                }
-            });
+        if open.is_some() {
+            // Saves the typed title and notes of the task being left.
+            self.modal.close();
             self.window.makeFirstResponder(Some(&self.root));
         }
-        if let Some((card, status)) = want.and_then(find) {
-            let from = self
-                .card_rect_in_root(card.id)
-                .unwrap_or_else(|| Modal::target_frame(self.root.bounds()));
-            self.cards.set_hidden(Some(card.id));
-            let deg = self.cards.card_angle(card.id);
-            self.modal
-                .open(&card, status, from, deg, self.root.bounds());
+        match want.and_then(find) {
+            Some((card, status)) => {
+                self.modal.open(&card, status);
+                self.set_inspector(true);
+            }
+            None => self.set_inspector(false),
         }
     }
 
-    /// Where a card is on screen, in the root view's coordinates.
-    fn card_rect_in_root(&self, id: TaskId) -> Option<NSRect> {
-        let rect = self.cards.card_rect(id)?;
-        Some(
-            self.root
-                .convertRect_fromView(rect, Some(&self.cards.canvas)),
-        )
+    /// Slides the inspector pane open or shut (the split item's own animation,
+    /// the board narrowing as it goes); the content fades with it.
+    fn set_inspector(&self, show: bool) {
+        if self.inspector.isCollapsed() != show {
+            return;
+        }
+        // Room for it: the window grows by what the three columns lack (and
+        // shrinks back when it closes), the way Shortcuts' window does.
+        let frame = self.window.frame();
+        let mut target = frame;
+        if show {
+            let need = 3.0 * COLUMN_MIN_W + INSPECTOR_W + 3.0;
+            let grow = (need - frame.size.width).max(0.0);
+            self.grew.set(grow);
+            target.size.width += grow;
+        } else {
+            target.size.width = (frame.size.width - self.grew.replace(0.0)).max(0.0);
+        }
+        let min = if show {
+            (3.0 * COLUMN_MIN_W + INSPECTOR_W + 3.0).max(760.0)
+        } else {
+            760.0
+        };
+        self.window.setMinSize(NSSize::new(min, 480.0));
+        for item in &self.inspector_items {
+            item.setHidden(!show);
+        }
+        let item = self.inspector.clone();
+        let window = self.window.clone();
+        animate(true, 0.3, move || {
+            if target != frame {
+                window.animator().setFrame_display(target, true);
+            }
+            item.animator().setCollapsed(!show);
+        });
     }
+
+    /// The board is what is left of the split view left of the inspector.
+    fn fit_root(&self) {
+        let split = self._split_view.bounds().size;
+        // The pane's view sits in a wrapper of the split item: its place is read
+        // in the split view's own coordinates.
+        let on_screen = unsafe { self.modal.panel.superview() }.is_some()
+            && !self.modal.panel.isHidden();
+        let w = if on_screen {
+            let r = self
+                ._split_view
+                .convertRect_fromView(self.modal.panel.bounds(), Some(&self.modal.panel));
+            r.origin.x.clamp(0.0, split.width)
+        } else {
+            split.width
+        };
+        let frame = NSRect::new(NSPoint::ZERO, NSSize::new(w.round(), split.height));
+        if self.root.frame() != frame {
+            self.root.setFrame(frame);
+        }
+    }
+
 }
 
 impl Header {

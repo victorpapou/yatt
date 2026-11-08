@@ -291,6 +291,12 @@ pub fn column_color(i: usize) -> Retained<NSColor> {
     }
 }
 
+/// The notes editor's ink on the window's own background: near-black in light,
+/// near-white in dark, so the text reads at full contrast.
+pub fn editor_ink_css() -> String {
+    if dark() { "#f5f5f7" } else { "#1d1d1f" }.to_string()
+}
+
 /// The card's text colour as CSS, for the notes editor.
 pub fn text_css(hue: usize) -> String {
     let (r, g, b) = palette()[hue % HUES.len()].1;
