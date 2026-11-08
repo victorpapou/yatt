@@ -278,7 +278,8 @@ struct Card {
     icon: Retained<NSView>,
     time: Retained<NSTextField>,
     title: Retained<NSTextField>,
-    tags: Retained<NSTextField>,
+    /// The tags the meta line shows (it is redrawn in a new colour with them).
+    tag_names: Vec<String>,
     label: Retained<NSTextField>,
     /// "3 задачи" under the label while leading a group drag.
     count: Retained<NSTextField>,
@@ -1299,7 +1300,6 @@ impl Board {
             icon,
             time,
             title,
-            tags,
         } = card_face(mtm, snap.id, &snap.title, hue);
         content.setAutoresizingMask(fill_mask);
 
@@ -1355,7 +1355,7 @@ impl Board {
             icon,
             time,
             title,
-            tags,
+            tag_names: snap.tags.clone(),
             label,
             count,
             hue,
@@ -2748,8 +2748,8 @@ impl Card {
             self.restyle();
         }
         set_title(&self.title, &snap.title);
-        set_tags(&self.tags, &snap.tags);
-        set_meta(&self.time, &time_text(snap));
+        self.tag_names = snap.tags.clone();
+        set_tags(&self.time, &snap.tags, snap.tracking);
         self.tracking = snap.tracking;
         self.refill();
     }
@@ -2764,7 +2764,7 @@ impl Card {
             self.time
                 .setTextColor(Some(&ink.colorWithAlphaComponent(0.5)));
             refresh_title(&self.title);
-            refresh_meta(&self.time);
+            set_tags(&self.time, &self.tag_names, self.tracking);
             self.label.setTextColor(Some(&ink));
             self.count
                 .setTextColor(Some(&ink.colorWithAlphaComponent(0.7)));
@@ -3094,8 +3094,6 @@ pub(crate) struct Face {
     pub icon: Retained<NSView>,
     pub time: Retained<NSTextField>,
     pub title: Retained<NSTextField>,
-    /// The task's tags, in their colours, beside the glyph.
-    pub tags: Retained<NSTextField>,
 }
 
 /// A task's fixed random seed (its id's random tail).
@@ -3145,15 +3143,7 @@ pub(crate) fn card_face(mtm: MainThreadMarker, id: TaskId, title: &str, hue: usi
     set_title(&title_label, title);
     let title = title_label;
 
-    // Tags: a row of their own, beside the glyph, small like the meta line.
-    let tags = text_label(mtm, "", 11.0, unsafe { NSFontWeightMedium });
-    tags.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
-    tags.setFrame(NSRect::new(
-        NSPoint::new(TEXT_X + 30.0, 18.0),
-        NSSize::new(CARD_W - 2.0 * TEXT_X - 30.0, 14.0),
-    ));
-
-    for v in [&*icon as &NSView, &time, &title, &tags] {
+    for v in [&*icon as &NSView, &time, &title] {
         content.addSubview(v);
     }
     Face {
@@ -3161,7 +3151,6 @@ pub(crate) fn card_face(mtm: MainThreadMarker, id: TaskId, title: &str, hue: usi
         icon,
         time,
         title,
-        tags,
     }
 }
 
@@ -3218,19 +3207,30 @@ pub(crate) fn set_meta(label: &NSTextField, text: &str) {
 }
 
 /// The tags' names (no «#»), each in its own colour, one space between.
-pub(crate) fn set_tags(label: &NSTextField, tags: &[String]) {
+pub(crate) fn set_tags(label: &NSTextField, tags: &[String], tracking: bool) {
     use objc2::AnyThread;
     use objc2_foundation::{NSAttributedString, NSDictionary, NSMutableAttributedString};
     let joined = tags.join("  ");
     let out = NSMutableAttributedString::new();
-    let font = NSFont::systemFontOfSize_weight(11.0, unsafe { NSFontWeightMedium });
+    // The meta line's own font: small, medium, digits tabular.
+    let font = NSFont::monospacedDigitSystemFontOfSize_weight(11.0, unsafe { NSFontWeightMedium });
+    let mut tags_shown: Vec<String> = Vec::new();
+    if tracking {
+        tags_shown.push("●".to_string());
+    }
+    tags_shown.extend(tags.iter().cloned());
+    let tags = &tags_shown[..];
     for (i, t) in tags.iter().enumerate() {
         let piece = if i + 1 < tags.len() {
             format!("{t}  ")
         } else {
             t.clone()
         };
-        let color = style::swatch(style::tag_hue(t));
+        let color = if tracking && i == 0 {
+            style::text(0).colorWithAlphaComponent(0.8)
+        } else {
+            style::swatch(style::tag_hue(t))
+        };
         let keys = unsafe { [objc2_app_kit::NSForegroundColorAttributeName, objc2_app_kit::NSFontAttributeName] };
         let vals: [Retained<objc2::runtime::AnyObject>; 2] = [
             Retained::into_super(Retained::into_super(color)),
@@ -3338,7 +3338,7 @@ impl CardPreview {
 
     fn face_for(mtm: MainThreadMarker, id: TaskId, title: &str, hue: usize) -> Retained<FlippedView> {
         let Face { content, time, .. } = card_face(mtm, id, title, hue);
-        set_meta(&time, "0:00:00");
+        set_tags(&time, &["дизайн".to_string()], false);
         content
     }
 
