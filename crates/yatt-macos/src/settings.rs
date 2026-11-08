@@ -392,20 +392,8 @@ impl DemoCard {
         })));
         title.setFrame(NSRect::new(NSPoint::new(16.0, 16.0), NSSize::new(168.0, 18.0)));
         content.addSubview(&title);
-        let tag = NSTextField::labelWithString(ns_string!("дизайн"), mtm);
-        tag.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize_weight(11.5, unsafe {
-            objc2_app_kit::NSFontWeightMedium
-        })));
-        tag.setAlignment(NSTextAlignment::Center);
-        tag.setWantsLayer(true);
-        if let Some(layer) = tag.layer() {
-            layer.setCornerRadius(10.0);
-            layer.setBackgroundColor(Some(
-                &style::swatch(style::tag_hue("дизайн")).colorWithAlphaComponent(0.18).CGColor(),
-            ));
-        }
-        tag.setTextColor(Some(&style::swatch(style::tag_hue("дизайн"))));
-        tag.setFrame(NSRect::new(NSPoint::new(16.0, 46.0), NSSize::new(66.0, 20.0)));
+        let tag = crate::tags::badge(mtm, "дизайн");
+        tag.setFrame(NSRect::new(NSPoint::new(16.0, 46.0), tag.frame().size));
         content.addSubview(&tag);
         // The glass hosts the content when it is the system's; else it lies under.
         if let Some(g) = glass.downcast_ref::<objc2_app_kit::NSGlassEffectView>() {
@@ -642,23 +630,12 @@ impl SettingsWindow {
                     // The tag as its capsule, in its colour now, on the left.
                     let mut row = control_row(mtm, "", None, &p);
                     row.views.remove(0);
-                    let cap = NSTextField::labelWithString(&NSString::from_str(tag), mtm);
-                    cap.setAlignment(NSTextAlignment::Center);
-                    cap.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize(12.0)));
-                    cap.setWantsLayer(true);
-                    if let Some(layer) = cap.layer() {
-                        layer.setCornerRadius(10.0);
-                        layer.setBackgroundColor(Some(
-                            &style::swatch(style::tag_hue(tag)).colorWithAlphaComponent(0.18).CGColor(),
-                        ));
-                        cap.setTextColor(Some(&style::swatch(style::tag_hue(tag))));
-                    }
-                    let w = (cap.fittingSize().width + 18.0).min(240.0);
+                    let cap = crate::tags::badge(mtm, tag);
                     cap.setFrame(NSRect::new(
                         NSPoint::new(INNER, (ROW_H - 20.0) / 2.0),
-                        NSSize::new(w, 20.0),
+                        cap.frame().size,
                     ));
-                    row.views.insert(0, Retained::into_super(Retained::into_super(cap)));
+                    row.views.insert(0, Retained::into_super(cap));
                     rows.push(row);
                 }
                 let bottom = group(mtm, &doc, 20.0, rows);

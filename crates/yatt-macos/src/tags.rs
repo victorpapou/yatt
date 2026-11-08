@@ -21,7 +21,7 @@ const PAD: f64 = 20.0;
 
 pub struct Tags {
     pub view: Retained<FlippedView>,
-    capsules: RefCell<Vec<Retained<NSTextField>>>,
+    capsules: RefCell<Vec<Retained<FlippedView>>>,
     known: Rc<RefCell<Vec<String>>>,
     /// The width and height the row was last laid out for.
     laid: Cell<(f64, f64)>,
@@ -66,23 +66,9 @@ impl Tags {
         }
         let mut caps = Vec::new();
         for tag in self.known.borrow().iter() {
-            let l = NSTextField::labelWithString(&NSString::from_str(tag), self.mtm);
-            l.setFont(Some(&NSFont::systemFontOfSize_weight(11.5, unsafe {
-                NSFontWeightMedium
-            })));
-            l.setTextColor(Some(&NSColor::labelColor()));
-            l.setAlignment(objc2_app_kit::NSTextAlignment::Center);
-            l.setWantsLayer(true);
-            if let Some(layer) = l.layer() {
-                layer.setCornerRadius(CAPSULE_H / 2.0);
-                layer.setBackgroundColor(Some(
-                    &style::swatch(style::tag_hue(tag))
-                        .colorWithAlphaComponent(0.28)
-                        .CGColor(),
-                ));
-            }
-            self.view.addSubview(&l);
-            caps.push(l);
+            let b = badge(self.mtm, tag);
+            self.view.addSubview(&b);
+            caps.push(b);
         }
         *self.capsules.borrow_mut() = caps;
         self.layout(self.laid.get().0);
@@ -97,14 +83,14 @@ impl Tags {
         let (mut x, mut y) = (0.0f64, 0.0f64);
         let caps = self.capsules.borrow();
         for c in caps.iter() {
-            let w = c.fittingSize().width.ceil() - 4.0 + 2.0 * CAPSULE_PAD;
+            let w = c.frame().size.width;
             if x > 0.0 && x + w > inner {
                 x = 0.0;
                 y += CAPSULE_H + ROW_GAP;
             }
             c.setFrame(NSRect::new(
-                NSPoint::new(PAD + x, y + 1.0),
-                NSSize::new(w.max(0.0), CAPSULE_H - 2.0),
+                NSPoint::new(PAD + 2.0 + x, y),
+                NSSize::new(w, CAPSULE_H),
             ));
             x += w + GAP;
         }
@@ -112,4 +98,32 @@ impl Tags {
         self.laid.set((width, h));
         h
     }
+}
+
+/// A tag's badge, one look everywhere (the editor's `.tag`): a soft fill of the
+/// tag's colour, the text in that colour, medium, centred; the size of it.
+pub fn badge(mtm: MainThreadMarker, name: &str) -> Retained<FlippedView> {
+    let hue = style::tag_hue(name);
+    let label = NSTextField::labelWithString(&NSString::from_str(name), mtm);
+    label.setFont(Some(&NSFont::systemFontOfSize_weight(12.5, unsafe {
+        NSFontWeightMedium
+    })));
+    label.setTextColor(Some(&style::swatch(hue)));
+    let size = label.fittingSize();
+    let w = (size.width.ceil() - 4.0 + 2.0 * CAPSULE_PAD).max(0.0).min(240.0);
+    let view = FlippedView::new(mtm, NSRect::new(NSPoint::ZERO, NSSize::new(w, CAPSULE_H)));
+    view.setWantsLayer(true);
+    if let Some(layer) = view.layer() {
+        layer.setCornerRadius(8.0);
+        layer.setBackgroundColor(Some(
+            &style::swatch(hue).colorWithAlphaComponent(0.18).CGColor(),
+        ));
+    }
+    let h = size.height.ceil();
+    label.setFrame(NSRect::new(
+        NSPoint::new(CAPSULE_PAD - 2.0, ((CAPSULE_H - h) / 2.0).round()),
+        NSSize::new(size.width.ceil(), h),
+    ));
+    view.addSubview(&label);
+    view
 }

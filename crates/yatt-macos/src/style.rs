@@ -30,7 +30,7 @@ use crate::classes::FlippedView;
 /// Card size; the height keeps the clip's 2.27 : 1 proportion.
 pub const CARD_W: f64 = 230.0;
 pub const CARD_H: f64 = 101.0;
-pub const CARD_RADIUS: f64 = 20.0;
+pub const CARD_RADIUS: f64 = 14.0;
 /// Blur of what shows through a card, in points.
 pub const CARD_BLUR: f64 = 4.0;
 /// Saturation boost of what shows through a card.
