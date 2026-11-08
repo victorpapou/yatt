@@ -1470,17 +1470,7 @@ impl Ui {
         self.new_color.set(hue);
         // The button is the colour itself: a round swatch of the chosen colour,
         // drawn as an image, with the toolbar buttons' hover state.
-        let color = style::swatch(hue);
-        let block = block2::RcBlock::new(move |rect: NSRect| {
-            color.setFill();
-            objc2_app_kit::NSBezierPath::bezierPathWithOvalInRect(rect).fill();
-            objc2::runtime::Bool::YES
-        });
-        let image = objc2_app_kit::NSImage::imageWithSize_flipped_drawingHandler(
-            NSSize::new(18.0, 18.0),
-            false,
-            &block,
-        );
+        let image = crate::settings::circle_image(hue, 18.0);
         self.palette_button.setImage(Some(&image));
         self.palette_button.setContentTintColor(None);
         self.palette.show_state(hue);

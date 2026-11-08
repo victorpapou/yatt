@@ -92,18 +92,35 @@ impl SwatchView {
 pub struct Palette {
     popover: Retained<NSPopover>,
     swatches: Vec<(usize, Retained<SwatchView>)>,
+    _retained: Vec<Retained<objc2::runtime::AnyObject>>,
 }
 
 impl Palette {
     /// `on_pick` gets the chosen colour.
     pub fn new(mtm: MainThreadMarker, on_pick: impl Fn(usize) + 'static) -> Self {
-        let on_pick = Rc::new(on_pick);
+        Self::build(mtm, move |p| {
+            if let Some(h) = p {
+                on_pick(h)
+            }
+        }, false)
+    }
+
+    /// For a tag: the same grid, with «Автоматически» (`None`) and «Случайный»
+    /// (a colour drawn now) under it.
+    pub fn for_tag(mtm: MainThreadMarker, on_pick: impl Fn(Option<usize>) + 'static) -> Self {
+        Self::build(mtm, on_pick, true)
+    }
+
+    fn build(mtm: MainThreadMarker, on_pick: impl Fn(Option<usize>) + 'static, extras: bool) -> Self {
+        let on_pick: Rc<dyn Fn(Option<usize>)> = Rc::new(on_pick);
+        let mut retained: Vec<Retained<objc2::runtime::AnyObject>> = Vec::new();
         let popover = NSPopover::new(mtm);
         popover.setBehavior(NSPopoverBehavior::Transient);
         popover.setAnimates(true);
         let rows = HUE_SWATCH_ORDER.len().div_ceil(PER_ROW);
         let w = 2.0 * PAD + PER_ROW as f64 * D + (PER_ROW as f64 - 1.0) * GAP;
-        let h = 2.0 * PAD + rows as f64 * D + (rows as f64 - 1.0) * GAP;
+        let extra_h = if extras { 40.0 } else { 0.0 };
+        let h = 2.0 * PAD + rows as f64 * D + (rows as f64 - 1.0) * GAP + extra_h;
         let content = NSView::initWithFrame(
             NSView::alloc(mtm),
             NSRect::new(NSPoint::ZERO, NSSize::new(w, h)),
@@ -114,7 +131,7 @@ impl Palette {
             let pop = popover.clone();
             let pick = on_pick.clone();
             let v = SwatchView::new(mtm, hue, move || {
-                pick(hue);
+                pick(Some(hue));
                 pop.close();
             });
             // Rows from the top (the content view is not flipped).
@@ -128,11 +145,45 @@ impl Palette {
             content.addSubview(&v);
             swatches.push((hue, v));
         }
+        if extras {
+            let mut x = PAD;
+            let bw = (w - 2.0 * PAD - GAP) / 2.0;
+            for (title, random) in [("Автоматически", false), ("Случайный", true)] {
+                let (pop, pick) = (popover.clone(), on_pick.clone());
+                let target = crate::classes::ActionTarget::new(mtm, move || {
+                    if random {
+                        let n = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_or(0, |d| d.subsec_nanos() as usize);
+                        pick(Some(n % style::HUE_COUNT));
+                    } else {
+                        pick(None);
+                    }
+                    pop.close();
+                });
+                let b = unsafe {
+                    objc2_app_kit::NSButton::buttonWithTitle_target_action(
+                        &objc2_foundation::NSString::from_str(title),
+                        Some(&target),
+                        Some(crate::classes::ActionTarget::sel()),
+                        mtm,
+                    )
+                };
+                b.setFrame(NSRect::new(NSPoint::new(x, PAD - 4.0), NSSize::new(bw, 28.0)));
+                content.addSubview(&b);
+                retained.push(Retained::into_super(Retained::into_super(target)));
+                x += bw + GAP;
+            }
+        }
         let vc = NSViewController::new(mtm);
         vc.setView(&content);
         popover.setContentViewController(Some(&vc));
         popover.setContentSize(NSSize::new(w, h));
-        Self { popover, swatches }
+        Self {
+            popover,
+            swatches,
+            _retained: retained,
+        }
     }
 
     /// Rings the chosen colour.

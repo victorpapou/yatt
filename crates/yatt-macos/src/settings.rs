@@ -153,6 +153,17 @@ pub fn swatch_image_sized(hue: usize, size: f64) -> Option<Retained<NSImage>> {
     image.imageWithSymbolConfiguration(&config)
 }
 
+/// A round swatch of a colour as a plain image (not a template: it keeps its colour).
+pub fn circle_image(hue: usize, size: f64) -> Retained<NSImage> {
+    let color = style::swatch(hue);
+    let block = block2::RcBlock::new(move |rect: NSRect| {
+        color.setFill();
+        objc2_app_kit::NSBezierPath::bezierPathWithOvalInRect(rect).fill();
+        objc2::runtime::Bool::YES
+    });
+    NSImage::imageWithSize_flipped_drawingHandler(NSSize::new(size, size), false, &block)
+}
+
 pub fn swatch_image(hue: usize) -> Option<Retained<NSImage>> {
     let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
         ns_string!("circle.fill"),
@@ -584,8 +595,10 @@ impl SettingsWindow {
         {
             let (doc, changed, provider) = (doc.clone(), changed.clone(), tags_provider.clone());
             let held: Rc<RefCell<Vec<Retained<AnyObject>>>> = Rc::default();
+            let palettes: Rc<RefCell<Vec<Rc<crate::palette::Palette>>>> = Rc::default();
             refresh.borrow_mut().push(Box::new(move || {
                 held.borrow_mut().clear();
+                palettes.borrow_mut().clear();
                 for v in doc.subviews().iter() {
                     v.removeFromSuperview();
                 }
@@ -601,24 +614,42 @@ impl SettingsWindow {
                     doc.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(W, 320.0)));
                     return;
                 }
-                let picked = tag_colors();
                 let mut rows = Vec::new();
                 for tag in &tags {
-                    let mut titles = vec!["По названию".to_string()];
-                    titles.extend(HUE_NAMES.iter().map(|n| n.to_string()));
-                    let p = popup(mtm, &titles, false, picked.get(tag).map_or(0, |h| h + 1));
-                    for k in 1..titles.len() {
-                        if let Some(item) = p.itemAtIndex(k as isize) {
-                            item.setImage(swatch_image(k - 1).as_deref());
-                        }
+                    // The colour as a round button, the palette popover under it.
+                    let btn = objc2_app_kit::NSButton::new(mtm);
+                    btn.setBordered(true);
+                    btn.setBezelStyle(objc2_app_kit::NSBezelStyle::Toolbar);
+                    btn.setShowsBorderOnlyWhileMouseInside(true);
+                    btn.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageOnly);
+                    btn.setImage(Some(&circle_image(style::tag_hue(tag), 18.0)));
+                    btn.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(30.0, 26.0)));
+                    let palette = {
+                        let (name, changed, weak) =
+                            (tag.clone(), changed.clone(), ObjcWeak::from_retained(&btn));
+                        Rc::new(crate::palette::Palette::for_tag(mtm, move |hue| {
+                            set_tag_color(&name, hue);
+                            if let Some(b) = weak.load() {
+                                b.setImage(Some(&circle_image(style::tag_hue(&name), 18.0)));
+                            }
+                            changed();
+                        }))
+                    };
+                    let target = {
+                        let (palette, weak) = (palette.clone(), ObjcWeak::from_retained(&btn));
+                        ActionTarget::new(mtm, move || {
+                            if let Some(b) = weak.load() {
+                                palette.toggle(&b);
+                            }
+                        })
+                    };
+                    unsafe {
+                        btn.setTarget(Some(&target));
+                        btn.setAction(Some(ActionTarget::sel()));
                     }
-                    let (name, changed) = (tag.clone(), changed.clone());
-                    let mut mine: Vec<Retained<AnyObject>> = Vec::new();
-                    on_pick(mtm, &p, &mut mine, move |k| {
-                        set_tag_color(&name, if k == 0 { None } else { Some(k - 1) });
-                        changed();
-                    });
-                    held.borrow_mut().extend(mine);
+                    held.borrow_mut().push(Retained::into_super(Retained::into_super(target)));
+                    palettes.borrow_mut().push(palette);
+                    let p = btn;
                     // The tag as its capsule, in its colour now, on the left.
                     let mut row = control_row(mtm, "", None, &p);
                     row.views.remove(0);
