@@ -2176,7 +2176,9 @@ impl Ui {
                         })
                 })
         });
-        if !board_same {
+        if board_same {
+            self.cards.refresh_timers(&snap.columns);
+        } else {
             self.cards.render(&snap.columns);
         }
         self.sync_modal(snap);

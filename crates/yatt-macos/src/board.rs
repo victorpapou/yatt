@@ -584,6 +584,19 @@ impl Board {
 
     /// How far the furthest-scrolled list has gone up (stacks do not scroll),
     /// to whoever listens.
+    /// The running timers' times on the cards, nothing else touched (a tick that
+    /// only moved the clocks).
+    pub fn refresh_timers(&self, columns: &[ColumnSnap; COLS]) {
+        let cards = self.cards.borrow();
+        for col in columns {
+            for snap in &col.cards {
+                if let Some(c) = cards.get(&snap.id) {
+                    set_card_timer(&c.time, snap.tracking.then(|| format_duration(snap.total_ms)));
+                }
+            }
+        }
+    }
+
     pub fn report_scroll(&self) {
         let up = self
             .cols
@@ -2910,8 +2923,9 @@ impl Card {
         }
         set_title(&self.title, &snap.title);
         self.tag_names = snap.tags.clone();
-        set_tracking_dot(&self.time, snap.tracking);
+        set_card_timer(&self.time, snap.tracking.then(|| format_duration(snap.total_ms)));
         set_tag_dots(&self.dots, &snap.tags, self.hue);
+        place_dots(&self.title, &self.dots, !snap.tags.is_empty());
         self.tracking = snap.tracking;
         self.refill();
     }
@@ -2926,8 +2940,9 @@ impl Card {
             self.time
                 .setTextColor(Some(&ink.colorWithAlphaComponent(0.5)));
             refresh_title(&self.title);
-            set_tracking_dot(&self.time, self.tracking);
+            refresh_meta(&self.time);
             set_tag_dots(&self.dots, &self.tag_names, self.hue);
+            place_dots(&self.title, &self.dots, !self.tag_names.is_empty());
             self.label.setTextColor(Some(&ink));
             self.count
                 .setTextColor(Some(&ink.colorWithAlphaComponent(0.7)));
@@ -3312,9 +3327,11 @@ pub(crate) fn card_face(mtm: MainThreadMarker, id: TaskId, title: &str, hue: usi
         11.0,
         unsafe { NSFontWeightMedium },
     )));
+    // The running timer: top right, in line with the glyph.
+    time.setAlignment(NSTextAlignment::Right);
     time.setFrame(NSRect::new(
-        NSPoint::new(TEXT_X, META_Y),
-        NSSize::new(CARD_W - 2.0 * TEXT_X, 14.0),
+        NSPoint::new(CARD_W - TEXT_X - 90.0, 14.0 + (22.0 - 14.0) / 2.0),
+        NSSize::new(90.0, 14.0),
     ));
     time.setTextColor(Some(&ink.colorWithAlphaComponent(0.5)));
 
@@ -3382,29 +3399,6 @@ fn fit_title(label: &NSTextField) {
         NSPoint::new(TEXT_X, TITLE_Y - lift),
         NSSize::new(width, 20.0 + lift),
     ));
-    if let Some(parent) = unsafe { label.superview() } {
-        for v in parent.subviews().iter() {
-            if let Some(dots) = v.downcast_ref::<objc2_app_kit::NSImageView>() {
-                let f = dots.frame();
-                if f.origin.y > 36.0 {
-                    dots.setFrame(NSRect::new(
-                        NSPoint::new(f.origin.x, META_Y - lift * 0.8),
-                        f.size,
-                    ));
-                }
-            }
-            if let Ok(meta) = v.downcast::<NSTextField>()
-                && &*meta as *const NSTextField != label as *const NSTextField
-                && meta.frame().origin.y > 36.0
-            {
-                let f = meta.frame();
-                meta.setFrame(NSRect::new(
-                    NSPoint::new(f.origin.x, META_Y - lift * 0.8),
-                    f.size,
-                ));
-            }
-        }
-    }
 }
 
 /// A card's meta line, tracked.
@@ -3412,16 +3406,13 @@ pub(crate) fn set_meta(label: &NSTextField, text: &str) {
     style::set_tracked(label, text, META_KERN);
 }
 
-/// A running timer's dot, in the meta label where the time used to be.
-pub(crate) fn set_tracking_dot(label: &NSTextField, tracking: bool) {
-    // On while it has a glyph that is not fading out.
+/// A running timer's time, top right on the card: fades in when it starts and
+/// out when it stops; while it runs only its text changes.
+pub(crate) fn set_card_timer(label: &NSTextField, text: Option<String>) {
+    use objc2_quartz_core::{CABasicAnimation, CAMediaTiming};
+    // On while it has text that is not fading out.
     let shown = !label.stringValue().to_string().is_empty()
         && label.layer().is_none_or(|l| l.opacity() > 0.5);
-    if shown == tracking {
-        return;
-    }
-    // The dot fades in and out rather than snapping.
-    use objc2_quartz_core::{CABasicAnimation, CAMediaTiming};
     label.setWantsLayer(true);
     let fade = |from: f64, to: f64| {
         let a = CABasicAnimation::animationWithKeyPath(Some(objc2_foundation::ns_string!("opacity")));
@@ -3432,33 +3423,114 @@ pub(crate) fn set_tracking_dot(label: &NSTextField, tracking: bool) {
         a.setDuration(0.25);
         a
     };
-    if tracking {
-        label.setStringValue(&NSString::from_str("●"));
-        if let Some(layer) = label.layer() {
-            layer.setOpacity(1.0);
-            layer.addAnimation_forKey(&fade(0.0, 1.0), Some(objc2_foundation::ns_string!("dot")));
-        }
-    } else if let Some(layer) = label.layer() {
-        // The glyph stays until it has faded.
-        layer.addAnimation_forKey(&fade(1.0, 0.0), Some(objc2_foundation::ns_string!("dot")));
-        let weak = objc2::rc::Weak::from_retained(&objc2::Message::retain(label));
-        let block = block2::RcBlock::new(move |_t: std::ptr::NonNull<objc2_foundation::NSTimer>| {
-            if let Some(l) = weak.load() {
-                // Only if it was not switched on again meanwhile.
-                if l.layer().is_none_or(|ly| ly.opacity() < 0.5) {
-                    l.setStringValue(&NSString::from_str(""));
+    match text {
+        Some(t) => {
+            set_meta(label, &t);
+            if !shown {
+                if let Some(layer) = label.layer() {
+                    layer.setOpacity(1.0);
+                    layer.addAnimation_forKey(&fade(0.0, 1.0), Some(objc2_foundation::ns_string!("timer")));
                 }
             }
-        });
-        unsafe {
-            objc2_foundation::NSTimer::scheduledTimerWithTimeInterval_repeats_block(0.27, false, &block);
         }
-        label.layer().map(|l| {
-            l.setOpacity(0.0);
-        });
-    } else {
-        label.setStringValue(&NSString::from_str(""));
+        None if shown => {
+            if let Some(layer) = label.layer() {
+                // The text stays until it has faded.
+                layer.addAnimation_forKey(&fade(1.0, 0.0), Some(objc2_foundation::ns_string!("timer")));
+                layer.setOpacity(0.0);
+                let weak = objc2::rc::Weak::from_retained(&objc2::Message::retain(label));
+                let block = block2::RcBlock::new(move |_t: std::ptr::NonNull<objc2_foundation::NSTimer>| {
+                    if let Some(l) = weak.load() {
+                        if l.layer().is_none_or(|ly| ly.opacity() < 0.5) {
+                            l.setStringValue(&NSString::from_str(""));
+                        }
+                    }
+                });
+                unsafe {
+                    objc2_foundation::NSTimer::scheduledTimerWithTimeInterval_repeats_block(0.27, false, &block);
+                }
+            } else {
+                label.setStringValue(&NSString::from_str(""));
+            }
+        }
+        None => {}
     }
+}
+
+/// Puts the tag dots right after the title's last line (centred on it), as one
+/// run with the text. A title that would leave no room for them on its line (or
+/// a third line) steps down in size, one step at a time; the tags are never cut.
+pub(crate) fn place_dots(title: &NSTextField, dots: &objc2_app_kit::NSImageView, has_tags: bool) {
+    dots.setHidden(!has_tags);
+    let (width, gap) = (CARD_W - 2.0 * TEXT_X, 4.0);
+    // The dots' width (the image carries a 1 pt margin).
+    let dots_w = dots.image().map_or(0.0, |i| i.size().width);
+    let sizes: &[f64] = if has_tags { &[15.0, 14.0, 13.0] } else { &[15.0] };
+    let mut placed = None;
+    for (k, size) in sizes.iter().enumerate() {
+        title.setFont(Some(&NSFont::systemFontOfSize_weight(*size, unsafe { NSFontWeightMedium })));
+        style::refresh_tracked(title, TITLE_KERN);
+        fit_title(title);
+        if !has_tags {
+            return;
+        }
+        let (lines, last_end, last_mid, line_h) = measure_lines(title, width);
+        let fits = lines <= 2 && last_end + gap + dots_w <= width;
+        if fits {
+            placed = Some((last_end, last_mid, true));
+            break;
+        }
+        if k == sizes.len() - 1 {
+            // Cut to two lines: the dots sit at the end of the second.
+            placed = Some((last_end, line_h * (lines.min(2) as f64 - 0.5), false));
+        }
+    }
+    let Some((end, mid, fits)) = placed else { return };
+    let f = title.frame();
+    // Out of room even at the smallest size: the text yields (a narrower label
+    // wraps and cuts earlier), the dots stay at the end of the line.
+    let x = if fits {
+        TEXT_X + end + gap
+    } else {
+        title.setFrame(NSRect::new(f.origin, NSSize::new(width - dots_w - gap, f.size.height)));
+        TEXT_X + width - dots_w
+    };
+    let h = dots.image().map_or(14.0, |i| i.size().height);
+    dots.setFrame(NSRect::new(
+        NSPoint::new(x, f.origin.y + mid - h / 2.0),
+        NSSize::new(dots_w, h),
+    ));
+}
+
+/// How many lines the title takes at `width`, where the last one ends (x), and its
+/// middle (y), from the top of the label.
+fn measure_lines(title: &NSTextField, width: f64) -> (usize, f64, f64, f64) {
+    use objc2::AnyThread;
+    use objc2_app_kit::{NSLayoutManager, NSTextContainer, NSTextStorage};
+    let attr = title.attributedStringValue();
+    let storage = NSTextStorage::new();
+    storage.setAttributedString(&attr);
+    let lm = NSLayoutManager::new();
+    let tc = unsafe {
+        NSTextContainer::initWithSize(NSTextContainer::alloc(), NSSize::new(width, 10_000.0))
+    };
+    tc.setLineFragmentPadding(0.0);
+    lm.addTextContainer(&tc);
+    storage.addLayoutManager(&lm);
+    unsafe { lm.ensureLayoutForTextContainer(&tc) };
+    let total = unsafe { lm.numberOfGlyphs() };
+    let (mut lines, mut end, mut mid, mut line_h) = (0, 0.0, 10.0, 18.0);
+    let mut g = 0;
+    while g < total {
+        let mut range = objc2_foundation::NSRange::new(0, 0);
+        let used = unsafe { lm.lineFragmentUsedRectForGlyphAtIndex_effectiveRange(g, &mut range) };
+        lines += 1;
+        end = used.origin.x + used.size.width;
+        mid = used.origin.y + used.size.height / 2.0;
+        line_h = used.size.height;
+        g = (range.location + range.length).max(g + 1);
+    }
+    (lines.max(1), end, mid, line_h)
 }
 
 /// The tags as Finder's tag dots: small filled circles in the tags' colours, each

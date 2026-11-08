@@ -291,17 +291,26 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             return;
         }
         if std::env::var_os("YATT_DEMO_TAGS").is_some() {
-            // Yellow and neutral cards with one, three and five tags.
+            // Short, two-line and long titles with one, three and five tags.
             let tags = ["design", "motion", "маркетинг", "код", "срочно"];
-            for (i, (hue, n)) in [(8u8, 1usize), (8, 3), (8, 5), (5, 1), (5, 3), (5, 5)].iter().enumerate() {
-                let notes = tags[..*n].iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join(" ");
-                sink(UiEvent::NewTaskNotes {
-                    title: format!("{} тегов", n),
-                    notes,
-                    status: [Status::Backlog, Status::InProgress][i % 2],
-                    color: Some(*hue),
-                });
-                wait(150).await;
+            let titles = [
+                "Коротко",
+                "Название подлиннее, на две строки текста",
+                "Очень длинное название задачи, которое точно не поместится в две строки карточки",
+            ];
+            let mut i = 0;
+            for title in titles {
+                for n in [1usize, 3, 5] {
+                    let notes = tags[..n].iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join(" ");
+                    sink(UiEvent::NewTaskNotes {
+                        title: title.to_string(),
+                        notes,
+                        status: [Status::Backlog, Status::InProgress, Status::Review][i % 3],
+                        color: Some(if i % 2 == 0 { 8 } else { 5 }),
+                    });
+                    i += 1;
+                    wait(150).await;
+                }
             }
             wait(900).await;
             shot("tags");
