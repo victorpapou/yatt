@@ -817,9 +817,11 @@ impl Board {
                 .setFrame(NSRect::new(NSPoint::new(0.0, y), NSSize::new(width, HEAD_H)));
             h.material
                 .setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(width, HEAD_H)));
+            // A native separator is one device pixel: 0.5 pt on Retina.
+            let px = 1.0 / col.scroll.window().map_or(2.0, |w| w.backingScaleFactor()).max(1.0);
             h.line.setFrame(NSRect::new(
-                NSPoint::new(0.0, HEAD_H - 1.0),
-                NSSize::new(width, 1.0),
+                NSPoint::new(0.0, HEAD_H - px),
+                NSSize::new(width, px),
             ));
             // The first title is the column's own: its symbol stands before the name.
             let symbol = (k == 0 && is_list).then(|| COLUMN_SYMBOLS[ci.min(COLUMN_SYMBOLS.len() - 1)]);

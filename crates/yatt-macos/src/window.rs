@@ -140,7 +140,7 @@ struct Ui {
     top_inset: Cell<f64>,
     /// Everything below the header; hidden in minimal mode.
     board: Retained<FlippedView>,
-    dividers: [Retained<FadeLine>; COLS - 1],
+    dividers: [Retained<FillView>; COLS - 1],
     columns: [Column; COLS],
     /// Holds the column chips above the cards; clicks elsewhere fall through.
     heads: Retained<PassView>,
@@ -275,7 +275,7 @@ impl MainWindow {
         window.setTitlebarAppearsTransparent(false);
         // The system's own separator, as in Finder: the line shows when content has
         // gone under the toolbar and not before.
-        window.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::Automatic);
+        window.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::None);
         eprintln!(
             "window titlebar separator style: {:?}, titlebar transparent: {}",
             window.titlebarSeparatorStyle(),
@@ -576,9 +576,10 @@ impl MainWindow {
         toolbar.setDelegate(Some(ProtocolObject::from_ref(&*toolbar_delegate)));
         toolbar.setDisplayMode(NSToolbarDisplayMode::IconOnly);
         toolbar.setAllowsUserCustomization(false);
-        // No baseline rule under the toolbar, in any section.
+        // The toolbar's own rule is on (the system draws it only when content is under
+        // the toolbar; the style on the window and the split items decides when).
         #[allow(deprecated)]
-        toolbar.setShowsBaselineSeparator(false);
+        toolbar.setShowsBaselineSeparator(true);
         retained.push(Retained::into_super(Retained::into_super(toolbar_delegate)));
 
         // The board tints the column under a dragged card through a weak handle,
@@ -633,16 +634,28 @@ impl MainWindow {
             item.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::None);
             {
                 let item = item.clone();
+                let window = window.clone();
                 let shown = std::cell::Cell::new(false);
                 *cards.on_scrolled.borrow_mut() = Some(Box::new(move |up: f64| {
                     let want = up > 0.5;
                     if shown.replace(want) != want {
-                        eprintln!("toolbar line: {want}");
-                        item.setTitlebarSeparatorStyle(if want {
+                        let style = if want {
                             objc2_app_kit::NSTitlebarSeparatorStyle::Line
                         } else {
                             objc2_app_kit::NSTitlebarSeparatorStyle::None
-                        });
+                        };
+                        // The window's own style and the board item's, together.
+                        window.setTitlebarSeparatorStyle(style);
+                        item.setTitlebarSeparatorStyle(style);
+                        #[allow(deprecated)]
+                        let rule = window.toolbar().is_some_and(|t| t.showsBaselineSeparator());
+                        eprintln!(
+                            "toolbar line: {want}: window {:?}, item {:?}, toolbar style {:?}, rule {}",
+                            window.titlebarSeparatorStyle(),
+                            item.titlebarSeparatorStyle(),
+                            window.toolbarStyle(),
+                            rule,
+                        );
                     }
                 }));
             }
@@ -693,7 +706,11 @@ impl MainWindow {
         // The capsule and the fade under it stay put over the scrolling columns.
         let pinned = PassView::new(mtm);
         split_view.addSubview(&pinned);
-        let dividers: [Retained<FadeLine>; COLS - 1] = std::array::from_fn(|_| FadeLine::new(mtm));
+        let dividers: [Retained<FillView>; COLS - 1] = std::array::from_fn(|_| FillView::new(mtm, Fill::Separator));
+        // The lines between the columns, under the cards.
+        for d in &dividers {
+            board.addSubview(d);
+        }
         board.addSubview(&cards.canvas);
         let heads = PassView::new(mtm);
         board.addSubview(&heads);
@@ -1976,9 +1993,11 @@ impl Ui {
             c.layout_chip(x + w / 2.0, top + CHIP_TOP);
             if i < COLS - 1 {
                 // From under the toolbar, fading in to full by half way down.
+                // One device pixel, as Finder's: 0.5 pt on Retina.
+                let px = 1.0 / self.window.backingScaleFactor().max(1.0);
                 self.dividers[i].setFrame(NSRect::new(
-                    NSPoint::new(x + w - 0.5, top),
-                    NSSize::new(1.0, board_h - top),
+                    NSPoint::new(x + w - px, top),
+                    NSSize::new(px, board_h - top),
                 ));
             }
             geom[i] = ColumnGeom { x, w };
