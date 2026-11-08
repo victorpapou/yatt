@@ -53,6 +53,34 @@ impl Workspace {
                     e.execute(Command::SetTags { id, tags });
                 }
             }
+            UiEvent::NewTaskNotes {
+                title,
+                notes,
+                status,
+                color,
+            } => {
+                let (name, mut tags) = split_tags(&title);
+                let id = e.create_task_coloured(name, status, color.unwrap_or(DEFAULT_COLOR));
+                let notes = notes.trim().to_string();
+                for t in yatt_macos::hashtags(&notes) {
+                    if !tags.contains(&t) {
+                        tags.push(t);
+                    }
+                }
+                if !notes.is_empty() {
+                    e.execute(Command::SetNotes { id, notes: notes.clone() });
+                }
+                let subtasks: Vec<yatt_core::Subtask> = yatt_macos::checklist(&notes)
+                    .into_iter()
+                    .map(|(title, done)| yatt_core::Subtask { title, done })
+                    .collect();
+                if !subtasks.is_empty() {
+                    e.execute(Command::SetSubtasks { id, subtasks });
+                }
+                if !tags.is_empty() {
+                    e.execute(Command::SetTags { id, tags });
+                }
+            }
             UiEvent::SetTags { id, tags } => e.execute(Command::SetTags { id, tags }),
             UiEvent::SetSubtasks { id, subtasks } => e.execute(Command::SetSubtasks {
                 id,

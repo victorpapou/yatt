@@ -62,6 +62,12 @@ pub struct State {
     hits: RefCell<Vec<(NSRect, usize)>>,
     /// The checkbox clicked last (for a Shift-click range).
     last_box: Cell<Option<usize>>,
+    /// Capsule mode: ↩ sends (the argument: ⌘ held), the text never goes to the app as
+    /// notes, and lines are tight.
+    submit: RefCell<Option<Box<dyn Fn(bool)>>>,
+    /// The text changed (the capsule may need another height).
+    on_change: RefCell<Option<Box<dyn Fn()>>>,
+    compact: Cell<bool>,
     /// The checkbox the button went down on (ticks on release).
     pressed_box: Cell<Option<usize>>,
     /// Our own edit in progress: the guard of the atomic markers stands aside.
@@ -103,9 +109,26 @@ define_class!(
             if st.applying.get() {
                 return;
             }
+            // «[] » at the start of a line is a checklist item.
+            if let Some(text) = st.text.borrow().clone() {
+                let string = text.string().to_string();
+                let caret = text.selectedRange().location;
+                let (ls, _) = line_range(&string, caret);
+                if caret == ls + 3 && utf16_slice(&string, ls, caret) == "[] " {
+                    st.internal.set(true);
+                    replace_range(&text, NSRange::new(ls, 3), "- [ ] ");
+                    st.internal.set(false);
+                    return;
+                }
+            }
             restyle(st);
-            st.dirty.set(true);
-            schedule(st);
+            if let Some(f) = st.on_change.borrow().as_ref() {
+                f();
+            }
+            if st.submit.borrow().is_none() {
+                st.dirty.set(true);
+                schedule(st);
+            }
         }
 
         #[unsafe(method(textViewDidChangeSelection:))]
@@ -182,6 +205,22 @@ define_class!(
         #[unsafe(method(textView:doCommandBySelector:))]
         fn do_command(&self, view: &NSTextView, sel: Sel) -> Bool {
             if sel == sel!(insertNewline:) {
+                let st = &self.ivars().state;
+                if let Some(submit) = st.submit.borrow().as_ref() {
+                    // The capsule: ↩ sends, ⇧↩ and ⌥↩ break the line.
+                    let mtm = MainThreadMarker::from(self);
+                    let flags = objc2_app_kit::NSApplication::sharedApplication(mtm)
+                        .currentEvent()
+                        .map(|e| e.modifierFlags())
+                        .unwrap_or(objc2_app_kit::NSEventModifierFlags::empty());
+                    if flags.contains(objc2_app_kit::NSEventModifierFlags::Shift)
+                        || flags.contains(objc2_app_kit::NSEventModifierFlags::Option)
+                    {
+                        return Bool::new(continue_list(view));
+                    }
+                    submit(flags.contains(objc2_app_kit::NSEventModifierFlags::Command));
+                    return Bool::YES;
+                }
                 return Bool::new(continue_list(view));
             }
             if sel == sel!(cancelOperation:) {
@@ -300,6 +339,9 @@ impl NotesEditor {
             hits: RefCell::default(),
             last_box: Cell::new(None),
             pressed_box: Cell::new(None),
+            submit: RefCell::new(None),
+            on_change: RefCell::new(None),
+            compact: Cell::new(false),
             internal: Cell::new(false),
         });
         let scroll = NSScrollView::new(mtm);
@@ -361,28 +403,132 @@ impl NotesEditor {
         }
     }
 
+    /// The capsule: ↩ calls `f` (with ⌘ held or not), edits are not notes, lines tight.
+    pub fn set_submit(&self, f: impl Fn(bool) + 'static) {
+        *self.state.submit.borrow_mut() = Some(Box::new(f));
+        self.state.compact.set(true);
+        restyle(&self.state);
+    }
+
+    pub fn set_on_change(&self, f: impl Fn() + 'static) {
+        *self.state.on_change.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// The text as typed.
+    pub fn string(&self) -> String {
+        self.text.string().to_string()
+    }
+
+    /// Replaces the text (not an edit of the user's).
+    pub fn set_text(&self, s: &str) {
+        self.state.applying.set(true);
+        self.text.setString(&NSString::from_str(s));
+        self.state.applying.set(false);
+        if let Some(um) = self.text.undoManager() {
+            um.removeAllActions();
+        }
+        restyle(&self.state);
+        if let Some(f) = self.state.on_change.borrow().as_ref() {
+            f();
+        }
+    }
+
+    /// The room the text takes, insets included (for a capsule that grows with it).
+    pub fn content_height(&self) -> f64 {
+        let (Some(lm), Some(container)) = (unsafe { self.text.layoutManager() }, unsafe { self.text.textContainer() }) else {
+            return 0.0;
+        };
+        unsafe { lm.ensureLayoutForTextContainer(&container) };
+        let used = unsafe { lm.usedRectForTextContainer(&container) };
+        used.size.height + 2.0 * self.text.textContainerInset().height
+    }
+
+    /// The text's margins inside the view (the lines start flush with them).
+    pub fn set_inset(&self, size: NSSize) {
+        self.text.setTextContainerInset(size);
+        if let Some(c) = unsafe { self.text.textContainer() } {
+            c.setLineFragmentPadding(0.0);
+        }
+    }
+
     /// What takes the keyboard when the pane opens.
     pub fn responder(&self) -> &NSView {
         &self.text
     }
 
-    /// Loads `md`; the notes that come back from now on belong to `key`.
+    /// Loads `md`; the notes that come back from now on belong to `key`. A
+    /// different task is a clean start: the old one is saved under its own key
+    /// first, nothing of it (waiting timers, layers, caches, selection, undo
+    /// history) is left behind.
     pub fn set_markdown(&self, md: &str, key: &str) {
-        // Edits waiting go out under the old key first.
-        if self.state.dirty.get() {
-            send_notes(&self.state);
+        let st = &self.state;
+        // Edits waiting go out under the old key first, synchronously.
+        if st.dirty.get() {
+            send_notes(st);
         }
-        *self.state.key.borrow_mut() = key.to_string();
+        if let Some(t) = st.timer.borrow_mut().take() {
+            t.invalidate();
+        }
+        let switching = *st.key.borrow() != key;
+        *st.key.borrow_mut() = key.to_string();
         let same = self.text.string().to_string() == md;
-        if !same {
-            self.state.applying.set(true);
-            self.text.setString(&NSString::from_str(md));
-            self.state.applying.set(false);
+        if switching || !same {
+            st.applying.set(true);
+            // The whole text is replaced, never added to.
+            if let Some(storage) = unsafe { self.text.textStorage() } {
+                let all = NSRange::new(0, storage.length());
+                storage.replaceCharactersInRange_withString(all, &NSString::from_str(md));
+            } else {
+                self.text.setString(&NSString::from_str(md));
+            }
+            self.text.setSelectedRange(NSRange::new(0, 0));
+            st.applying.set(false);
             if let Some(um) = self.text.undoManager() {
                 um.removeAllActions();
             }
         }
-        restyle(&self.state);
+        if switching {
+            // Pictures, checkboxes and bullets of the old note: gone with it.
+            for bl in st.boxes.borrow_mut().drain(..) {
+                bl.root.removeFromSuperlayer();
+            }
+            for l in st.image_layers.borrow_mut().drain(..) {
+                l.removeFromSuperlayer();
+            }
+            for l in st.bullet_layers.borrow_mut().drain(..) {
+                l.removeFromSuperlayer();
+            }
+            st.hits.borrow_mut().clear();
+            st.image_hits.borrow_mut().clear();
+            st.image_slots.borrow_mut().clear();
+            st.last_box.set(None);
+            st.pressed_box.set(None);
+            st.dirty.set(false);
+        }
+        restyle(st);
+    }
+
+    /// Development aid: loads A, B and A again and says whether anything of one was
+    /// left in another (the text, the boxes, the pictures shown).
+    pub fn self_test_switching(&self) -> String {
+        let a = "# A\n- [x] один\n- [ ] два\n![](data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%27100%27%20height%3D%2750%27%3E%3Crect%20width%3D%27100%27%20height%3D%2750%27%20fill%3D%27red%27%2F%3E%3C%2Fsvg%3E)\n#тег";
+        let b = "просто текст B";
+        let shown = |s: &State| {
+            let boxes = s.boxes.borrow().iter().filter(|b| !b.root.isHidden()).count();
+            let images = s.image_layers.borrow().iter().filter(|l| !l.isHidden()).count();
+            (boxes, images)
+        };
+        self.set_markdown(a, "A");
+        let sa = shown(&self.state);
+        let ta = self.string();
+        self.set_markdown(b, "B");
+        let sb = shown(&self.state);
+        let tb = self.string();
+        self.set_markdown(a, "A");
+        let sa2 = shown(&self.state);
+        let ta2 = self.string();
+        let ok = ta == a && tb == b && ta2 == a && sa == (2, 1) && sb == (0, 0) && sa2 == (2, 1);
+        format!("switch test {}: A {sa:?}, B {sb:?}, A again {sa2:?}", if ok { "ok" } else { "FAILED" })
     }
 
     /// The colours of the tags written in the notes (JSON: name to "r,g,b").
@@ -524,8 +670,8 @@ fn restyle(st: &Rc<State>) {
     let sel = text.selectedRange();
     let caret_line = line_range(&string, sel.location);
     let para = NSMutableParagraphStyle::new();
-    para.setLineSpacing(3.0);
-    para.setParagraphSpacing(4.0);
+    para.setLineSpacing(if st.compact.get() { 0.0 } else { 3.0 });
+    para.setParagraphSpacing(if st.compact.get() { 0.0 } else { 4.0 });
     let body = NSFont::systemFontOfSize(BODY);
     storage.beginEditing();
     let full = NSRange::new(0, total);
@@ -1346,6 +1492,12 @@ impl AnyEditor {
         match self {
             Self::Native(e) => e.focus(),
             Self::Web(e) => e.focus(),
+        }
+    }
+    pub fn debug_self_test(&self) -> String {
+        match self {
+            Self::Native(e) => e.self_test_switching(),
+            Self::Web(_) => "web editor".into(),
         }
     }
     pub fn debug_click_box(&self, k: usize, shift: bool) {

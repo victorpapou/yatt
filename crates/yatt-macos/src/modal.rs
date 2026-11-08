@@ -347,6 +347,10 @@ impl Modal {
         self.editor.debug_click_box(k, shift);
     }
 
+    pub fn debug_self_test(&self) -> String {
+        self.editor.debug_self_test()
+    }
+
     pub fn debug_print_editor(&self) {
         self.editor.debug_print_html();
     }
@@ -639,7 +643,7 @@ fn json_str(s: &str) -> String {
 /// The #tags written in Markdown notes, once each, in order of appearance: a `#`
 /// at the start of a word followed by letters, digits, `_` or `-` (so `# Title`
 /// is a heading, not a tag); code (fenced or inline) is left out.
-pub(crate) fn hashtags(md: &str) -> Vec<String> {
+pub fn hashtags(md: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut fenced = false;
     for line in md.lines() {
@@ -679,7 +683,7 @@ pub(crate) fn hashtags(md: &str) -> Vec<String> {
 
 /// The checklist lines of Markdown notes (`- [ ] title`, `- [x] title`, at any
 /// indent, also with `*`): the task's subtasks, title and whether it is ticked.
-pub(crate) fn checklist(md: &str) -> Vec<(String, bool)> {
+pub fn checklist(md: &str) -> Vec<(String, bool)> {
     md.lines()
         .filter_map(|line| {
             let t = line.trim_start();

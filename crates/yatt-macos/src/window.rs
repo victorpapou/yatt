@@ -94,6 +94,8 @@ const CAPSULE_MAX_W: f64 = 460.0;
 const BOTTOM_BAR_H: f64 = 52.0;
 /// The colour swatch in the capsule's end: its size and its distance from the edge.
 const SWATCH_D: f64 = 24.0;
+/// The text's margin from the capsule's left end (and above and below one line).
+const CAPSULE_INSET: f64 = 14.0;
 const SWATCH_INSET: f64 = 6.0;
 const CAPSULE_BOTTOM: f64 = (BOTTOM_BAR_H - CAPSULE_H) / 2.0;
 /// The fade under the capsule: from clear to the background over this height.
@@ -144,7 +146,8 @@ struct Ui {
     heads: Retained<PassView>,
     capsule: Retained<NSView>,
     bottom_fade: Retained<BottomFade>,
-    new_task: Retained<NSTextField>,
+    new_task: crate::notes::NotesEditor,
+    placeholder: Retained<NSTextField>,
     cards: Rc<Board>,
     modal: Modal,
     /// The inspector pane on the right: the open task.
@@ -667,23 +670,24 @@ impl MainWindow {
 
         // The new-task capsule floats over the cards, under the dragged ones.
         let (capsule, capsule_content) = style::glass(mtm, CAPSULE_H / 2.0);
-        let new_task = NSTextField::textFieldWithString(ns_string!(""), mtm);
-        new_task.setPlaceholderString(Some(ns_string!(
-            "Новая задача  ·  ↩ в бэклог  ·  ⌘↩ в работу"
-        )));
-        new_task.setBordered(false);
-        new_task.setBezeled(false);
-        // Long text wraps (up to five lines; the capsule grows with it).
-        if let Some(cell) = new_task.cell() {
-            cell.setWraps(true);
-            cell.setUsesSingleLineMode(false);
-        }
-        new_task.setMaximumNumberOfLines(5);
-        new_task.setLineBreakMode(objc2_app_kit::NSLineBreakMode::ByWordWrapping);
-        new_task.setDrawsBackground(false);
-        new_task.setFocusRingType(NSFocusRingType::None);
-        new_task.setFont(Some(&NSFont::systemFontOfSize(14.0)));
-        capsule_content.addSubview(&new_task);
+        // The capsule is a small editor of the same native kind as the notes: the first
+        // line is the task's name, lines after it may be checklists, lists, #tags.
+        let new_task = crate::notes::NotesEditor::new(mtm, |_| {});
+        new_task.view.setDrawsBackground(false);
+        new_task.view.setHasVerticalScroller(false);
+        new_task.set_inset(NSSize::new(CAPSULE_INSET, (CAPSULE_H - 17.0) / 2.0));
+        capsule_content.addSubview(&new_task.view);
+        let placeholder = NSTextField::labelWithString(
+            ns_string!("Новая задача  ·  ↩ в бэклог  ·  ⌘↩ в работу"),
+            mtm,
+        );
+        placeholder.setFont(Some(&NSFont::systemFontOfSize(14.0)));
+        placeholder.setTextColor(Some(&NSColor::placeholderTextColor()));
+        capsule_content.addSubview_positioned_relativeTo(
+            &placeholder,
+            objc2_app_kit::NSWindowOrderingMode::Below,
+            Some(&new_task.view),
+        );
         let palette_button = {
             let b = NSButton::new(mtm);
             b.setBordered(true);
@@ -805,6 +809,7 @@ impl MainWindow {
             capsule,
             bottom_fade,
             new_task,
+            placeholder,
             cards,
             modal,
             inspector,
@@ -881,7 +886,7 @@ impl MainWindow {
         if self.ui.minimal.get() {
             self.ui.toggle_minimal();
         }
-        self.ui.window.makeFirstResponder(Some(&self.ui.new_task));
+        self.ui.window.makeFirstResponder(Some(&*self.ui.new_task.responder()));
     }
 
     /// cmd-F: the toolbar search expands and takes the cursor.
@@ -1163,14 +1168,18 @@ impl MainWindow {
 
     /// Development aid: types a task into the new-task field and submits it.
     pub fn demo_new_task(&self, title: &str, in_progress: bool) {
-        self.ui.new_task.setStringValue(&NSString::from_str(title));
+        self.ui.new_task.set_text(title);
         self.ui.submit_new_task(in_progress);
     }
 
     /// Development aid: prints the notes editor's rendered HTML to stderr.
     pub fn demo_capsule_text(&self, text: &str) {
-        self.ui.new_task.setStringValue(&NSString::from_str(text));
+        self.ui.new_task.set_text(text);
         self.ui.update_capsule_height();
+    }
+
+    pub fn demo_editor_self_test(&self) -> String {
+        self.ui.modal.debug_self_test()
     }
 
     pub fn demo_click_box(&self, k: usize, shift: bool) {
@@ -1412,62 +1421,45 @@ impl Ui {
             .borrow_mut()
             .push(Retained::into_super(Retained::into_super(target)));
 
-        // Return files the task into the backlog, ⌘Return straight into "В работе".
-        let delegate = FieldDelegate::new(this.mtm, {
-            let weak = weak.clone();
-            move |command| {
-                let Some(ui) = weak.upgrade() else {
-                    return false;
-                };
-                let app = NSApplication::sharedApplication(ui.mtm);
-                let Some(event) = app.currentEvent() else {
-                    return false;
-                };
-                let is_return = matches!(event.keyCode(), 36 | 76);
-                if !is_return || (command != sel!(insertNewline:) && command != sel!(noop:)) {
-                    return false;
-                }
-                // ⇧↩ and ⌥↩ break the line, ↩ sends.
-                let flags = event.modifierFlags();
-                if flags.contains(NSEventModifierFlags::Shift)
-                    || flags.contains(NSEventModifierFlags::Option)
-                {
-                    if let Some(window) = app.keyWindow()
-                        && let Some(responder) = window.firstResponder()
-                        && let Some(text) = responder.downcast_ref::<objc2_app_kit::NSTextView>()
-                    {
-                        use objc2_app_kit::NSStandardKeyBindingResponding;
-                        unsafe { text.insertNewlineIgnoringFieldEditor(None) };
-                    }
-                    return true;
-                }
-                let cmd = event
-                    .modifierFlags()
-                    .contains(NSEventModifierFlags::Command);
-                ui.submit_new_task(cmd);
-                true
-            }
-        });
+        // Return files the task into the backlog, ⌘Return straight into "В работе",
+        // ⇧Return and ⌥Return break the line.
         {
+            let submit_weak = weak.clone();
+            this.new_task.set_submit(move |cmd| {
+                if let Some(ui) = submit_weak.upgrade() {
+                    ui.submit_new_task(cmd);
+                }
+            });
             let weak = weak.clone();
-            delegate.set_on_change(move || {
+            this.new_task.set_on_change(move || {
                 if let Some(ui) = weak.upgrade() {
                     ui.update_capsule_height();
                 }
             });
         }
-        unsafe {
-            this.new_task
-                .setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
-        }
-        this._retained
-            .borrow_mut()
-            .push(Retained::into_super(Retained::into_super(delegate)));
     }
 
     fn submit_new_task(&self, in_progress: bool) {
-        let title = self.new_task.stringValue().to_string();
-        let title = title.trim();
+        let text = self.new_task.string();
+        // The first line names the task; what follows is its notes.
+        let (first, rest) = text.split_once('\n').unwrap_or((&text, ""));
+        let title = first.trim();
+        if text.trim().is_empty() {
+            return;
+        }
+        // A first line that is itself a construct (a checkbox, a list item, a heading,
+        // a quote, a picture) is no name: the task is «Новая задача», all of it notes.
+        let is_construct = ["- ", "* ", "+ ", "[] ", "# ", "## ", "### ", "> ", "![", "```"]
+            .iter()
+            .any(|p| title.starts_with(p))
+            || title
+                .split_once(". ")
+                .is_some_and(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
+        let (title, rest) = if is_construct {
+            ("Новая задача", text.as_str())
+        } else {
+            (title, rest)
+        };
         if title.is_empty() {
             return;
         }
@@ -1483,12 +1475,13 @@ impl Ui {
             .canvas
             .convertRect_fromView(self.capsule.frame(), Some(&self.pinned));
         self.cards.spawn_from(at, status);
-        (self.sink)(UiEvent::NewTask {
+        (self.sink)(UiEvent::NewTaskNotes {
             title: title.to_string(),
+            notes: rest.to_string(),
             status,
             color: Some(self.new_color.get() as u8),
         });
-        self.new_task.setStringValue(ns_string!(""));
+        self.new_task.set_text("");
         self.update_capsule_height();
     }
 
@@ -1528,14 +1521,17 @@ impl Ui {
             ),
             NSSize::new(cw, ch),
         );
-        let field_h = ch - 16.0;
         // The swatch is set concentric with the capsule's end: 6 pt from the right,
-        // the bottom and (one line) the top. The text keeps the end's radius from the
-        // left, and a gap before the swatch.
+        // the bottom and (one line) the top. The editor takes the rest; its own
+        // margins keep the text off the edges.
         let field = NSRect::new(
-            NSPoint::new(18.0, 8.0),
-            NSSize::new(cw - 18.0 - (SWATCH_INSET + SWATCH_D + 10.0), field_h),
+            NSPoint::ZERO,
+            NSSize::new(cw - (SWATCH_INSET + SWATCH_D + 4.0), ch),
         );
+        self.placeholder.setFrame(NSRect::new(
+            NSPoint::new(CAPSULE_INSET, (CAPSULE_H - 17.0) / 2.0),
+            NSSize::new(cw - CAPSULE_INSET - SWATCH_INSET - SWATCH_D - 8.0, 17.0),
+        ));
         // The button is a little larger than the swatch it holds (its hover disc).
         let pad = (28.0 - SWATCH_D) / 2.0;
         let button = NSRect::new(
@@ -1543,7 +1539,7 @@ impl Ui {
             NSSize::new(28.0, 28.0),
         );
         if animated {
-            let (c, f, b) = (self.capsule.clone(), self.new_task.clone(), self.palette_button.clone());
+            let (c, f, b) = (self.capsule.clone(), self.new_task.view.clone(), self.palette_button.clone());
             animate(true, 0.22, move || {
                 c.animator().setFrame(capsule);
                 f.animator().setFrame(field);
@@ -1551,71 +1547,20 @@ impl Ui {
             });
         } else {
             self.capsule.setFrame(capsule);
-            self.new_task.setFrame(field);
+            self.new_task.view.setFrame(field);
             self.palette_button.setFrame(button);
-        }
-    }
-
-    /// The #tags typed in the field take the colour of their tag.
-    fn colour_capsule_tags(&self) {
-        use objc2_app_kit::{NSForegroundColorAttributeName, NSTextView};
-        let Some(editor) = self.new_task.currentEditor() else { return };
-        let Some(text) = editor.downcast_ref::<NSTextView>() else { return };
-        let Some(storage) = (unsafe { text.textStorage() }) else { return };
-        let string = storage.string().to_string();
-        let total = storage.length();
-        let units: Vec<u16> = string.encode_utf16().collect();
-        unsafe {
-            storage.addAttribute_value_range(
-                NSForegroundColorAttributeName,
-                &objc2_app_kit::NSColor::labelColor(),
-                objc2_foundation::NSRange::new(0, total),
-            );
-        }
-        // «#word» at the start or after a space.
-        let mut i = 0;
-        while i < units.len() {
-            let at_start = i == 0 || units[i - 1] == b' ' as u16 || units[i - 1] == b'\n' as u16;
-            if units[i] == b'#' as u16 && at_start {
-                let mut j = i + 1;
-                while j < units.len() {
-                    let c = char::from_u32(units[j] as u32).unwrap_or(' ');
-                    if c.is_alphanumeric() || c == '_' || c == '-' {
-                        j += 1;
-                    } else {
-                        break;
-                    }
-                }
-                if j > i + 1 {
-                    let name = String::from_utf16_lossy(&units[i + 1..j]);
-                    let color = style::swatch(style::tag_hue(&name));
-                    unsafe {
-                        storage.addAttribute_value_range(
-                            NSForegroundColorAttributeName,
-                            &color,
-                            objc2_foundation::NSRange::new(i, j - i),
-                        );
-                    }
-                }
-                i = j.max(i + 1);
-            } else {
-                i += 1;
-            }
         }
     }
 
     /// The height the capsule needs for what is typed: a line, up to five.
     fn update_capsule_height(&self) {
-        self.colour_capsule_tags();
-        let field_w = self.capsule.frame().size.width - 18.0 - (SWATCH_INSET + SWATCH_D + 10.0);
-        let want = if self.new_task.stringValue().is_empty() || field_w <= 0.0 {
+        let empty = self.new_task.string().is_empty();
+        self.placeholder.setHidden(!empty);
+        let want = if empty {
             CAPSULE_H
         } else {
-            let text_h = self
-                .new_task
-                .cell()
-                .map_or(20.0, |c| c.cellSizeForBounds(NSRect::new(NSPoint::ZERO, NSSize::new(field_w, 10_000.0))).height);
-            (text_h.min(5.0 * 17.0).max(20.0) + 16.0).max(CAPSULE_H)
+            // Up to six lines, then it scrolls inside.
+            self.new_task.content_height().clamp(CAPSULE_H, 6.0 * 17.0 + 19.0)
         };
         if (want - self.capsule_h.get()).abs() > 0.5 {
             self.capsule_h.set(want);

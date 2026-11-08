@@ -90,6 +90,14 @@ pub enum UiEvent {
         /// The card's colour (an index into the palette); `None`: the default.
         color: Option<u8>,
     },
+    /// A task made in the capsule: its first line is the name, the rest its notes
+    /// (checklists and #tags in them become subtasks and tags as in the editor).
+    NewTaskNotes {
+        title: String,
+        notes: String,
+        status: Status,
+        color: Option<u8>,
+    },
     /// The subtasks of a task, as a whole list.
     SetSubtasks {
         id: TaskId,

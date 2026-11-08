@@ -44,6 +44,8 @@ pub use model::{
 };
 #[cfg(target_os = "macos")]
 pub use notify::MacNotifier;
+#[cfg(target_os = "macos")]
+pub use modal::{checklist, hashtags};
 pub use objc2::MainThreadMarker;
 #[cfg(target_os = "macos")]
 pub use window::{DemoMouse, DemoPointer, MainWindow, Sink};
