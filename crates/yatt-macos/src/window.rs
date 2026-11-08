@@ -191,9 +191,8 @@ struct Header {
     /// Lists or stacks, for the whole board.
     stack: Retained<NSButton>,
     ring: Ring,
-    /// The 🍅 in the toolbar: a click starts or pauses, holding it opens the
+    /// The 🍅 in the toolbar: a click starts or pauses, the chevron opens the
     /// pomodoro's lengths.
-    hold: Retained<crate::classes::HoldButton>,
     durations: Rc<crate::durations::Durations>,
     /// The same controls as native toolbar items.
     bar: Bar,
@@ -218,14 +217,21 @@ impl MainWindow {
         // A double click (or the context menu) opens a task in a window of its own
         // whatever the setting: noted here, then it is an ordinary open.
         let force_window = Rc::new(Cell::new(false));
+        let ui_slot: Rc<RefCell<Option<std::rc::Weak<Ui>>>> = Rc::new(RefCell::new(None));
         let sink: Sink = {
-            let (real, flag) = (sink, force_window.clone());
+            let (real, flag, slot) = (sink, force_window.clone(), ui_slot.clone());
             Rc::new(move |e| {
-                if let UiEvent::OpenInWindow(id) = e {
-                    flag.set(true);
-                    real(UiEvent::OpenTask(id));
-                } else {
-                    real(e);
+                match e {
+                    UiEvent::OpenInWindow(id) => {
+                        flag.set(true);
+                        real(UiEvent::OpenTask(id));
+                    }
+                    UiEvent::OpenSettings(tab) => {
+                        if let Some(ui) = slot.borrow().as_ref().and_then(|w| w.upgrade()) {
+                            ui.settings.show_tab(tab);
+                        }
+                    }
+                    e => real(e),
                 }
             })
         };
@@ -397,7 +403,7 @@ impl MainWindow {
             NSToolbar::initWithIdentifier(NSToolbar::alloc(mtm), ns_string!("yatt.toolbar"));
         // … [digits] … [Старт] [Секундомер] [Пропустить] [Стоп] [▤ ⤡]
         let bar = &header.bar;
-        let inspector_ui: Rc<RefCell<Option<std::rc::Weak<Ui>>>> = Rc::new(RefCell::new(None));
+        let inspector_ui = ui_slot.clone();
         // The inspector's own section of the toolbar (right of the inspector's
         // tracking separator): palette, trash, close. Hidden while it is shut.
         let inspector_items: Vec<Retained<NSToolbarItem>> = [
@@ -2055,26 +2061,23 @@ impl Header {
             b.setImage(image.as_deref());
             b.setToolTip(Some(&NSString::from_str(tip)));
         }
-        start_item.setTitle(ns_string!(""));
-        // The 🍅 item is a button of its own, so it can tell a hold from a click.
+        // The 🍅 item is a native menu item: a click on the main part starts or
+        // pauses, the chevron opens the menu of the pomodoro's lengths.
         let durations = Rc::new(crate::durations::Durations::new(mtm, sink));
-        let hold = crate::classes::HoldButton::new(mtm);
-        hold.setBezelStyle(NSBezelStyle::Toolbar);
-        hold.setBordered(true);
-        unsafe {
-            hold.setTarget(start_item.target().as_deref());
-            hold.setAction(start_item.action());
-        }
-        {
-            let durations = durations.clone();
-            *hold.ivars().on_hold.borrow_mut() = Some(Box::new(move |v| durations.open(v)));
-        }
-        hold.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(36.0, 36.0)));
-        hold.setEnabled(true);
-        start_item.setView(Some(&hold));
-        // Its own bubble, as the image items get.
-        start_item.setBordered(true);
-        start_item.setAutovalidates(false);
+        let start_item: Retained<NSToolbarItem> = {
+            let menu_item = objc2_app_kit::NSMenuToolbarItem::initWithItemIdentifier(
+                objc2_app_kit::NSMenuToolbarItem::alloc(mtm),
+                &start_item.itemIdentifier(),
+            );
+            menu_item.setLabel(&start_item.label());
+            unsafe {
+                menu_item.setTarget(start_item.target().as_deref());
+                menu_item.setAction(start_item.action());
+            }
+            menu_item.setMenu(durations.menu());
+            menu_item.setShowsIndicator(true);
+            Retained::into_super(menu_item)
+        };
         // The view switches: two icons side by side, which the toolbar puts in one
         // shared bubble. Their targets are set in `Ui::wire`.
         let icon_item = |id: &str| {
@@ -2116,7 +2119,6 @@ impl Header {
             mini,
             stack,
             ring,
-            hold,
             durations,
             bar: Bar {
                 start: start_item,
@@ -2290,10 +2292,8 @@ impl Header {
         self.stop.setHidden(!t.can_stop);
         self.bar.start.setImage(icon.as_deref());
         self.bar.start.setLabel(&NSString::from_str(tip));
-        let hint = format!("{tip} · удерживайте: длительность");
+        let hint = format!("{tip} · шеврон: длительность помидора");
         self.bar.start.setToolTip(Some(&NSString::from_str(&hint)));
-        self.hold.setImage(icon.as_deref());
-        self.hold.setToolTip(Some(&NSString::from_str(&hint)));
         self.durations.show_values(t);
         self.bar.stopwatch.setHidden(!t.can_start_stopwatch);
         self.bar.skip.setHidden(!t.can_skip);

@@ -56,6 +56,8 @@ impl Workspace {
             UiEvent::Move { id, status, index } => {
                 e.move_task(id, status, Placement::Index(index));
             }
+            // Handled by the window itself.
+            UiEvent::OpenSettings(_) => {}
             UiEvent::OpenTask(id) | UiEvent::OpenInWindow(id) => {
                 if e.board.get(id).is_some() {
                     self.expanded = Some(id);

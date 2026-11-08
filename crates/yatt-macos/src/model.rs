@@ -110,6 +110,8 @@ pub enum UiEvent {
     /// Opens that task in a window of its own, whatever the setting (a double
     /// click, or the card's context menu).
     OpenInWindow(TaskId),
+    /// Opens the settings window on that tab (0 tasks, 1 tags, 2 pomodoro, 3 view).
+    OpenSettings(isize),
     /// Opens that task's panel, whatever was open (from the menu bar).
     OpenTask(TaskId),
     Rename(TaskId, String),
