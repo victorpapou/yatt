@@ -153,12 +153,53 @@ pub fn swatch_image_sized(hue: usize, size: f64) -> Option<Retained<NSImage>> {
     image.imageWithSymbolConfiguration(&config)
 }
 
-/// A round swatch of a colour as a plain image (not a template: it keeps its colour).
+/// A round swatch of a colour as a plain image (not a template: it keeps its colour),
+/// with a thin outline so it reads on any background.
 pub fn circle_image(hue: usize, size: f64) -> Retained<NSImage> {
-    let color = style::swatch(hue);
+    pie_image(&[hue], size)
+}
+
+/// The colours as equal sectors of one circle (one colour: a plain disc).
+pub fn pie_image(hues: &[usize], size: f64) -> Retained<NSImage> {
+    let colors: Vec<Retained<NSColor>> = hues.iter().map(|h| style::swatch(*h)).collect();
     let block = block2::RcBlock::new(move |rect: NSRect| {
-        color.setFill();
-        objc2_app_kit::NSBezierPath::bezierPathWithOvalInRect(rect).fill();
+        let path = |r: NSRect| objc2_app_kit::NSBezierPath::bezierPathWithOvalInRect(r);
+        let inner = NSRect::new(
+            NSPoint::new(rect.origin.x + 1.0, rect.origin.y + 1.0),
+            NSSize::new(rect.size.width - 2.0, rect.size.height - 2.0),
+        );
+        if colors.len() <= 1 {
+            if let Some(c) = colors.first() {
+                c.setFill();
+            }
+            path(inner).fill();
+        } else {
+            let (cx, cy) = (rect.size.width / 2.0, rect.size.height / 2.0);
+            let r = inner.size.width / 2.0;
+            let n = colors.len() as f64;
+            for (i, c) in colors.iter().enumerate() {
+                let (a0, a1) = (90.0 - 360.0 * i as f64 / n, 90.0 - 360.0 * (i as f64 + 1.0) / n);
+                let p = objc2_app_kit::NSBezierPath::bezierPath();
+                p.moveToPoint(NSPoint::new(cx, cy));
+                p.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise(
+                    NSPoint::new(cx, cy),
+                    r,
+                    a0,
+                    a1,
+                    true,
+                );
+                p.closePath();
+                c.setFill();
+                p.fill();
+            }
+        }
+        NSColor::whiteColor().colorWithAlphaComponent(0.35).setStroke();
+        let ring = path(NSRect::new(
+            NSPoint::new(rect.origin.x + 0.5, rect.origin.y + 0.5),
+            NSSize::new(rect.size.width - 1.0, rect.size.height - 1.0),
+        ));
+        ring.setLineWidth(1.0);
+        ring.stroke();
         objc2::runtime::Bool::YES
     });
     NSImage::imageWithSize_flipped_drawingHandler(NSSize::new(size, size), false, &block)

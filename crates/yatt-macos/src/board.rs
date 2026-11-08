@@ -403,6 +403,9 @@ pub struct Board {
     scrubbed: Cell<[f64; COLS]>,
     /// Selected cards, and the one a ⇧-click range starts from.
     selected: RefCell<HashSet<TaskId>>,
+    /// Called when the selection changed (the colour button follows it).
+    pub on_selection: RefCell<Option<Box<dyn Fn()>>>,
+    last_selection: RefCell<Vec<TaskId>>,
     anchor: Cell<Option<TaskId>>,
     press: RefCell<Option<Press>>,
     drag: RefCell<Option<Drag>>,
@@ -502,6 +505,8 @@ impl Board {
             held: Cell::new([None; COLS]),
             scrubbed: Cell::new([0.0; COLS]),
             selected: RefCell::new(HashSet::new()),
+            on_selection: RefCell::new(None),
+            last_selection: RefCell::new(Vec::new()),
             anchor: Cell::new(None),
             press: RefCell::new(None),
             drag: RefCell::new(None),
@@ -1424,6 +1429,15 @@ impl Board {
 
     /// Recomputes every card's target, springiness, look and stacking order.
     fn retarget(&self) {
+        {
+            let now = self.selection();
+            if *self.last_selection.borrow() != now {
+                *self.last_selection.borrow_mut() = now;
+                if let Some(f) = self.on_selection.borrow().as_ref() {
+                    f();
+                }
+            }
+        }
         let drag = self.drag.borrow();
         let drag_ids = drag.as_ref().map(|d| d.ids.clone()).unwrap_or_default();
         let order = self.order.borrow().clone();

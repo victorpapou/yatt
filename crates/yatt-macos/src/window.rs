@@ -672,7 +672,7 @@ impl MainWindow {
         let palette_button = {
             let b = NSButton::new(mtm);
             b.setBordered(true);
-            b.setBezelStyle(objc2_app_kit::NSBezelStyle::Toolbar);
+            b.setBezelStyle(objc2_app_kit::NSBezelStyle::Circular);
             b.setShowsBorderOnlyWhileMouseInside(true);
             b.setImage(symbol("circle.fill", "Цвет новой задачи").as_deref());
             b.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageOnly);
@@ -706,7 +706,7 @@ impl MainWindow {
             let pick_ui = inspector_ui.clone();
             crate::palette::Palette::new(mtm, move |hue| {
                 if let Some(ui) = pick_ui.borrow().as_ref().and_then(|w| w.upgrade()) {
-                    ui.set_new_color(hue);
+                    ui.pick_color(hue);
                 }
             })
         };
@@ -1297,7 +1297,7 @@ impl Ui {
             let weak = weak.clone();
             let target = ActionTarget::new(this.mtm, move || {
                 if let Some(ui) = weak.upgrade() {
-                    ui.palette.show_state(ui.new_color.get());
+                    ui.refresh_palette();
                     ui.palette.toggle(&ui.palette_button);
                 }
             });
@@ -1468,12 +1468,48 @@ impl Ui {
     /// The capsule's colour for the next new card.
     fn set_new_color(&self, hue: usize) {
         self.new_color.set(hue);
-        // The button is the colour itself: a round swatch of the chosen colour,
-        // drawn as an image, with the toolbar buttons' hover state.
-        let image = crate::settings::circle_image(hue, 18.0);
+        self.refresh_palette();
+    }
+
+    /// The palette button shows the colour new cards get, or, with cards selected,
+    /// their colours as sectors of one circle.
+    fn refresh_palette(&self) {
+        let selection = self.cards.selection();
+        let mut hues: Vec<usize> = Vec::new();
+        for id in &selection {
+            let h = style::hue_of(*id);
+            if !hues.contains(&h) {
+                hues.push(h);
+            }
+        }
+        if hues.is_empty() {
+            hues.push(self.new_color.get());
+        }
+        let image = crate::settings::pie_image(&hues[..hues.len().min(5)], 20.0);
         self.palette_button.setImage(Some(&image));
         self.palette_button.setContentTintColor(None);
-        self.palette.show_state(hue);
+        // One colour: ticked; several (mixed): none.
+        self.palette
+            .show_state(if hues.len() == 1 { hues[0] } else { usize::MAX });
+    }
+
+    /// A colour chosen in the popover: for the selected cards, all in one step of
+    /// undo, or, with none selected, for the next new card.
+    fn pick_color(&self, hue: usize) {
+        let selection = self.cards.selection();
+        if selection.is_empty() {
+            self.set_new_color(hue);
+            return;
+        }
+        let looks: Vec<UiEvent> = selection
+            .into_iter()
+            .map(|id| UiEvent::SetLook {
+                id,
+                color: Some(hue as u8),
+                icon: style::icon_of(id).map(str::to_string),
+            })
+            .collect();
+        (self.sink)(UiEvent::Group(looks));
     }
 
     /// The settings changed: the colour new cards get and the first-tag colouring.

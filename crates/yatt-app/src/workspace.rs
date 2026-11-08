@@ -295,6 +295,7 @@ fn board_commands(event: UiEvent, out: &mut Vec<Command>) {
             placement: Placement::Index(index),
         }),
         UiEvent::Delete(id) => out.push(Command::Delete { id }),
+        UiEvent::SetLook { id, color, icon } => out.push(Command::SetLook { id, color, icon }),
         UiEvent::Paste { items, status } => {
             for (title, notes) in items.into_iter().take(MAX_PASTED).rev() {
                 let id = TaskId::new();
@@ -378,6 +379,35 @@ mod tests {
         ws.handle(UiEvent::Undo);
         assert_eq!(ws.snapshot().columns[1].cards[0].title, "План");
         assert!(!ws.handle(UiEvent::Quit));
+    }
+
+    #[test]
+    fn a_colour_for_several_cards_is_one_step_of_undo() {
+        let mut ws = workspace();
+        for t in ["А", "Б"] {
+            ws.handle(UiEvent::NewTask {
+                title: t.into(),
+                status: Status::Backlog,
+                color: None,
+            });
+        }
+        let ids: Vec<_> = ws.snapshot().columns[0].cards.iter().map(|c| c.id).collect();
+        let before: Vec<_> = ws.snapshot().columns[0].cards.iter().map(|c| c.color).collect();
+        ws.handle(UiEvent::Group(
+            ids.iter()
+                .map(|id| UiEvent::SetLook {
+                    id: *id,
+                    color: Some(5),
+                    icon: None,
+                })
+                .collect(),
+        ));
+        assert!(ws.snapshot().columns[0].cards.iter().all(|c| c.color == Some(5)));
+        ws.handle(UiEvent::Undo);
+        let after: Vec<_> = ws.snapshot().columns[0].cards.iter().map(|c| c.color).collect();
+        assert_eq!(after, before);
+        ws.handle(UiEvent::Redo);
+        assert!(ws.snapshot().columns[0].cards.iter().all(|c| c.color == Some(5)));
     }
 
     #[test]

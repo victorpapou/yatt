@@ -189,6 +189,11 @@ pub fn set_look(id: TaskId, color: Option<u8>, icon: Option<&str>) {
     });
 }
 
+/// The icon a task chose (`None`: the one from its id).
+pub fn icon_of(id: TaskId) -> Option<&'static str> {
+    look(id).1
+}
+
 fn look(id: TaskId) -> Look {
     LOOKS.with(|l| l.borrow().get(&id).copied().unwrap_or_default())
 }
