@@ -2573,7 +2573,10 @@ impl Header {
                 d.setFont(Some(&clock_font(size)));
                 d.setAlignment(NSTextAlignment::Center);
                 d.setWantsLayer(true);
-                d.setLayerUsesCoreImageFilters(true);
+                // Filters on layers hosted in the toolbar make the window re-render
+                // its titlebar (the separator line flickered); the blur is only for
+                // the mini window, where there is no toolbar.
+                d.setLayerUsesCoreImageFilters(self.minimal.get());
                 d.setFrame(NSRect::new(
                     NSPoint::new(x - DIGIT_PAD / 2.0, 0.0),
                     NSSize::new(w + DIGIT_PAD, h),
@@ -2603,14 +2606,14 @@ impl Header {
                 ghost.setAlignment(NSTextAlignment::Center);
                 ghost.setFrame(d.frame());
                 ghost.setWantsLayer(true);
-                ghost.setLayerUsesCoreImageFilters(true);
+                ghost.setLayerUsesCoreImageFilters(self.minimal.get());
                 self.digits_box.addSubview(&ghost);
                 let (w, h) = (d.frame().size.width, d.frame().size.height);
                 if let Some(layer) = ghost.layer() {
-                    numeric_morph(&layer, (w, h), DigitPose::REST, DigitPose::OUT, reduce);
+                    numeric_morph(&layer, (w, h), DigitPose::REST, DigitPose::OUT, reduce, self.minimal.get());
                 }
                 if let Some(layer) = d.layer() {
-                    numeric_morph(&layer, (w, h), DigitPose::IN, DigitPose::REST, reduce);
+                    numeric_morph(&layer, (w, h), DigitPose::IN, DigitPose::REST, reduce, self.minimal.get());
                 }
                 let block = RcBlock::new(move |_t: NonNull<objc2_foundation::NSTimer>| {
                     ghost.removeFromSuperview();
@@ -2686,7 +2689,7 @@ impl DigitPose {
 /// Animates a digit's layer from one pose to another: the scale and offset on a
 /// critically damped spring (no bounce), opacity and blur alongside. The layer
 /// ends in `to` (kept for a pose other than rest, for a ghost on its way out).
-fn numeric_morph(layer: &CALayer, size: (f64, f64), from: DigitPose, to: DigitPose, reduce: bool) {
+fn numeric_morph(layer: &CALayer, size: (f64, f64), from: DigitPose, to: DigitPose, reduce: bool, blurred: bool) {
     let keep = |a: &CABasicAnimation| {
         if to.alpha < 1.0 {
             a.setFillMode(unsafe { objc2_quartz_core::kCAFillModeForwards });
@@ -2716,7 +2719,7 @@ fn numeric_morph(layer: &CALayer, size: (f64, f64), from: DigitPose, to: DigitPo
     keep(&spring);
     layer.addAnimation_forKey(&spring, Some(ns_string!("digit.transform")));
     // The blur runs on a filter named on the layer for the length of the change.
-    if let Some(blur) = style::gaussian(0.0) {
+    if let Some(blur) = style::gaussian(0.0).filter(|_| blurred) {
         unsafe { blur.setValue_forKey(Some(ns_string!("blur")), ns_string!("name")) };
         let filters =
             NSArray::from_retained_slice(&[Retained::into_super(Retained::into_super(blur))]);

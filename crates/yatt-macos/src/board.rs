@@ -730,7 +730,7 @@ impl Board {
         let blur = objc2_app_kit::NSVisualEffectView::new(self.mtm);
         blur.setMaterial(objc2_app_kit::NSVisualEffectMaterial::HeaderView);
         blur.setBlendingMode(objc2_app_kit::NSVisualEffectBlendingMode::WithinWindow);
-        blur.setState(objc2_app_kit::NSVisualEffectState::FollowsWindowActiveState);
+        blur.setState(objc2_app_kit::NSVisualEffectState::Active);
         let material: Retained<NSView> = Retained::into_super(blur);
         material.setAlphaValue(0.0);
         let line = FillView::new(self.mtm, Fill::Separator);
