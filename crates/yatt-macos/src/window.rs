@@ -143,6 +143,12 @@ struct Ui {
     palette_button: Retained<NSButton>,
     palette: crate::palette::Palette,
     settings: crate::settings::SettingsWindow,
+    /// The task in a window of its own (when the settings say so).
+    task_window: crate::taskwindow::TaskWindow,
+    /// The inspector's view controller: the pane goes back to it from the window.
+    inspector_vc: Retained<objc2_app_kit::NSViewController>,
+    /// Whether the pane is in the task window now (not in the inspector).
+    in_window: Cell<bool>,
     new_color: Cell<usize>,
     /// How many items the toolbar has without the inspector's section.
     base_toolbar_len: Cell<usize>,
@@ -572,9 +578,11 @@ impl MainWindow {
             item.setCollapsed(true);
             item.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::None);
             split_vc.addSplitViewItem(&item);
+            let vc_keep = vc.clone();
             unsafe { retained.push(Retained::cast_unchecked::<AnyObject>(vc)) };
-            item
+            (item, vc_keep)
         };
+        let (inspector, inspector_vc) = inspector;
         // The split-view controller is the window's own content controller, as in
         // Finder, so the toolbar knows the three columns and gives each one its
         // scroll edge effect. Everything else (board, modal) lies over it in
@@ -676,6 +684,33 @@ impl MainWindow {
                 }),
             )
         };
+        let task_window = {
+            let (look, trash, close, closed) = (
+                inspector_ui.clone(),
+                inspector_ui.clone(),
+                inspector_ui.clone(),
+                inspector_ui.clone(),
+            );
+            let call = |slot: Rc<RefCell<Option<std::rc::Weak<Ui>>>>, f: fn(&Ui)| -> Rc<dyn Fn()> {
+                Rc::new(move || {
+                    if let Some(ui) = slot.borrow().as_ref().and_then(|w| w.upgrade()) {
+                        f(&ui);
+                    }
+                })
+            };
+            let closed_slot = closed;
+            crate::taskwindow::TaskWindow::new(
+                mtm,
+                call(look, |ui| ui.modal.toggle_picker()),
+                call(trash, |ui| ui.modal.delete_open()),
+                call(close, |ui| ui.modal.close_open()),
+                move || {
+                    if let Some(ui) = closed_slot.borrow().as_ref().and_then(|w| w.upgrade()) {
+                        ui.modal.close_open();
+                    }
+                },
+            )
+        };
         let ui = Rc::new(Ui {
             mtm,
             window,
@@ -702,6 +737,9 @@ impl MainWindow {
             palette_button,
             palette,
             settings,
+            task_window,
+            inspector_vc,
+            in_window: Cell::new(false),
             new_color: Cell::new(crate::settings::default_color()),
             inspector_ids,
             base_toolbar_len: Cell::new(0),
@@ -904,6 +942,10 @@ impl MainWindow {
     /// down fans it out and up folds it.
     pub fn show_settings(&self) {
         self.ui.show_settings();
+    }
+
+    pub fn capture_task_window_png(&self, path: &str) -> bool {
+        self.ui.task_window.capture_png(path)
     }
 
     pub fn capture_settings_png(&self, path: &str) -> bool {
@@ -1166,7 +1208,7 @@ impl Ui {
             let weak = weak.clone();
             move || {
                 if let Some(ui) = weak.upgrade() {
-                    ui.modal.layout(ui.top_inset.get());
+                    ui.modal.layout(ui.panel_top());
                 }
             }
         }));
@@ -1185,7 +1227,7 @@ impl Ui {
             let weak = weak.clone();
             this.modal.on_subtasks_resize(move || {
                 if let Some(ui) = weak.upgrade() {
-                    ui.modal.layout(ui.top_inset.get());
+                    ui.modal.layout(ui.panel_top());
                 }
             });
         }
@@ -1371,8 +1413,58 @@ impl Ui {
     }
 
     /// The settings changed: the colour new cards get and the first-tag colouring.
+    /// Where the pane's header starts: below the toolbar of whichever window shows it.
+    fn panel_top(&self) -> f64 {
+        if self.in_window.get() {
+            self.task_window.top_inset()
+        } else {
+            self.top_inset.get()
+        }
+    }
+
+    /// Shows or hides the open task, in the inspector or in a window of its own.
+    fn present(self: &Rc<Self>, show: bool) {
+        let want_window = crate::settings::open_in_window();
+        if show {
+            if want_window {
+                if !self.inspector.isCollapsed() {
+                    self.set_inspector(false);
+                }
+                self.in_window.set(true);
+                self.task_window.attach(&self.modal.panel);
+                self.modal.layout(self.panel_top());
+            } else {
+                if self.in_window.replace(false) {
+                    self.leave_window();
+                }
+                self.set_inspector(true);
+            }
+        } else if self.in_window.replace(false) {
+            self.leave_window();
+        } else {
+            self.set_inspector(false);
+        }
+    }
+
+    /// Takes the pane back from the task window to the inspector's view controller.
+    fn leave_window(&self) {
+        let blank = objc2_app_kit::NSView::new(self.mtm);
+        self.task_window.detach(&blank);
+        self.inspector_vc.setView(&self.modal.panel);
+    }
+
     fn apply_settings(self: &Rc<Self>) {
         self.set_new_color(crate::settings::default_color());
+        // Where an open task shows follows the setting at once.
+        if self.modal.open_task().is_some() && self.in_window.get() != crate::settings::open_in_window() {
+            if self.in_window.get() {
+                self.in_window.set(false);
+                self.leave_window();
+                self.set_inspector(true);
+            } else {
+                self.present(true);
+            }
+        }
         style::set_recolor_by_tag(crate::settings::recolor_by_tag());
         self.cards.restyle();
         if let Some(snap) = self.last.borrow().clone() {
@@ -1485,7 +1577,7 @@ impl Ui {
     fn layout(&self) {
         let bounds = self.root.bounds();
         let size = bounds.size;
-        self.modal.layout(self.top_inset.get());
+        self.modal.layout(self.panel_top());
         if self.minimal.get() {
             self.header.view.setFrame(NSRect::new(NSPoint::ZERO, size));
             self.header.layout(size.width, size.height);
@@ -1732,9 +1824,9 @@ impl Ui {
         match want.and_then(find) {
             Some((card, status)) => {
                 self.modal.open(&card, status);
-                self.set_inspector(true);
+                self.present(true);
             }
-            None => self.set_inspector(false),
+            None => self.present(false),
         }
     }
 

@@ -40,6 +40,12 @@ pub fn set_default_color(c: usize) {
 
 /// Whether a task opens in a window of its own instead of the inspector.
 pub fn open_in_window() -> bool {
+    // `YATT_OPEN=window|inspector`: whatever was saved (for the demo's captures).
+    match std::env::var("YATT_OPEN").as_deref() {
+        Ok("window") => return true,
+        Ok("inspector") => return false,
+        _ => {}
+    }
     NSUserDefaults::standardUserDefaults().integerForKey(&NSString::from_str(OPEN_KEY)) == 1
 }
 

@@ -171,7 +171,7 @@ pub fn run() -> anyhow::Result<()> {
         // Development aid: `YATT_SHOT=<file.png>` saves the real window (the real
         // database, or the one in `YATT_DB`) after a moment and quits.
         if let Ok(path) = std::env::var("YATT_SHOT") {
-            let (window, sink) = (window.clone(), sink.clone());
+            let (window, sink, ws) = (window.clone(), sink.clone(), workspace.clone());
             cx.spawn(async move |cx: &mut gpui::AsyncApp| {
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(2000))
@@ -183,6 +183,25 @@ pub fn run() -> anyhow::Result<()> {
                     .timer(std::time::Duration::from_millis(1000))
                     .await;
                 eprintln!("shot: {path}: {}", window.capture_png(&path));
+                if std::env::var_os("YATT_SHOT_TASK").is_some() {
+                    let id = ws.read_with(cx, |ws, _| {
+                        ws.snapshot()
+                            .columns
+                            .iter()
+                            .find_map(|c| c.cards.first().map(|c| c.id))
+                    });
+                    if let Ok(Some(id)) = id {
+                        sink(yatt_macos::UiEvent::OpenTask(id));
+                    }
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(1200))
+                        .await;
+                    eprintln!(
+                        "shot: task: {}",
+                        window.capture_task_window_png(&format!("{path}.task.png"))
+                    );
+                    eprintln!("shot: main: {}", window.capture_png(&format!("{path}.main.png")));
+                }
                 if std::env::var_os("YATT_SHOT_SETTINGS").is_some() {
                     window.show_settings();
                     cx.background_executor()
