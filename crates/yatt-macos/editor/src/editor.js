@@ -44,7 +44,15 @@ body {
   text-decoration: line-through; color: color-mix(in srgb, CanvasText 45%, transparent);
 }
 .ProseMirror ul[data-type="taskList"] input[type="checkbox"] {
-  width: 15px; height: 15px; margin: 0; accent-color: AccentColor; cursor: pointer;
+  -webkit-appearance: none; appearance: none; box-sizing: border-box;
+  width: 16px; height: 16px; margin: 0; cursor: pointer; border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, CanvasText 40%, transparent);
+  background: transparent center / 10px no-repeat;
+  transition: background-color .15s, border-color .15s;
+}
+.ProseMirror ul[data-type="taskList"] input[type="checkbox"]:checked {
+  border-color: AccentColor; background-color: AccentColor;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M1.8 5.3l2.2 2.2 4.2-4.6' fill='none' stroke='white' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 .ProseMirror code {
   font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -69,8 +77,8 @@ body {
 .ProseMirror img.ProseMirror-selectednode { outline: 2px solid AccentColor; }
 .ProseMirror hr { border: none; border-top: 1px solid color-mix(in srgb, CanvasText 15%, transparent); }
 .ProseMirror .tag {
-  border-radius: 10px; padding: 1px 7px;
-  background: color-mix(in srgb, CanvasText 12%, transparent);
+  border-radius: 8px; padding: 1px 6px; font-weight: 500; font-size: 0.95em;
+  background: color-mix(in srgb, CanvasText 10%, transparent);
 }
 .ProseMirror p.is-editor-empty:first-child::before {
   content: attr(data-placeholder); float: left; height: 0; pointer-events: none;
@@ -102,7 +110,7 @@ const HashTags = Extension.create({
               const start = pos + m.index + m[1].length
               const end = start + 1 + m[2].length
               const c = tagColors[m[2]]
-              decos.push(Decoration.inline(start, end, { class: 'tag', style: c ? 'background:' + c : '' }))
+              decos.push(Decoration.inline(start, end, { class: 'tag', style: c ? 'background:rgba(' + c + ',.18);color:rgb(' + c + ')' : '' }))
             }
           })
           return DecorationSet.create(state.doc, decos)

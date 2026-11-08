@@ -233,7 +233,7 @@ fn group(mtm: MainThreadMarker, parent: &NSView, top: f64, rows: Vec<Row>) -> f6
     boxv.setBoxType(objc2_app_kit::NSBoxType::Custom);
     boxv.setTitlePosition(objc2_app_kit::NSTitlePosition::NoTitle);
     boxv.setBorderWidth(0.0);
-    boxv.setCornerRadius(10.0);
+    boxv.setCornerRadius(14.0);
     boxv.setContentViewMargins(NSSize::ZERO);
     boxv.setFillColor(&NSColor::quaternarySystemFillColor());
     let content = FlippedView::new(mtm, NSRect::new(NSPoint::ZERO, frame.size));
@@ -380,14 +380,17 @@ struct DemoCard {
 impl DemoCard {
     fn new(mtm: MainThreadMarker) -> Self {
         let glass = style::card_blur(mtm);
-        glass.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(200.0, 84.0)));
+        glass.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(200.0, 82.0)));
+        if let Some(g) = glass.downcast_ref::<objc2_app_kit::NSGlassEffectView>() {
+            g.setCornerRadius(14.0);
+        }
         // The card's own text and tag, over its glass.
-        let content = FlippedView::new(mtm, NSRect::new(NSPoint::ZERO, NSSize::new(200.0, 84.0)));
+        let content = FlippedView::new(mtm, NSRect::new(NSPoint::ZERO, NSSize::new(200.0, 82.0)));
         let title = NSTextField::labelWithString(ns_string!("Сверстать доску"), mtm);
         title.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize_weight(14.0, unsafe {
             objc2_app_kit::NSFontWeightSemibold
         })));
-        title.setFrame(NSRect::new(NSPoint::new(16.0, 14.0), NSSize::new(168.0, 18.0)));
+        title.setFrame(NSRect::new(NSPoint::new(16.0, 16.0), NSSize::new(168.0, 18.0)));
         content.addSubview(&title);
         let tag = NSTextField::labelWithString(ns_string!("дизайн"), mtm);
         tag.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize_weight(11.5, unsafe {
@@ -396,11 +399,12 @@ impl DemoCard {
         tag.setAlignment(NSTextAlignment::Center);
         tag.setWantsLayer(true);
         if let Some(layer) = tag.layer() {
-            layer.setCornerRadius(9.0);
+            layer.setCornerRadius(10.0);
             layer.setBackgroundColor(Some(
-                &style::swatch(style::tag_hue("дизайн")).colorWithAlphaComponent(0.55).CGColor(),
+                &style::swatch(style::tag_hue("дизайн")).colorWithAlphaComponent(0.18).CGColor(),
             ));
         }
+        tag.setTextColor(Some(&style::swatch(style::tag_hue("дизайн"))));
         tag.setFrame(NSRect::new(NSPoint::new(16.0, 46.0), NSSize::new(66.0, 20.0)));
         content.addSubview(&tag);
         // The glass hosts the content when it is the system's; else it lies under.
@@ -643,10 +647,11 @@ impl SettingsWindow {
                     cap.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize(12.0)));
                     cap.setWantsLayer(true);
                     if let Some(layer) = cap.layer() {
-                        layer.setCornerRadius(9.0);
+                        layer.setCornerRadius(10.0);
                         layer.setBackgroundColor(Some(
-                            &style::swatch(style::tag_hue(tag)).colorWithAlphaComponent(0.55).CGColor(),
+                            &style::swatch(style::tag_hue(tag)).colorWithAlphaComponent(0.18).CGColor(),
                         ));
+                        cap.setTextColor(Some(&style::swatch(style::tag_hue(tag))));
                     }
                     let w = (cap.fittingSize().width + 18.0).min(240.0);
                     cap.setFrame(NSRect::new(

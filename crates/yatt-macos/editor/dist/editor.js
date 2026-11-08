@@ -236,7 +236,15 @@ body {
   text-decoration: line-through; color: color-mix(in srgb, CanvasText 45%, transparent);
 }
 .ProseMirror ul[data-type="taskList"] input[type="checkbox"] {
-  width: 15px; height: 15px; margin: 0; accent-color: AccentColor; cursor: pointer;
+  -webkit-appearance: none; appearance: none; box-sizing: border-box;
+  width: 16px; height: 16px; margin: 0; cursor: pointer; border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, CanvasText 40%, transparent);
+  background: transparent center / 10px no-repeat;
+  transition: background-color .15s, border-color .15s;
+}
+.ProseMirror ul[data-type="taskList"] input[type="checkbox"]:checked {
+  border-color: AccentColor; background-color: AccentColor;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M1.8 5.3l2.2 2.2 4.2-4.6' fill='none' stroke='white' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 .ProseMirror code {
   font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -261,11 +269,11 @@ body {
 .ProseMirror img.ProseMirror-selectednode { outline: 2px solid AccentColor; }
 .ProseMirror hr { border: none; border-top: 1px solid color-mix(in srgb, CanvasText 15%, transparent); }
 .ProseMirror .tag {
-  border-radius: 10px; padding: 1px 7px;
-  background: color-mix(in srgb, CanvasText 12%, transparent);
+  border-radius: 8px; padding: 1px 6px; font-weight: 500; font-size: 0.95em;
+  background: color-mix(in srgb, CanvasText 10%, transparent);
 }
 .ProseMirror p.is-editor-empty:first-child::before {
   content: attr(data-placeholder); float: left; height: 0; pointer-events: none;
   color: color-mix(in srgb, CanvasText 35%, transparent);
 }
-`,ph=document.createElement("style");ph.textContent=Tx;document.head.appendChild(ph);var mh={},Ex=W.create({name:"hashtags",addProseMirrorPlugins(){return[new L({key:new V("hashtags"),props:{decorations(n){let e=[];return n.doc.descendants((t,r,s)=>{if(!t.isText||s&&s.type.name==="codeBlock"||t.marks.some(l=>l.type.name==="code"))return;let i=/(^|[\s(])#([\p{L}\p{N}_-]+)/gu,o;for(;o=i.exec(t.text);){let l=r+o.index+o[1].length,a=l+1+o[2].length,c=mh[o[2]];e.push(re.inline(l,a,{class:"tag",style:c?"background:"+c:""}))}}),j.create(n.doc,e)}}})]}}),Hl=n=>window.webkit?.messageHandlers?.yatt?.postMessage(n),Mn=null,Fl=!1,ii=()=>{clearTimeout(Mn),Mn=null,Hl("notes:"+Ut.getMarkdown())},Ut=new Id({element:document.getElementById("editor"),extensions:[qf,fh,wl,Ex,xl.configure({nested:!0}),hh.configure({allowBase64:!0}),Wf.configure({placeholder:"\u0417\u0430\u043C\u0435\u0442\u043A\u0438\u2026 Markdown: # \u0437\u0430\u0433\u043E\u043B\u043E\u0432\u043E\u043A, - \u0441\u043F\u0438\u0441\u043E\u043A, - [ ] \u043F\u043E\u0434\u0437\u0430\u0434\u0430\u0447\u0430, **\u0436\u0438\u0440\u043D\u044B\u0439**, `\u043A\u043E\u0434`"})],content:"",onUpdate:()=>{Fl||(clearTimeout(Mn),Mn=setTimeout(ii,400))},onBlur:()=>{Mn&&ii()}});window.yatt={setMarkdown(n){Fl=!0,Ut.commands.setContent(n||"",{contentType:"markdown",emitUpdate:!1}),Fl=!1},setTagColors(n){mh=n||{},Ut.view.dispatch(Ut.state.tr.setMeta("hashtags",!0))},flush(){Mn&&ii()},focus(){Ut.commands.focus("end",{scrollIntoView:!1})},undo(){Ut.commands.undo()},redo(){Ut.commands.redo()}};document.addEventListener("keydown",n=>{n.key==="Escape"&&(n.preventDefault(),ii(),Hl("close"))});Hl("ready");})();
+`,ph=document.createElement("style");ph.textContent=Tx;document.head.appendChild(ph);var mh={},Ex=W.create({name:"hashtags",addProseMirrorPlugins(){return[new L({key:new V("hashtags"),props:{decorations(n){let e=[];return n.doc.descendants((t,r,s)=>{if(!t.isText||s&&s.type.name==="codeBlock"||t.marks.some(l=>l.type.name==="code"))return;let i=/(^|[\s(])#([\p{L}\p{N}_-]+)/gu,o;for(;o=i.exec(t.text);){let l=r+o.index+o[1].length,a=l+1+o[2].length,c=mh[o[2]];e.push(re.inline(l,a,{class:"tag",style:c?"background:rgba("+c+",.18);color:rgb("+c+")":""}))}}),j.create(n.doc,e)}}})]}}),Hl=n=>window.webkit?.messageHandlers?.yatt?.postMessage(n),Mn=null,Fl=!1,ii=()=>{clearTimeout(Mn),Mn=null,Hl("notes:"+Ut.getMarkdown())},Ut=new Id({element:document.getElementById("editor"),extensions:[qf,fh,wl,Ex,xl.configure({nested:!0}),hh.configure({allowBase64:!0}),Wf.configure({placeholder:"\u0417\u0430\u043C\u0435\u0442\u043A\u0438\u2026 Markdown: # \u0437\u0430\u0433\u043E\u043B\u043E\u0432\u043E\u043A, - \u0441\u043F\u0438\u0441\u043E\u043A, - [ ] \u043F\u043E\u0434\u0437\u0430\u0434\u0430\u0447\u0430, **\u0436\u0438\u0440\u043D\u044B\u0439**, `\u043A\u043E\u0434`"})],content:"",onUpdate:()=>{Fl||(clearTimeout(Mn),Mn=setTimeout(ii,400))},onBlur:()=>{Mn&&ii()}});window.yatt={setMarkdown(n){Fl=!0,Ut.commands.setContent(n||"",{contentType:"markdown",emitUpdate:!1}),Fl=!1},setTagColors(n){mh=n||{},Ut.view.dispatch(Ut.state.tr.setMeta("hashtags",!0))},flush(){Mn&&ii()},focus(){Ut.commands.focus("end",{scrollIntoView:!1})},undo(){Ut.commands.undo()},redo(){Ut.commands.redo()}};document.addEventListener("keydown",n=>{n.key==="Escape"&&(n.preventDefault(),ii(),Hl("close"))});Hl("ready");})();
