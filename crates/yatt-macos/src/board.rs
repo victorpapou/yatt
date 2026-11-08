@@ -814,7 +814,7 @@ impl Board {
             let y = y.max(*natural);
             // The blurred band and its hairline only while it holds over cards
             // going under it.
-            let want = if y > natural + 0.5 { 1.0 } else { 0.0 };
+            let want = if y > natural + 0.5 { 0.85 } else { 0.0 };
             if (h.material.alphaValue() - want).abs() > 0.01 {
                 // Glass only, no hairline of our own.
                 let m = h.material.clone();
