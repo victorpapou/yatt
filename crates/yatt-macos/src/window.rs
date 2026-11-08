@@ -75,6 +75,7 @@ const PAD: f64 = 16.0;
 /// A new card's colour unless one is picked: yellow (an index into `style`'s palette).
 const DEFAULT_NEW_COLOR: usize = 8;
 const RECOLOR_KEY: &str = "recolorByTag";
+const GROUPING_KEY: &str = "grouping";
 /// A column never gets narrower than this; the window grows for the inspector.
 const COLUMN_MIN_W: f64 = 240.0;
 /// The inspector's width.
@@ -139,6 +140,8 @@ struct Ui {
     modal: Modal,
     /// The inspector pane on the right: the open task.
     inspector: Retained<objc2_app_kit::NSSplitViewItem>,
+    /// The grouping menu's three items, to tick the chosen one.
+    grouping_items: Vec<Retained<objc2_app_kit::NSMenuItem>>,
     /// The new-task capsule's colour: the button, its popover, the chosen colour.
     palette_button: Retained<NSButton>,
     palette: crate::palette::Palette,
@@ -403,6 +406,52 @@ impl MainWindow {
             item
         })
         .collect();
+        // The grouping dropdown: a native menu item with a chevron.
+        let grouping_item = {
+            use crate::board::Grouping;
+            let item = objc2_app_kit::NSMenuToolbarItem::initWithItemIdentifier(
+                objc2_app_kit::NSMenuToolbarItem::alloc(mtm),
+                ns_string!("yatt.grouping"),
+            );
+            item.setLabel(ns_string!("Группировка"));
+            item.setToolTip(Some(ns_string!("Группировка карточек")));
+            item.setImage(symbol("rectangle.3.group", "Группировка").as_deref());
+            item.setShowsIndicator(true);
+            let menu = objc2_app_kit::NSMenu::new(mtm);
+            let saved = load_grouping();
+            let mut menu_items: Vec<Retained<objc2_app_kit::NSMenuItem>> = Vec::new();
+            for (title, g) in [
+                ("Без группировки", Grouping::None),
+                ("По тегу", Grouping::Tag),
+                ("По цвету", Grouping::Color),
+            ] {
+                let weak = inspector_ui.clone();
+                let target = ActionTarget::new(mtm, move || {
+                    if let Some(ui) = weak.borrow().as_ref().and_then(|w| w.upgrade()) {
+                        ui.set_grouping(g);
+                    }
+                });
+                let it = unsafe {
+                    objc2_app_kit::NSMenuItem::initWithTitle_action_keyEquivalent(
+                        objc2_app_kit::NSMenuItem::alloc(mtm),
+                        &NSString::from_str(title),
+                        Some(ActionTarget::sel()),
+                        ns_string!(""),
+                    )
+                };
+                unsafe { it.setTarget(Some(&target)) };
+                it.setState(if g == saved {
+                    objc2_app_kit::NSControlStateValueOn
+                } else {
+                    objc2_app_kit::NSControlStateValueOff
+                });
+                menu.addItem(&it);
+                menu_items.push(it);
+                retained.push(Retained::into_super(Retained::into_super(target)));
+            }
+            item.setMenu(&menu);
+            (item, menu_items)
+        };
         let items: Vec<Retained<NSToolbarItem>> = vec![
             timer_item.clone(),
             bar.start.clone(),
@@ -418,6 +467,7 @@ impl MainWindow {
             inspector_items[1].clone(),
             inspector_items[2].clone(),
             seps[2].clone(),
+            Retained::into_super(grouping_item.0.clone()),
         ];
         // The toolbar gives neighbouring items one shared bubble; a fixed space
         // between two items gives each its own.
@@ -427,7 +477,7 @@ impl MainWindow {
         // The timer in the middle of the toolbar (a centred item, so it stays
         // there as the window resizes), the controls on the right.
         let space2 = space.clone();
-        let (space3, space4) = (space.clone(), space.clone());
+        let (space3, space4, space5) = (space.clone(), space.clone(), space.clone());
         let flexible2 = flexible.clone();
         let order: Vec<Retained<NSString>> = vec![
             id(&items[8]),
@@ -448,6 +498,8 @@ impl MainWindow {
             space,
             id(&items[5]),
             space2,
+            id(&items[14]),
+            space5,
             id(&items[7]),
             unsafe { objc2_app_kit::NSToolbarInspectorTrackingSeparatorItemIdentifier }.copy(),
             flexible2,
@@ -635,6 +687,7 @@ impl MainWindow {
             cards,
             modal,
             inspector,
+            grouping_items: grouping_item.1,
             palette_button,
             palette,
             new_color: Cell::new(DEFAULT_NEW_COLOR),
@@ -1099,6 +1152,7 @@ impl Ui {
         }));
         this.fit_root();
         this.set_new_color(DEFAULT_NEW_COLOR);
+        this.cards.set_grouping(load_grouping());
         {
             let weak = weak.clone();
             let target = ActionTarget::new(this.mtm, move || {
@@ -1248,6 +1302,27 @@ impl Ui {
             color: Some(self.new_color.get() as u8),
         });
         self.new_task.setStringValue(ns_string!(""));
+    }
+
+    /// Groups the board's cards by tag or colour, or not.
+    fn set_grouping(self: &Rc<Self>, g: crate::board::Grouping) {
+        use crate::board::Grouping;
+        self.cards.set_grouping(g);
+        save_grouping(g);
+        for (item, mode) in self
+            .grouping_items
+            .iter()
+            .zip([Grouping::None, Grouping::Tag, Grouping::Color])
+        {
+            item.setState(if mode == g {
+                objc2_app_kit::NSControlStateValueOn
+            } else {
+                objc2_app_kit::NSControlStateValueOff
+            });
+        }
+        if let Some(snap) = self.last.borrow().clone() {
+            self.cards.render(&snap.columns);
+        }
     }
 
     /// The capsule's colour for the next new card.
@@ -2518,6 +2593,34 @@ const STACKS_KEY: &str = "yatt.stacked";
 fn stacks_saved() -> bool {
     objc2_foundation::NSUserDefaults::standardUserDefaults()
         .boolForKey(&NSString::from_str(STACKS_KEY))
+}
+
+fn load_grouping() -> crate::board::Grouping {
+    use crate::board::Grouping;
+    // `YATT_GROUPING=tag|color`: a grouping whatever was saved (for the demo).
+    match std::env::var("YATT_GROUPING").as_deref() {
+        Ok("tag") => return Grouping::Tag,
+        Ok("color") => return Grouping::Color,
+        _ => {}
+    }
+    match objc2_foundation::NSUserDefaults::standardUserDefaults()
+        .integerForKey(&NSString::from_str(GROUPING_KEY))
+    {
+        1 => Grouping::Tag,
+        2 => Grouping::Color,
+        _ => Grouping::None,
+    }
+}
+
+fn save_grouping(g: crate::board::Grouping) {
+    use crate::board::Grouping;
+    let v = match g {
+        Grouping::None => 0,
+        Grouping::Tag => 1,
+        Grouping::Color => 2,
+    };
+    objc2_foundation::NSUserDefaults::standardUserDefaults()
+        .setInteger_forKey(v, &NSString::from_str(GROUPING_KEY));
 }
 
 fn load_recolor() -> bool {

@@ -139,7 +139,40 @@ enum Space {
 struct Column {
     scroll: Retained<NSScrollView>,
     doc: Retained<FlippedView>,
+    /// The group titles over the cards, while the board is grouped.
+    heads: RefCell<Vec<Retained<objc2_app_kit::NSTextField>>>,
 }
+
+/// How the cards of each column are grouped.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Grouping {
+    #[default]
+    None,
+    Tag,
+    Color,
+}
+
+/// The height of a group's title row in a list.
+const HEAD_H: f64 = 26.0;
+
+/// Names of the card colours, by palette index.
+const HUE_NAMES: [&str; 15] = [
+    "Синий",
+    "Розовый",
+    "Фиолетовый",
+    "Лаймовый",
+    "Мятный",
+    "Серый",
+    "Коралловый",
+    "Оранжевый",
+    "Жёлтый",
+    "Шалфей",
+    "Бирюзовый",
+    "Голубой",
+    "Бежевый",
+    "Индиго",
+    "Пурпурный",
+]; 
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Layout {
@@ -323,6 +356,9 @@ pub struct Board {
     top: Cell<f64>,
     sink: Sink,
     cols: [Column; COLS],
+    grouping: Cell<Grouping>,
+    /// Per column, per slot: the title of the group that starts there.
+    group_starts: RefCell<[Vec<Option<String>>; COLS]>,
     /// Scroll observers of the columns, kept for as long as the board.
     observers: RefCell<Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>>,
     statuses: [Status; COLS],
@@ -412,7 +448,11 @@ impl Board {
                 NSAutoresizingMaskOptions::ViewWidthSizable
                     | NSAutoresizingMaskOptions::ViewHeightSizable,
             );
-            Column { scroll, doc }
+            Column {
+                scroll,
+                doc,
+                heads: RefCell::new(Vec::new()),
+            }
         });
         let board = Rc::new(Self {
             mtm,
@@ -422,6 +462,8 @@ impl Board {
             top: Cell::new(0.0),
             sink,
             cols,
+            grouping: Cell::new(Grouping::None),
+            group_starts: RefCell::new(Default::default()),
             observers: RefCell::new(Vec::new()),
             statuses: Status::ALL,
             titles: RefCell::new(Default::default()),
@@ -571,7 +613,111 @@ impl Board {
         }
     }
 
+    /// Groups the columns' cards (or not) from now on; the caller renders again.
+    pub fn set_grouping(&self, g: Grouping) {
+        self.grouping.set(g);
+    }
+
+    /// The columns with their cards clustered by group, in the order groups first
+    /// appear, and the title of the group that starts at each slot.
+    fn grouped(&self, columns: &[ColumnSnap; COLS]) -> ([ColumnSnap; COLS], [Vec<Option<String>>; COLS]) {
+        let mode = self.grouping.get();
+        let mut starts: [Vec<Option<String>>; COLS] = Default::default();
+        let out = std::array::from_fn(|ci| {
+            let col = &columns[ci];
+            if mode == Grouping::None {
+                starts[ci] = vec![None; col.cards.len()];
+                return col.clone();
+            }
+            let key = |c: &CardSnap| -> String {
+                match mode {
+                    Grouping::Tag => c.tags.first().cloned().unwrap_or_else(|| "Без тега".into()),
+                    _ => HUE_NAMES[style::hue_of(c.id) % HUE_NAMES.len()].to_string(),
+                }
+            };
+            let mut keys: Vec<String> = Vec::new();
+            for c in &col.cards {
+                let k = key(c);
+                if !keys.contains(&k) {
+                    keys.push(k);
+                }
+            }
+            let mut cards = Vec::with_capacity(col.cards.len());
+            for k in &keys {
+                for (i, c) in col.cards.iter().filter(|c| key(c) == *k).enumerate() {
+                    starts[ci].push((i == 0).then(|| k.clone()));
+                    cards.push(c.clone());
+                }
+            }
+            ColumnSnap {
+                cards,
+                ..col.clone()
+            }
+        });
+        (out, starts)
+    }
+
+    /// Puts a column's group titles over their groups (or hides them).
+    fn place_heads(&self, ci: usize, show: bool) {
+        let starts = self.group_starts.borrow()[ci].clone();
+        let wanted: Vec<(usize, String)> = if show {
+            starts
+                .iter()
+                .enumerate()
+                .filter_map(|(i, g)| g.clone().map(|g| (i, g)))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let col = &self.cols[ci];
+        let mut heads = col.heads.borrow_mut();
+        while heads.len() < wanted.len() {
+            let l = objc2_app_kit::NSTextField::labelWithString(
+                objc2_foundation::ns_string!(""),
+                self.mtm,
+            );
+            l.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize_weight(12.0, unsafe {
+                objc2_app_kit::NSFontWeightSemibold
+            })));
+            l.setTextColor(Some(&objc2_app_kit::NSColor::secondaryLabelColor()));
+            col.doc.addSubview(&l);
+            heads.push(l);
+            self.stacking.borrow_mut().clear();
+        }
+        let x = self.list_x(ci);
+        for (k, l) in heads.iter().enumerate() {
+            match wanted.get(k) {
+                Some((i, title)) => {
+                    l.setStringValue(&objc2_foundation::NSString::from_str(title));
+                    l.setFrame(NSRect::new(
+                        NSPoint::new(x + 2.0, self.list_y(ci, *i) - HEAD_H + 2.0),
+                        NSSize::new(CARD_W - 4.0, HEAD_H - 6.0),
+                    ));
+                    l.setHidden(false);
+                }
+                None => l.setHidden(true),
+            }
+        }
+    }
+
+    /// The top of slot `i` of a list column: the group titles above it count.
+    fn list_y(&self, ci: usize, i: usize) -> f64 {
+        let starts = self.group_starts.borrow();
+        let s = &starts[ci];
+        let heads = s.iter().take(i + 1).filter(|g| g.is_some()).count();
+        self.doc_top() + i as f64 * PITCH + heads as f64 * HEAD_H
+    }
+
     pub fn render(self: &Rc<Self>, columns: &[ColumnSnap; COLS]) {
+        for col in columns {
+            for snap in &col.cards {
+                style::set_look(snap.id, snap.color, snap.icon.as_deref());
+                style::set_first_tag(snap.id, snap.tags.first().map(String::as_str));
+            }
+        }
+        let (grouped, starts) = self.grouped(columns);
+        *self.group_starts.borrow_mut() = starts;
+        let columns = &grouped;
         let dragging: HashSet<TaskId> = self.dragged().into_iter().collect();
         let mut seen = HashSet::new();
         {
@@ -910,7 +1056,7 @@ impl Board {
     /// Where the `i`-th card of a column sits, ignoring drags.
     fn slot(&self, ci: usize, i: usize) -> (f64, f64) {
         match self.layouts.get()[ci] {
-            Layout::List => (self.list_x(ci), self.doc_top() + i as f64 * PITCH),
+            Layout::List => (self.list_x(ci), self.list_y(ci, i)),
             Layout::Stack { .. } => {
                 let a = self.stack_anchor(ci);
                 (a.0, a.1 + physics::pile(i).0)
@@ -1154,6 +1300,7 @@ impl Board {
             let n = ids.len();
             match layouts[ci] {
                 Layout::Stack { .. } => {
+                    self.place_heads(ci, false);
                     // Every card of a stack has two places: on the pile and on the
                     // fan. It is headed for the point between them at the stack's
                     // openness, which falls toward the openness the stack should
@@ -1244,7 +1391,8 @@ impl Board {
                     let x = self.list_x(ci);
                     // The document is as tall as the list (room for the gap included).
                     let slots = n + gap.map_or(0, |(_, k)| k);
-                    let doc_h = (self.doc_top() + slots as f64 * PITCH + LIST_BOTTOM).max(
+                    let heads = self.group_starts.borrow()[ci].iter().filter(|g| g.is_some()).count();
+                    let doc_h = (self.doc_top() + slots as f64 * PITCH + heads as f64 * HEAD_H + LIST_BOTTOM).max(
                         self.height.get()
                             - self.cols[ci].scroll.contentInsets().top.max(self.top.get()),
                     );
@@ -1256,6 +1404,7 @@ impl Board {
                             doc.setFrameSize(NSSize::new(self.geom.get()[ci].w, doc_h))
                         });
                     }
+                    self.place_heads(ci, true);
                     for (i, id) in ids.iter().enumerate() {
                         let Some(card) = cards.get_mut(id) else {
                             continue;
@@ -1264,7 +1413,7 @@ impl Board {
                             Some((at, k)) if i >= at => i + k,
                             _ => i,
                         };
-                        let y = self.doc_top() + slot as f64 * PITCH;
+                        let y = self.list_y(ci, slot);
                         self.send_home(card, Space::Doc(ci), (x, y, 0.0));
                         // Rows far out of sight jump to their slot: only what can be
                         // seen animates, however long the list.
@@ -1456,6 +1605,16 @@ impl Board {
         ];
         for space in spaces {
             let mut views: Vec<Retained<NSView>> = Vec::new();
+            // A list column's group titles stay under its cards.
+            if let Space::Doc(ci) = space {
+                views.extend(
+                    self.cols[ci]
+                        .heads
+                        .borrow()
+                        .iter()
+                        .map(|h| Retained::into_super(Retained::into_super(h.clone()))),
+                );
+            }
             views.extend(
                 sorted
                     .iter()
@@ -2296,7 +2455,9 @@ impl Board {
                         .filter(|id| !drag.ids.contains(id))
                         .count();
                     let centre = p.y - drag.grab.1 + CARD_H / 2.0 - self.offset(Space::Doc(ci)).1;
-                    physics::insert_index(centre + LIST_GAP / 2.0, self.doc_top(), PITCH, n)
+                    (0..n)
+                        .take_while(|&i| centre + LIST_GAP / 2.0 >= self.list_y(ci, i) + PITCH)
+                        .count()
                 }
                 _ => 0,
             };
