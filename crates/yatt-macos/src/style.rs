@@ -332,9 +332,9 @@ pub fn text(hue: usize) -> Retained<NSColor> {
 pub fn column_color(i: usize) -> Retained<NSColor> {
     match i {
         0 => NSColor::systemGrayColor(),
-        // «В работе»: yellow, a shade deep enough for its text to read.
-        1 => NSColor::colorWithSRGBRed_green_blue_alpha(0.86, 0.62, 0.0, 1.0),
-        2 => NSColor::systemBlueColor(),
+        // «В работе» red, «На ревью» yellow.
+        1 => NSColor::systemRedColor(),
+        2 => NSColor::systemYellowColor(),
         _ => NSColor::systemGreenColor(),
     }
 }

@@ -205,6 +205,40 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
             window.save_edits_then(move || sink(UiEvent::Quit));
             return;
         }
+        if std::env::var_os("YATT_DEMO_STICKY").is_some() {
+            // A long backlog in two tag groups, scrolled: the group title sticks.
+            for i in 0..14 {
+                sink(UiEvent::NewTask {
+                    color: None,
+                    title: format!("Задача {}", i + 1),
+                    status: Status::Backlog,
+                });
+            }
+            wait(600).await;
+            let backlog = ids(cx, 0);
+            for (i, id) in backlog.iter().enumerate() {
+                let tag = if i % 2 == 0 { "motion" } else { "маркетинг" };
+                sink(UiEvent::SetTags {
+                    id: *id,
+                    tags: vec![tag.into()],
+                });
+            }
+            wait(600).await;
+            // The stacks setting is remembered between runs: make it a list.
+            if window.demo_is_stacked() {
+                window.demo_toggle_stack();
+            }
+            wait(900).await;
+            shot("s0-top");
+            window.demo_scroll_to(0, 300.0);
+            wait(500).await;
+            shot("s1-scrolled");
+            window.demo_scroll_to(0, 900.0);
+            wait(500).await;
+            shot("s2-scrolled-more");
+            window.save_edits_then(move || sink(UiEvent::Quit));
+            return;
+        }
         if std::env::var_os("YATT_DEMO_MODAL").is_some() {
             // A card in a fan opened into the panel and closed again, the panel's
             // frame and alphas every frame and a layer capture every other.

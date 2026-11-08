@@ -890,6 +890,14 @@ impl MainWindow {
 
     /// Development aid: a scroll of `down` points over `at`: over a stack,
     /// down fans it out and up folds it.
+    pub fn demo_is_stacked(&self) -> bool {
+        self.ui.cards.is_stacked()
+    }
+
+    pub fn demo_scroll_to(&self, ci: usize, y: f64) {
+        self.ui.cards.demo_scroll_to(ci, y);
+    }
+
     pub fn demo_scroll_at(&self, at: (f64, f64), down: f64) {
         self.ui.cards.demo_scroll_at(at, down);
     }

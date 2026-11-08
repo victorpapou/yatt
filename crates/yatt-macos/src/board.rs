@@ -154,6 +154,8 @@ pub enum Grouping {
 
 /// The height of a group's title row in a list.
 const HEAD_H: f64 = 26.0;
+/// How far under the toolbar a sticky group title holds: below the column's chip.
+const CHIP_STICK: f64 = 4.0 + 16.0 + 6.0;
 
 /// Names of the card colours, by palette index.
 const HUE_NAMES: [&str; 15] = [
@@ -498,7 +500,7 @@ impl Board {
             on_scrolled: RefCell::new(None),
         });
         // Scrolling (momentum and rubber band included) shows the rows coming near.
-        for col in &board.cols {
+        for (ci, col) in board.cols.iter().enumerate() {
             let clip = col.scroll.contentView();
             clip.setPostsBoundsChangedNotifications(true);
             let weak = Rc::downgrade(&board);
@@ -506,6 +508,12 @@ impl Board {
                 if let Some(b) = weak.upgrade() {
                     b.cull_lists();
                     b.report_scroll();
+                    // The group titles stick under the column's chip as it scrolls.
+                    if b.grouping.get() != Grouping::None
+                        && b.layouts.get()[ci] == Layout::List
+                    {
+                        b.place_heads(ci, true);
+                    }
                 }
             });
             let token = unsafe {
@@ -613,6 +621,14 @@ impl Board {
         }
     }
 
+    /// Development aid: scrolls a list column to `y` (document coordinates).
+    pub fn demo_scroll_to(&self, ci: usize, y: f64) {
+        let scroll = &self.cols[ci].scroll;
+        let clip = scroll.contentView();
+        clip.scrollToPoint(NSPoint::new(0.0, y));
+        scroll.reflectScrolledClipView(&clip);
+    }
+
     /// Groups the columns' cards (or not) from now on; the caller renders again.
     pub fn set_grouping(&self, g: Grouping) {
         self.grouping.set(g);
@@ -680,6 +696,12 @@ impl Board {
                 objc2_app_kit::NSFontWeightSemibold
             })));
             l.setTextColor(Some(&objc2_app_kit::NSColor::secondaryLabelColor()));
+            // A little backing, so the cards going under it do not show through.
+            l.setWantsLayer(true);
+            if let Some(layer) = l.layer() {
+                layer.setBackgroundColor(Some(&objc2_app_kit::NSColor::windowBackgroundColor().colorWithAlphaComponent(0.92).CGColor()));
+                layer.setCornerRadius(6.0);
+            }
             col.doc.addSubview(&l);
             heads.push(l);
             self.stacking.borrow_mut().clear();
@@ -689,8 +711,22 @@ impl Board {
             match wanted.get(k) {
                 Some((i, title)) => {
                     l.setStringValue(&objc2_foundation::NSString::from_str(title));
+                    // Where it lies in the list, held under the column's chip while
+                    // its group is in view and pushed up by the next title.
+                    let natural = self.list_y(ci, *i) - HEAD_H + 2.0;
+                    let seen_top = col.scroll.contentView().bounds().origin.y
+                        + self.top.get()
+                        + CHIP_STICK;
+                    let mut y = natural.max(seen_top);
+                    if let Some((j, _)) = wanted.get(k + 1) {
+                        y = y.min(self.list_y(ci, *j) - HEAD_H + 2.0 - HEAD_H);
+                    } else {
+                        y = y.min(
+                            self.list_y(ci, starts.len().saturating_sub(1)) + CARD_H - HEAD_H + 6.0,
+                        );
+                    }
                     l.setFrame(NSRect::new(
-                        NSPoint::new(x + 2.0, self.list_y(ci, *i) - HEAD_H + 2.0),
+                        NSPoint::new(x + 2.0, y.max(natural.min(y))),
                         NSSize::new(CARD_W - 4.0, HEAD_H - 6.0),
                     ));
                     l.setHidden(false);
@@ -1605,7 +1641,14 @@ impl Board {
         ];
         for space in spaces {
             let mut views: Vec<Retained<NSView>> = Vec::new();
-            // A list column's group titles stay under its cards.
+            views.extend(
+                sorted
+                    .iter()
+                    .filter(|(_, c)| c.space == space)
+                    .map(|(_, c)| Retained::into_super(c.view.clone())),
+            );
+            // A list column's group titles lie over its cards (they stick, the
+            // cards go under them).
             if let Space::Doc(ci) = space {
                 views.extend(
                     self.cols[ci]
@@ -1615,12 +1658,6 @@ impl Board {
                         .map(|h| Retained::into_super(Retained::into_super(h.clone()))),
                 );
             }
-            views.extend(
-                sorted
-                    .iter()
-                    .filter(|(_, c)| c.space == space)
-                    .map(|(_, c)| Retained::into_super(c.view.clone())),
-            );
             let parent = self.parent(space);
             motion::quietly(|| parent.setSubviews(&NSArray::from_retained_slice(&views)));
         }
