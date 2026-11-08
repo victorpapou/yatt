@@ -3412,7 +3412,51 @@ pub(crate) fn set_meta(label: &NSTextField, text: &str) {
 
 /// A running timer's dot, in the meta label where the time used to be.
 pub(crate) fn set_tracking_dot(label: &NSTextField, tracking: bool) {
-    label.setStringValue(&NSString::from_str(if tracking { "●" } else { "" }));
+    // On while it has a glyph that is not fading out.
+    let shown = !label.stringValue().to_string().is_empty()
+        && label.layer().is_none_or(|l| l.opacity() > 0.5);
+    if shown == tracking {
+        return;
+    }
+    // The dot fades in and out rather than snapping.
+    use objc2_quartz_core::{CABasicAnimation, CAMediaTiming};
+    label.setWantsLayer(true);
+    let fade = |from: f64, to: f64| {
+        let a = CABasicAnimation::animationWithKeyPath(Some(objc2_foundation::ns_string!("opacity")));
+        unsafe {
+            a.setFromValue(Some(&objc2_foundation::NSNumber::new_f64(from)));
+            a.setToValue(Some(&objc2_foundation::NSNumber::new_f64(to)));
+        }
+        a.setDuration(0.25);
+        a
+    };
+    if tracking {
+        label.setStringValue(&NSString::from_str("●"));
+        if let Some(layer) = label.layer() {
+            layer.setOpacity(1.0);
+            layer.addAnimation_forKey(&fade(0.0, 1.0), Some(objc2_foundation::ns_string!("dot")));
+        }
+    } else if let Some(layer) = label.layer() {
+        // The glyph stays until it has faded.
+        layer.addAnimation_forKey(&fade(1.0, 0.0), Some(objc2_foundation::ns_string!("dot")));
+        let weak = objc2::rc::Weak::from_retained(&objc2::Message::retain(label));
+        let block = block2::RcBlock::new(move |_t: std::ptr::NonNull<objc2_foundation::NSTimer>| {
+            if let Some(l) = weak.load() {
+                // Only if it was not switched on again meanwhile.
+                if l.layer().is_none_or(|ly| ly.opacity() < 0.5) {
+                    l.setStringValue(&NSString::from_str(""));
+                }
+            }
+        });
+        unsafe {
+            objc2_foundation::NSTimer::scheduledTimerWithTimeInterval_repeats_block(0.27, false, &block);
+        }
+        label.layer().map(|l| {
+            l.setOpacity(0.0);
+        });
+    } else {
+        label.setStringValue(&NSString::from_str(""));
+    }
 }
 
 /// The tags as Finder's tag dots: small filled circles in the tags' colours, each
