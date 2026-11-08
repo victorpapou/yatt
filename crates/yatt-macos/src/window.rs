@@ -511,14 +511,15 @@ impl MainWindow {
             flexible2_space,
             id(&items[7]),
         ];
-        // The inspector's buttons centred in its section: a flexible space each side.
+        // The inspector's palette and trash in one bubble in the middle of its
+        // section, «close» in a bubble of its own at the right edge.
         let inspector_ids: Vec<Retained<NSString>> = vec![
             unsafe { objc2_app_kit::NSToolbarInspectorTrackingSeparatorItemIdentifier }.copy(),
             unsafe { NSToolbarFlexibleSpaceItemIdentifier }.copy(),
             id(&items[10]),
             id(&items[11]),
-            id(&items[12]),
             unsafe { NSToolbarFlexibleSpaceItemIdentifier }.copy(),
+            id(&items[12]),
         ];
         let order = if crate::model::MINIMAL_MODE {
             [order, vec![id(&items[6])]].concat()
