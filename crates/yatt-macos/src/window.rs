@@ -275,7 +275,7 @@ impl MainWindow {
         window.setTitlebarAppearsTransparent(false);
         // The system's own separator, as in Finder: the line shows when content has
         // gone under the toolbar and not before.
-        window.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::Line);
+        window.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::Automatic);
         eprintln!(
             "window titlebar separator style: {:?}, titlebar transparent: {}",
             window.titlebarSeparatorStyle(),
@@ -626,7 +626,26 @@ impl MainWindow {
             let item = objc2_app_kit::NSSplitViewItem::splitViewItemWithViewController(&vc);
             item.setCanCollapse(false);
             item.setMinimumThickness(MIN_BOARD_W);
-            item.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::Line);
+            // The system's line under the toolbar, as in Finder: there while rows
+            // are scrolled under it, gone at the top. The outer horizontal scroll
+            // view hides the columns from the system, so we say when: only when it
+            // changes, and nothing in the toolbar is touched.
+            item.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::None);
+            {
+                let item = item.clone();
+                let shown = std::cell::Cell::new(false);
+                *cards.on_scrolled.borrow_mut() = Some(Box::new(move |up: f64| {
+                    let want = up > 0.5;
+                    if shown.replace(want) != want {
+                        eprintln!("toolbar line: {want}");
+                        item.setTitlebarSeparatorStyle(if want {
+                            objc2_app_kit::NSTitlebarSeparatorStyle::Line
+                        } else {
+                            objc2_app_kit::NSTitlebarSeparatorStyle::None
+                        });
+                    }
+                }));
+            }
             split_vc.addSplitViewItem(&item);
             unsafe { retained.push(Retained::cast_unchecked::<AnyObject>(vc)) };
         }
@@ -641,7 +660,7 @@ impl MainWindow {
             item.setPreferredThicknessFraction(0.0);
             item.setCanCollapse(true);
             item.setCollapsed(true);
-            item.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::Line);
+            item.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::None);
             split_vc.addSplitViewItem(&item);
             let vc_keep = vc.clone();
             unsafe { retained.push(Retained::cast_unchecked::<AnyObject>(vc)) };
