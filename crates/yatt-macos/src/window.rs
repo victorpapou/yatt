@@ -88,9 +88,11 @@ const CHIP_TOP: f64 = 4.0;
 const CHIP_PAD: f64 = 4.0;
 const CHIP_GAP: f64 = 1.0;
 /// The new-task capsule.
-const CAPSULE_H: f64 = 44.0;
+const CAPSULE_H: f64 = 36.0;
 const CAPSULE_MAX_W: f64 = 460.0;
-const CAPSULE_BOTTOM: f64 = 22.0;
+/// The bottom bar's height, as the toolbar's; the capsule is centred in it.
+const BOTTOM_BAR_H: f64 = 56.0;
+const CAPSULE_BOTTOM: f64 = (BOTTOM_BAR_H - CAPSULE_H) / 2.0;
 /// The fade under the capsule: from clear to the background over this height.
 const BOTTOM_FADE_H: f64 = 72.0;
 /// How far a list scrolls under the toolbar before the bar's material and
@@ -1689,7 +1691,7 @@ impl Ui {
             NSPoint::new(0.0, board_h - BOTTOM_FADE_H),
             NSSize::new(view_w, BOTTOM_FADE_H),
         ));
-        let cw = (view_w - 80.0).min(CAPSULE_MAX_W);
+        let cw = (view_w - 120.0).min(CAPSULE_MAX_W - 50.0);
         self.capsule.setFrame(NSRect::new(
             NSPoint::new(
                 ((view_w - cw) / 2.0).round(),

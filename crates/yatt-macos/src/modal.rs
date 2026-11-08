@@ -27,7 +27,7 @@ use crate::style;
 use crate::window::Sink;
 
 /// The time entries' line at the bottom.
-const FOOTER_H: f64 = 44.0;
+const FOOTER_H: f64 = 56.0;
 const PANEL_PAD: f64 = 20.0;
 
 pub struct Modal {
@@ -400,13 +400,15 @@ impl Modal {
         let iw = (w - 2.0 * pad).max(0.0);
         let ty = top + 16.0;
         let tags_y = ty + 56.0;
-        let tags_h = self.tags.layout(w);
+        // Tags live in the notes' text only; no badges in the header.
+        self.tags.view.setHidden(true);
+        let tags_h = 0.0;
         self.tags.view.setFrame(NSRect::new(
             NSPoint::new(0.0, tags_y),
             NSSize::new(w, tags_h),
         ));
         // The header is as tall as its title, stats and tags (rows of them wrap).
-        let header_h = (tags_y + tags_h + 14.0) - top;
+        let header_h = (tags_y + tags_h + 4.0) - top;
         self.rename.setFrame(NSRect::new(
             NSPoint::new(0.0, top),
             NSSize::new(w, header_h),
@@ -442,7 +444,7 @@ impl Modal {
             NSSize::new(w, 1.0),
         ));
         self.times.setFrame(NSRect::new(
-            NSPoint::new(pad, h - FOOTER_H + 12.0),
+            NSPoint::new(pad, h - FOOTER_H + (FOOTER_H - 20.0) / 2.0),
             NSSize::new(iw, 20.0),
         ));
     }
