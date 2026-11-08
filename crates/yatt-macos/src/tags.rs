@@ -15,7 +15,7 @@ use crate::style;
 /// The tag badge's one look: the settings, the editor and anywhere else use these.
 pub const BADGE_H: f64 = 20.0;
 pub const BADGE_RADIUS: f64 = 8.0;
-pub const BADGE_PAD: f64 = 6.0;
+pub const BADGE_PAD: f64 = 0.0;
 pub const BADGE_FONT: f64 = 12.5;
 const CAPSULE_H: f64 = BADGE_H;
 /// Horizontal padding of a capsule's text: a little, not a plate.
@@ -113,17 +113,10 @@ pub fn badge(mtm: MainThreadMarker, name: &str) -> Retained<FlippedView> {
     label.setFont(Some(&NSFont::systemFontOfSize_weight(BADGE_FONT, unsafe {
         NSFontWeightMedium
     })));
-    label.setTextColor(Some(&NSColor::whiteColor()));
+    label.setTextColor(Some(&style::swatch(hue)));
     let size = label.fittingSize();
     let w = (size.width.ceil() - 4.0 + 2.0 * CAPSULE_PAD).max(0.0).min(240.0);
     let view = FlippedView::new(mtm, NSRect::new(NSPoint::ZERO, NSSize::new(w, CAPSULE_H)));
-    view.setWantsLayer(true);
-    if let Some(layer) = view.layer() {
-        layer.setCornerRadius(BADGE_RADIUS);
-        layer.setBackgroundColor(Some(
-            &style::swatch(hue).CGColor(),
-        ));
-    }
     let h = size.height.ceil();
     label.setFrame(NSRect::new(
         NSPoint::new(CAPSULE_PAD - 2.0, ((CAPSULE_H - h) / 2.0).round()),
