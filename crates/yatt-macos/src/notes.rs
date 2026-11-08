@@ -12,6 +12,7 @@ use objc2::runtime::{AnyObject, Bool, NSObject, NSObjectProtocol, ProtocolObject
 use objc2::{
     AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel,
 };
+use objc2_app_kit::NSStringDrawing;
 use objc2_app_kit::{
     NSBackgroundColorAttributeName, NSColor, NSFont, NSFontAttributeName,
     NSForegroundColorAttributeName, NSKernAttributeName, NSMutableParagraphStyle, NSObliquenessAttributeName,
@@ -464,26 +465,8 @@ fn restyle(st: &Rc<State>) {
     for sp in parse(&string) {
         match sp.kind {
             Kind::Marker => unsafe { set(NSForegroundColorAttributeName, &dim, sp.start, sp.end) },
-            Kind::Hide => {
-                // Not drawn, takes no room.
-                let tiny = NSFont::systemFontOfSize(0.5);
-                let clear = NSColor::clearColor();
-                unsafe {
-                    set(NSFontAttributeName, &tiny, sp.start, sp.end);
-                    set(NSForegroundColorAttributeName, &clear, sp.start, sp.end);
-                }
-            }
-            Kind::Bullet => {
-                // Room for the bullet drawn in its place.
-                let tiny = NSFont::systemFontOfSize(1.0);
-                let clear = NSColor::clearColor();
-                let kern = NSNumber::new_f64(BULLET_W - 2.0);
-                unsafe {
-                    set(NSFontAttributeName, &tiny, sp.start, sp.end);
-                    set(NSForegroundColorAttributeName, &clear, sp.start, sp.end);
-                    set(NSKernAttributeName, &kern, sp.end - 1, sp.end);
-                }
-            }
+            Kind::Hide => collapse(&storage, &string, sp.start, sp.end, 0.0),
+            Kind::Bullet => collapse(&storage, &string, sp.start, sp.end, BULLET_W),
             Kind::Heading(n) => {
                 let size = [BODY + 8.0, BODY + 4.0, BODY + 2.0][(n as usize - 1).min(2)];
                 let f = NSFont::systemFontOfSize_weight(size, unsafe {
@@ -530,23 +513,15 @@ fn restyle(st: &Rc<State>) {
             Kind::Box { .. } => {
                 // Always a circle, whoever has the caret: the marker is collapsed to
                 // the width of the checkbox drawn in its place.
-                let tiny = NSFont::systemFontOfSize(1.0);
-                let clear = NSColor::clearColor();
-                let kern = NSNumber::new_f64(BOX_W - 3.0);
-                // A line of its own fixed height, so an empty item keeps its row and
-                // the checkbox sits in the middle of it.
+                collapse(&storage, &string, sp.start, sp.end, BOX_W);
+                // A line of its own fixed height: the checkbox sits in the middle.
                 let lp = NSMutableParagraphStyle::new();
                 lp.setLineSpacing(3.0);
                 lp.setParagraphSpacing(4.0);
                 lp.setMinimumLineHeight(BOX_LINE);
                 lp.setMaximumLineHeight(BOX_LINE);
                 let (ls, le) = line_range(&string, sp.start);
-                unsafe {
-                    set(NSFontAttributeName, &tiny, sp.start, sp.end);
-                    set(NSForegroundColorAttributeName, &clear, sp.start, sp.end);
-                    set(NSKernAttributeName, &kern, sp.end - 1, sp.end);
-                    set(NSParagraphStyleAttributeName, &lp, ls, (le + 1).min(total));
-                }
+                unsafe { set(NSParagraphStyleAttributeName, &lp, ls, (le + 1).min(total)) };
             }
             Kind::Image => {
                 let raw = utf16_slice(&string, sp.start, sp.end);
@@ -688,6 +663,40 @@ fn list_marker(line: &str) -> Option<(String, String)> {
     None
 }
 
+
+/// Collapses the marker [start, end) to `width` points (0: gone) while keeping the
+/// body font on it, so a line with nothing else on it keeps the height of a line and
+/// the caret its size. Each character is kerned back by its own advance.
+fn collapse(
+    storage: &objc2_app_kit::NSTextStorage,
+    string: &str,
+    start: usize,
+    end: usize,
+    width: f64,
+) {
+    let slice = utf16_slice(string, start, end);
+    let font = NSFont::systemFontOfSize(BODY);
+    let keys = unsafe { [NSFontAttributeName] };
+    let vals: [Retained<AnyObject>; 1] = [Retained::into_super(Retained::into_super(font))];
+    let attrs = NSDictionary::from_retained_objects(&keys, &vals);
+    let chars: Vec<char> = slice.chars().collect();
+    let mut at = start;
+    for (i, c) in chars.iter().enumerate() {
+        let adv = unsafe { NSString::from_str(&c.to_string()).sizeWithAttributes(Some(&attrs)) }.width;
+        let keep = if i + 1 == chars.len() { width } else { 0.0 };
+        let kern = NSNumber::new_f64(keep - adv);
+        let len = c.len_utf16();
+        unsafe {
+            storage.addAttribute_value_range(NSKernAttributeName, &kern, NSRange::new(at, len));
+            storage.addAttribute_value_range(
+                NSForegroundColorAttributeName,
+                &NSColor::clearColor(),
+                NSRange::new(at, len),
+            );
+        }
+        at += len;
+    }
+}
 
 /// The checkbox markers of the text: (start, end) in UTF-16 units.
 fn box_markers(string: &str) -> Vec<(usize, usize)> {
@@ -1031,11 +1040,10 @@ fn place_bullets(
             )
         };
         let rect = unsafe { lm.boundingRectForGlyphRange_inTextContainer(glyphs, &text.textContainer().unwrap()) };
-        let base = unsafe { lm.locationForGlyphAtIndex(glyphs.location) };
         let frame = NSRect::new(
             NSPoint::new(
                 (origin.x + rect.origin.x + 5.0).round(),
-                (origin.y + used.origin.y + base.y - 4.5 - 2.5).round(),
+                (origin.y + used.origin.y + (BOX_LINE - 5.0) / 2.0).round(),
             ),
             NSSize::new(5.0, 5.0),
         );
