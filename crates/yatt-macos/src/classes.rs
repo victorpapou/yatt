@@ -95,6 +95,8 @@ pub struct ToolbarIvars {
     items: Vec<Retained<NSToolbarItem>>,
     /// Identifiers in order, the system's spaces included.
     order: Vec<Retained<NSString>>,
+    /// Allowed too, but not there to begin with (the inspector's section).
+    extra: Vec<Retained<NSString>>,
 }
 
 define_class!(
@@ -129,7 +131,14 @@ define_class!(
 
         #[unsafe(method_id(toolbarAllowedItemIdentifiers:))]
         fn allowed_ids(&self, _toolbar: &objc2_app_kit::NSToolbar) -> Retained<NSArray<NSString>> {
-            NSArray::from_retained_slice(&self.ivars().order)
+            let all: Vec<Retained<NSString>> = self
+                .ivars()
+                .order
+                .iter()
+                .chain(self.ivars().extra.iter())
+                .cloned()
+                .collect();
+            NSArray::from_retained_slice(&all)
         }
     }
 );
@@ -139,8 +148,13 @@ impl ToolbarDelegate {
         mtm: MainThreadMarker,
         items: Vec<Retained<NSToolbarItem>>,
         order: Vec<Retained<NSString>>,
+        extra: Vec<Retained<NSString>>,
     ) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(ToolbarIvars { items, order });
+        let this = Self::alloc(mtm).set_ivars(ToolbarIvars {
+            items,
+            order,
+            extra,
+        });
         unsafe { msg_send![super(this), init] }
     }
 }

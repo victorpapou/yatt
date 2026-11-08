@@ -146,10 +146,11 @@ struct Ui {
     palette_button: Retained<NSButton>,
     palette: crate::palette::Palette,
     new_color: Cell<usize>,
-    /// The toolbar items of the inspector's section.
-    inspector_items: Vec<Retained<NSToolbarItem>>,
-    /// How much the window grew to make room for the inspector.
-    grew: Cell<f64>,
+    /// How many items the toolbar has without the inspector's section.
+    base_toolbar_len: Cell<usize>,
+    /// Identifiers of that section (its tracking separator first), in the
+    /// toolbar only while the inspector is open.
+    inspector_ids: Vec<Retained<NSString>>,
     /// Set once the `Ui` exists, for the toolbar items' actions.
     _inspector_ui: Rc<RefCell<Option<std::rc::Weak<Ui>>>>,
     minimal: Cell<bool>,
@@ -401,7 +402,6 @@ impl MainWindow {
                 item.setTarget(Some(&target));
                 item.setAction(Some(ActionTarget::sel()));
             }
-            item.setHidden(true);
             retained.push(Retained::into_super(Retained::into_super(target)));
             item
         })
@@ -478,35 +478,35 @@ impl MainWindow {
         // there as the window resizes), the controls on the right.
         let space2 = space.clone();
         let (space3, space4, space5) = (space.clone(), space.clone(), space.clone());
-        let flexible2 = flexible.clone();
+        let flexible2_space = space.clone();
+        // The timer right after the traffic lights, the start and stopwatch buttons
+        // beside it; the view, grouping and search at the right edge. The
+        // separators follow the column dividers. The inspector's section is only
+        // there while it is open (`Ui::set_inspector` adds and removes it).
         let order: Vec<Retained<NSString>> = vec![
-            id(&items[8]),
-            flexible.clone(),
             id(&items[0]),
-            flexible.clone(),
+            space3,
+            id(&items[1]),
+            space4,
+            id(&items[2]),
+            space5,
+            id(&items[3]),
+            space.clone(),
+            id(&items[4]),
             id(&items[9]),
             flexible.clone(),
             id(&items[13]),
             flexible,
-            id(&items[1]),
-            space.clone(),
-            id(&items[2]),
-            space.clone(),
-            id(&items[3]),
-            space.clone(),
-            id(&items[4]),
-            space,
             id(&items[5]),
             space2,
             id(&items[14]),
-            space5,
+            flexible2_space,
             id(&items[7]),
+        ];
+        let inspector_ids: Vec<Retained<NSString>> = vec![
             unsafe { objc2_app_kit::NSToolbarInspectorTrackingSeparatorItemIdentifier }.copy(),
-            flexible2,
             id(&items[10]),
-            space3,
             id(&items[11]),
-            space4,
             id(&items[12]),
         ];
         let order = if crate::model::MINIMAL_MODE {
@@ -514,7 +514,7 @@ impl MainWindow {
         } else {
             order
         };
-        let toolbar_delegate = ToolbarDelegate::new(mtm, items, order);
+        let toolbar_delegate = ToolbarDelegate::new(mtm, items, order, inspector_ids.clone());
         toolbar.setDelegate(Some(ProtocolObject::from_ref(&*toolbar_delegate)));
         toolbar.setDisplayMode(NSToolbarDisplayMode::IconOnly);
         toolbar.setAllowsUserCustomization(false);
@@ -550,6 +550,9 @@ impl MainWindow {
             item.setCanCollapse(false);
             item.setMinimumThickness(COLUMN_MIN_W);
             item.setPreferredThicknessFraction(1.0 / COLS as f64);
+            // No hairline under the toolbar of any column: it shows only the scroll
+            // edge effect, never a line over empty space.
+            item.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::None);
             split_vc.addSplitViewItem(&item);
         }
         // The open task lives in an inspector pane on the right, as in Calendar:
@@ -563,6 +566,7 @@ impl MainWindow {
             item.setPreferredThicknessFraction(0.0);
             item.setCanCollapse(true);
             item.setCollapsed(true);
+            item.setTitlebarSeparatorStyle(objc2_app_kit::NSTitlebarSeparatorStyle::None);
             split_vc.addSplitViewItem(&item);
             unsafe { retained.push(Retained::cast_unchecked::<AnyObject>(vc)) };
             item
@@ -691,8 +695,8 @@ impl MainWindow {
             palette_button,
             palette,
             new_color: Cell::new(DEFAULT_NEW_COLOR),
-            inspector_items,
-            grew: Cell::new(0.0),
+            inspector_ids,
+            base_toolbar_len: Cell::new(0),
             _inspector_ui: inspector_ui.clone(),
             minimal: Cell::new(false),
             saved_frame: Cell::new(NSRect::ZERO),
@@ -1158,6 +1162,7 @@ impl Ui {
                 }
             }
         }));
+        this.base_toolbar_len.set(this.toolbar.items().len());
         this.fit_root();
         this.set_new_color(DEFAULT_NEW_COLOR);
         {
@@ -1720,17 +1725,14 @@ impl Ui {
         if self.inspector.isCollapsed() != show {
             return;
         }
-        // Room for it: the window grows by what the three columns lack (and
-        // shrinks back when it closes), the way Shortcuts' window does.
+        // Room for it: opening grows the window by what the columns lack, in the
+        // same animation as the pane. Closing leaves the window as it is, so only
+        // the pane's own collapse animates (no second animation to flicker).
         let frame = self.window.frame();
         let mut target = frame;
         if show {
             let need = COLS as f64 * COLUMN_MIN_W + INSPECTOR_W + COLS as f64;
-            let grow = (need - frame.size.width).max(0.0);
-            self.grew.set(grow);
-            target.size.width += grow;
-        } else {
-            target.size.width = (frame.size.width - self.grew.replace(0.0)).max(0.0);
+            target.size.width = target.size.width.max(need);
         }
         let min = if show {
             (COLS as f64 * COLUMN_MIN_W + INSPECTOR_W + COLS as f64).max(760.0)
@@ -1738,8 +1740,19 @@ impl Ui {
             760.0
         };
         self.window.setMinSize(NSSize::new(min, 480.0));
-        for item in &self.inspector_items {
-            item.setHidden(!show);
+        // The inspector's own section of the toolbar exists only while it is open:
+        // shut, there is no gap at the right edge and no bar over empty space.
+        let present = self.toolbar.items().len();
+        if show && present == self.base_toolbar_len.get() {
+            for (k, id) in self.inspector_ids.iter().enumerate() {
+                self.toolbar
+                    .insertItemWithItemIdentifier_atIndex(id, (present + k) as isize);
+            }
+        } else if !show && present > self.base_toolbar_len.get() {
+            for _ in 0..present - self.base_toolbar_len.get() {
+                self.toolbar
+                    .removeItemAtIndex(self.toolbar.items().len() as isize - 1);
+            }
         }
         let item = self.inspector.clone();
         let window = self.window.clone();
