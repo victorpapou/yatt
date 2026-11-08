@@ -769,6 +769,11 @@ impl Board {
             NSSize::new((width - x - 2.0).max(0.0), 16.0),
         ));
         h.strip.setHidden(false);
+        // Over the cards and the group titles, which are added later.
+        let top = col.doc.subviews().lastObject();
+        if top.as_deref().map(|v| v as *const _ as usize) != Some(&**h.strip as *const _ as usize) {
+            col.doc.addSubview(&h.strip);
+        }
     }
 
     /// Puts a column's group titles over their groups (or hides them).

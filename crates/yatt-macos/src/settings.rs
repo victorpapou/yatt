@@ -233,7 +233,7 @@ fn group(mtm: MainThreadMarker, parent: &NSView, top: f64, rows: Vec<Row>) -> f6
     boxv.setBoxType(objc2_app_kit::NSBoxType::Custom);
     boxv.setTitlePosition(objc2_app_kit::NSTitlePosition::NoTitle);
     boxv.setBorderWidth(0.0);
-    boxv.setCornerRadius(14.0);
+    boxv.setCornerRadius(18.0);
     boxv.setContentViewMargins(NSSize::ZERO);
     boxv.setFillColor(&NSColor::quaternarySystemFillColor());
     let content = FlippedView::new(mtm, NSRect::new(NSPoint::ZERO, frame.size));
@@ -382,7 +382,7 @@ impl DemoCard {
         let glass = style::card_blur(mtm);
         glass.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(200.0, 82.0)));
         if let Some(g) = glass.downcast_ref::<objc2_app_kit::NSGlassEffectView>() {
-            g.setCornerRadius(14.0);
+            g.setCornerRadius(18.0);
         }
         // The card's own text and tag, over its glass.
         let content = FlippedView::new(mtm, NSRect::new(NSPoint::ZERO, NSSize::new(200.0, 82.0)));

@@ -100,15 +100,15 @@ impl Tags {
     }
 }
 
-/// A tag's badge, one look everywhere (the editor's `.tag`): a soft fill of the
-/// tag's colour, the text in that colour, medium, centred; the size of it.
+/// A tag's badge, one look everywhere (the editor's `.tag`): a solid fill of the
+/// tag's colour, white text, medium, centred; the size of it.
 pub fn badge(mtm: MainThreadMarker, name: &str) -> Retained<FlippedView> {
     let hue = style::tag_hue(name);
     let label = NSTextField::labelWithString(&NSString::from_str(name), mtm);
     label.setFont(Some(&NSFont::systemFontOfSize_weight(12.5, unsafe {
         NSFontWeightMedium
     })));
-    label.setTextColor(Some(&style::swatch(hue)));
+    label.setTextColor(Some(&NSColor::whiteColor()));
     let size = label.fittingSize();
     let w = (size.width.ceil() - 4.0 + 2.0 * CAPSULE_PAD).max(0.0).min(240.0);
     let view = FlippedView::new(mtm, NSRect::new(NSPoint::ZERO, NSSize::new(w, CAPSULE_H)));
@@ -116,7 +116,7 @@ pub fn badge(mtm: MainThreadMarker, name: &str) -> Retained<FlippedView> {
     if let Some(layer) = view.layer() {
         layer.setCornerRadius(8.0);
         layer.setBackgroundColor(Some(
-            &style::swatch(hue).colorWithAlphaComponent(0.18).CGColor(),
+            &style::swatch(hue).CGColor(),
         ));
     }
     let h = size.height.ceil();

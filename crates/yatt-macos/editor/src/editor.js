@@ -110,7 +110,7 @@ const HashTags = Extension.create({
               const start = pos + m.index + m[1].length
               const end = start + 1 + m[2].length
               const c = tagColors[m[2]]
-              decos.push(Decoration.inline(start, end, { class: 'tag', style: c ? 'background:rgba(' + c + ',.18);color:rgb(' + c + ')' : '' }))
+              decos.push(Decoration.inline(start, end, { class: 'tag', style: c ? 'background:rgb(' + c + ');color:#fff' : '' }))
             }
           })
           return DecorationSet.create(state.doc, decos)
