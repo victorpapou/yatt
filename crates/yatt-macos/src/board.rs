@@ -726,13 +726,21 @@ impl Board {
     /// A title strip (blur band, hairline, grey semibold label), hidden.
     fn new_head(&self, doc: &FlippedView) -> Head {
         let strip = FlippedView::new(self.mtm, NSRect::ZERO);
-        // Finder's hard pocket: the titlebar's own blur material, square-edged
-        // (content cut cleanly, no fade), carried up under the toolbar.
-        let blur = objc2_app_kit::NSVisualEffectView::new(self.mtm);
-        blur.setMaterial(objc2_app_kit::NSVisualEffectMaterial::HeaderView);
-        blur.setBlendingMode(objc2_app_kit::NSVisualEffectBlendingMode::WithinWindow);
-        blur.setState(objc2_app_kit::NSVisualEffectState::Active);
-        let material: Retained<NSView> = Retained::into_super(blur);
+        // The band under a held title is the system's Liquid Glass (as in the
+        // toolbar and Finder's headers), square-edged; the blur material only where
+        // the system has no glass.
+        let material: Retained<NSView> =
+            if objc2::runtime::AnyClass::get(c"NSGlassEffectView").is_some() {
+                let glass = objc2_app_kit::NSGlassEffectView::new(self.mtm);
+                glass.setCornerRadius(0.0);
+                Retained::into_super(glass)
+            } else {
+                let blur = objc2_app_kit::NSVisualEffectView::new(self.mtm);
+                blur.setMaterial(objc2_app_kit::NSVisualEffectMaterial::HeaderView);
+                blur.setBlendingMode(objc2_app_kit::NSVisualEffectBlendingMode::WithinWindow);
+                blur.setState(objc2_app_kit::NSVisualEffectState::Active);
+                Retained::into_super(blur)
+            };
         material.setAlphaValue(0.0);
         let line = FillView::new(self.mtm, Fill::Separator);
         line.setAlphaValue(0.0);
@@ -808,20 +816,16 @@ impl Board {
             // going under it.
             let want = if y > natural + 0.5 { 1.0 } else { 0.0 };
             if (h.material.alphaValue() - want).abs() > 0.01 {
-                let (m, l) = (h.material.clone(), h.line.clone());
+                // Glass only, no hairline of our own.
+                let m = h.material.clone();
                 animate(true, 0.15, move || {
                     m.animator().setAlphaValue(want);
-                    l.animator().setAlphaValue(want);
                 });
             }
             h.strip
                 .setFrame(NSRect::new(NSPoint::new(0.0, y), NSSize::new(width, HEAD_H)));
-            // Up under the toolbar, so there is no seam between it and the band.
-            let up = col.scroll.contentInsets().top.max(0.0);
-            h.material.setFrame(NSRect::new(
-                NSPoint::new(0.0, -up),
-                NSSize::new(width, HEAD_H + up),
-            ));
+            h.material
+                .setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(width, HEAD_H)));
             h.line.setFrame(NSRect::new(
                 NSPoint::new(0.0, HEAD_H - 1.0),
                 NSSize::new(width, 1.0),
