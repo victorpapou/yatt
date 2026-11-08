@@ -236,15 +236,25 @@ body {
   text-decoration: line-through; color: color-mix(in srgb, CanvasText 45%, transparent);
 }
 .ProseMirror ul[data-type="taskList"] input[type="checkbox"] {
-  -webkit-appearance: none; appearance: none; box-sizing: border-box;
+  -webkit-appearance: none; appearance: none; box-sizing: border-box; position: relative;
   width: 16px; height: 16px; margin: 0; cursor: pointer; border-radius: 50%;
   border: 1.5px solid color-mix(in srgb, CanvasText 40%, transparent);
-  background: transparent center / 10px no-repeat;
-  transition: background-color .15s, border-color .15s;
+  background: transparent;
+  transition: background-color .2s ease-out, border-color .2s ease-out;
+}
+/* The tick is drawn as a path: it runs from its start to its end when ticked. */
+.ProseMirror ul[data-type="taskList"] input[type="checkbox"]::after {
+  content: ""; position: absolute; inset: -1.5px;
+  background: white;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4.6 8.4l2.4 2.4 4.6-5' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 16px 16px no-repeat;
+  clip-path: inset(0 100% 0 0);
+  transition: clip-path .25s ease-out;
 }
 .ProseMirror ul[data-type="taskList"] input[type="checkbox"]:checked {
-  border-color: AccentColor; background-color: AccentColor;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M1.8 5.3l2.2 2.2 4.2-4.6' fill='none' stroke='white' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  border-color: -apple-system-control-accent; background-color: -apple-system-control-accent;
+}
+.ProseMirror ul[data-type="taskList"] input[type="checkbox"]:checked::after {
+  clip-path: inset(0 0 0 0);
 }
 .ProseMirror code {
   font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -261,7 +271,7 @@ body {
   border-left: 3px solid color-mix(in srgb, CanvasText 20%, transparent);
   color: color-mix(in srgb, CanvasText 70%, transparent);
 }
-.ProseMirror a { color: AccentColor; }
+.ProseMirror a { color: -apple-system-control-accent; }
 .ProseMirror img {
   display: block; max-width: 100%; height: auto; margin: 4px 0 10px;
   border-radius: 12px;
