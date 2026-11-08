@@ -35,6 +35,7 @@ const PANEL_PAD: f64 = 20.0;
 pub struct Modal {
     /// The inspector's content view.
     pub panel: Retained<PanelView>,
+    material: Retained<objc2_app_kit::NSVisualEffectView>,
     title: Retained<NSTextField>,
     /// Covers the header; a click on it starts editing the title.
     rename: Retained<NSButton>,
@@ -79,6 +80,16 @@ impl Modal {
         let mut retained: Vec<Retained<AnyObject>> = Vec::new();
 
         let panel = PanelView::new(mtm);
+        // The system's own material behind the pane, as an inspector has it.
+        let material = objc2_app_kit::NSVisualEffectView::new(mtm);
+        material.setMaterial(objc2_app_kit::NSVisualEffectMaterial::Sidebar);
+        material.setBlendingMode(objc2_app_kit::NSVisualEffectBlendingMode::BehindWindow);
+        material.setState(objc2_app_kit::NSVisualEffectState::FollowsWindowActiveState);
+        material.setAutoresizingMask(
+            objc2_app_kit::NSAutoresizingMaskOptions::ViewWidthSizable
+                | objc2_app_kit::NSAutoresizingMaskOptions::ViewHeightSizable,
+        );
+        panel.addSubview(&material);
         let content = &panel;
         let title = NSTextField::textFieldWithString(ns_string!(""), mtm);
         title.setFont(Some(&NSFont::systemFontOfSize_weight(20.0, unsafe {
@@ -305,6 +316,7 @@ impl Modal {
 
         Self {
             panel,
+            material,
             title,
             stats,
             subs,
@@ -397,6 +409,7 @@ impl Modal {
     /// down, below the toolbar.
     pub fn layout(&self, top: f64) {
         self.top.set(top);
+        self.material.setFrame(self.panel.bounds());
         let size = self.panel.bounds().size;
         let (w, h) = (size.width, size.height);
         let pad = PANEL_PAD;
