@@ -285,6 +285,8 @@ struct Card {
     /// The tags the meta line shows (it is redrawn in a new colour with them).
     dots: Retained<objc2_app_kit::NSImageView>,
     tag_names: Vec<String>,
+    /// What the title and dots were last fitted for.
+    title_key: (String, Vec<String>, usize),
     label: Retained<NSTextField>,
     /// "3 задачи" under the label while leading a group drag.
     count: Retained<NSTextField>,
@@ -1426,6 +1428,7 @@ impl Board {
             title,
             dots,
             tag_names: snap.tags.clone(),
+            title_key: (String::new(), Vec::new(), usize::MAX),
             label,
             count,
             hue,
@@ -2921,11 +2924,16 @@ impl Card {
             self.glyph = glyph;
             self.restyle();
         }
-        set_title(&self.title, &snap.title);
-        self.tag_names = snap.tags.clone();
+        // The title, the dots and their fitting (text measured, up to three times)
+        // only when what they show has changed: not on every render of the board.
+        if self.title_key.0 != snap.title || self.title_key.1 != snap.tags || self.title_key.2 != self.hue {
+            set_title(&self.title, &snap.title);
+            self.tag_names = snap.tags.clone();
+            set_tag_dots(&self.dots, &snap.tags, self.hue);
+            place_dots(&self.title, &self.dots, !snap.tags.is_empty());
+            self.title_key = (snap.title.clone(), snap.tags.clone(), self.hue);
+        }
         set_card_timer(&self.time, snap.tracking.then(|| format_duration(snap.total_ms)));
-        set_tag_dots(&self.dots, &snap.tags, self.hue);
-        place_dots(&self.title, &self.dots, !snap.tags.is_empty());
         self.tracking = snap.tracking;
         self.refill();
     }
