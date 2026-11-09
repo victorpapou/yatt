@@ -78,7 +78,6 @@ const HUES_DARK: [(Rgb, Rgb); 15] = [
     ((0x75, 0x4E, 0x9C), (0xF0, 0xE2, 0xFF)),
 ];
 
-#[allow(dead_code)]
 const NEUTRAL_HUE: usize = 5;
 /// A task with no colour of its own takes one of the original six from its id,
 /// so the colours added later never repaint old cards.
@@ -95,6 +94,20 @@ pub fn dark() -> bool {
 
 pub fn set_dark(on: bool) {
     DARK.with(|d| d.set(on));
+}
+
+thread_local! {
+    /// The window is not the key one: coloured cards' ink goes grey, as the grey
+    /// card's does.
+    static INACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub fn set_inactive(on: bool) {
+    INACTIVE.with(|i| i.set(on));
+}
+
+fn inactive() -> bool {
+    INACTIVE.with(|i| i.get())
 }
 
 fn palette() -> &'static [(Rgb, Rgb); 15] {
@@ -355,6 +368,8 @@ pub fn deep_swatch(hue: usize) -> Retained<NSColor> {
 }
 
 pub fn text(hue: usize) -> Retained<NSColor> {
+    // In an inactive window every card's ink is the grey card's.
+    let hue = if inactive() { NEUTRAL_HUE } else { hue };
     rgb(palette()[hue % HUES.len()].1, 1.0)
 }
 
@@ -980,7 +995,7 @@ pub fn glyph_image(symbol: &str, hue: usize) -> Option<Retained<CGImage>> {
     CACHE.with(|cache| {
         cache
             .borrow_mut()
-            .entry((symbol.to_string(), hue, dark()))
+            .entry((symbol.to_string(), if inactive() { NEUTRAL_HUE } else { hue }, dark()))
             .or_insert_with(|| {
                 let ink = text(hue).colorWithAlphaComponent(0.8);
                 let base = NSImage::imageWithSystemSymbolName_accessibilityDescription(

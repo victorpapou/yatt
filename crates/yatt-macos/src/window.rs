@@ -1518,6 +1518,29 @@ impl Ui {
                 }
             }
         }));
+        // The window losing or gaining key status: the cards' ink follows (grey when
+        // inactive, for every colour).
+        for (name, inactive) in [
+            (unsafe { objc2_app_kit::NSWindowDidBecomeKeyNotification }, false),
+            (unsafe { objc2_app_kit::NSWindowDidResignKeyNotification }, true),
+        ] {
+            let weak = weak.clone();
+            let block = RcBlock::new(move |_n: NonNull<objc2_foundation::NSNotification>| {
+                if let Some(ui) = weak.upgrade() {
+                    style::set_inactive(inactive);
+                    ui.cards.restyle();
+                }
+            });
+            let token = unsafe {
+                objc2_foundation::NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+                    Some(name),
+                    Some(&this.window),
+                    None,
+                    &block,
+                )
+            };
+            this._retained.borrow_mut().push(unsafe { Retained::cast_unchecked::<AnyObject>(token) });
+        }
         // `YATT_APPEARANCE=dark|light`: one appearance whatever the system's
         // (for the demo's captures of both).
         if let Ok(name) = std::env::var("YATT_APPEARANCE") {
