@@ -70,7 +70,7 @@ impl SwatchView {
             dot.setCornerRadius((D - 6.0) / 2.0);
             dot.setBackgroundColor(Some(&style::swatch(hue).CGColor()));
             layer.addSublayer(&dot);
-            // ...and the chosen one carries the SF Symbol checkmark (semibold), dark on
+            // ...and the chosen one carries the SF Symbol checkmark (light), dark on
             // a light colour and white on a dark one, by the colour's luminance.
             let (r, g, b) = style::swatch_rgb(hue);
             let luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
@@ -88,8 +88,8 @@ impl SwatchView {
                 None,
             ) {
                 let weight = objc2_app_kit::NSImageSymbolConfiguration::configurationWithPointSize_weight(
-                    9.0,
-                    unsafe { objc2_app_kit::NSFontWeightSemibold },
+                    6.5,
+                    unsafe { objc2_app_kit::NSFontWeightLight },
                 );
                 let colour = objc2_app_kit::NSImageSymbolConfiguration::configurationWithPaletteColors(
                     &objc2_foundation::NSArray::from_retained_slice(&[ink]),
@@ -97,6 +97,11 @@ impl SwatchView {
                 let config = weight.configurationByApplyingConfiguration(&colour);
                 if let Some(img) = image.imageWithSymbolConfiguration(&config) {
                     let size = img.size();
+                    // The layer is as large as the glyph, in the middle of the swatch.
+                    tick.setFrame(NSRect::new(
+                        NSPoint::new(((D - size.width) / 2.0).round(), ((D - size.height) / 2.0).round()),
+                        size,
+                    ));
                     let mut proposed = NSRect::new(NSPoint::ZERO, NSSize::new(size.width * 2.0, size.height * 2.0));
                     if let Some(cg) = unsafe {
                         img.CGImageForProposedRect_context_hints(&mut proposed, None, None)

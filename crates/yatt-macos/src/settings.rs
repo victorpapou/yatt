@@ -154,7 +154,7 @@ pub fn swatch_image_sized(hue: usize, size: f64) -> Option<Retained<NSImage>> {
 }
 
 /// A round swatch of a colour as a plain image (not a template: it keeps its colour),
-/// with a thin outline so it reads on any background.
+/// a plain filled disc, no outline.
 pub fn circle_image(hue: usize, size: f64) -> Retained<NSImage> {
     pie_image(&[hue], size)
 }
@@ -165,8 +165,8 @@ pub fn pie_image(hues: &[usize], size: f64) -> Retained<NSImage> {
     let block = block2::RcBlock::new(move |rect: NSRect| {
         let path = |r: NSRect| objc2_app_kit::NSBezierPath::bezierPathWithOvalInRect(r);
         let inner = NSRect::new(
-            NSPoint::new(rect.origin.x + 1.0, rect.origin.y + 1.0),
-            NSSize::new(rect.size.width - 2.0, rect.size.height - 2.0),
+            NSPoint::new(rect.origin.x + 0.5, rect.origin.y + 0.5),
+            NSSize::new(rect.size.width - 1.0, rect.size.height - 1.0),
         );
         if colors.len() <= 1 {
             if let Some(c) = colors.first() {
@@ -193,13 +193,6 @@ pub fn pie_image(hues: &[usize], size: f64) -> Retained<NSImage> {
                 p.fill();
             }
         }
-        NSColor::whiteColor().colorWithAlphaComponent(0.35).setStroke();
-        let ring = path(NSRect::new(
-            NSPoint::new(rect.origin.x + 0.5, rect.origin.y + 0.5),
-            NSSize::new(rect.size.width - 1.0, rect.size.height - 1.0),
-        ));
-        ring.setLineWidth(1.0);
-        ring.stroke();
         objc2::runtime::Bool::YES
     });
     NSImage::imageWithSize_flipped_drawingHandler(NSSize::new(size, size), false, &block)
