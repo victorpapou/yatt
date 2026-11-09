@@ -55,6 +55,45 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
         };
 
         wait(600).await;
+        if std::env::var_os("YATT_DEMO_WINDOWS").is_some() {
+            // Three tasks: one in the inspector, two in windows of their own; each
+            // window's editor typed into and undone separately.
+            for title in ["Первая", "Вторая", "Третья"] {
+                sink(UiEvent::NewTask { color: None, title: title.into(), status: Status::Backlog });
+                wait(200).await;
+            }
+            let ids = ids(cx, 0);
+            sink(UiEvent::OpenTask(ids[0]));
+            wait(900).await;
+            sink(UiEvent::OpenInWindow(ids[1]));
+            wait(600).await;
+            sink(UiEvent::OpenInWindow(ids[2]));
+            wait(600).await;
+            // Opening one already open focuses it, adds no window.
+            sink(UiEvent::OpenInWindow(ids[1]));
+            wait(400).await;
+            eprintln!("windows: {} open besides the inspector", window.demo_extra_report().len());
+            window.demo_extra_type(ids[1], "Вторая", "заметка-второй");
+            window.demo_extra_type(ids[2], "Третья", "заметка-третьей");
+            wait(300).await;
+            let mut rep = window.demo_extra_report();
+            rep.sort_by_key(|(i, _)| ids.iter().position(|x| x == i));
+            for (id, text) in &rep {
+                eprintln!("windows: editor of {:?}: {text:?}", ids.iter().position(|x| x == id));
+            }
+            // Undo in the second window's editor leaves the third's alone.
+            eprintln!("windows: undo in 2nd: {}", window.demo_extra_undo(ids[1]));
+            wait(200).await;
+            let mut rep = window.demo_extra_report();
+            rep.sort_by_key(|(i, _)| ids.iter().position(|x| x == i));
+            for (id, text) in &rep {
+                eprintln!("windows: after undo, editor of {:?}: {text:?}", ids.iter().position(|x| x == id));
+            }
+            sink(UiEvent::CloseWindow(ids[1]));
+            wait(400).await;
+            eprintln!("windows: {} open after closing one", window.demo_extra_report().len());
+            return;
+        }
         if std::env::var_os("YATT_DEMO_PALETTE").is_some() {
             for sel in [5usize, 3, 0] {
                 eprintln!("demo: palette {sel}: {}", window.demo_palette_png(sel, &format!("{dir}/palette-{sel}.png")));

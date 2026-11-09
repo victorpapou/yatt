@@ -371,6 +371,16 @@ impl Modal {
         self.editor.debug_type(notes);
     }
 
+    /// Development aid: the notes editor's text.
+    pub fn debug_notes(&self) -> String {
+        self.editor.debug_string()
+    }
+
+    /// Development aid: undo in the notes editor, through its own undo manager.
+    pub fn editor_undo_native(&self) -> bool {
+        self.editor.debug_undo()
+    }
+
     pub fn debug_click_box(&self, k: usize, shift: bool) {
         self.editor.debug_click_box(k, shift);
     }

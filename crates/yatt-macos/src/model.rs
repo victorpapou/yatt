@@ -12,6 +12,8 @@ pub struct Snapshot {
     pub columns: [ColumnSnap; COLS],
     pub timer: TimerSnap,
     pub expanded: Option<TaskId>,
+    /// Tasks open in windows of their own, besides the one in the inspector.
+    pub windows: Vec<TaskId>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -152,6 +154,8 @@ pub enum UiEvent {
     },
     /// Several moves or deletes made together: undone and redone as one.
     Group(Vec<UiEvent>),
+    /// A task's own window closed (or closed from the task).
+    CloseWindow(TaskId),
     /// A done task unticked: back to the column it came from.
     Uncheck(TaskId),
     /// A finished time entry moved: new start and end, ms since the epoch.

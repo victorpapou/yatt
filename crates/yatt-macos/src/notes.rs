@@ -704,6 +704,22 @@ impl NotesEditor {
         self.text.setSelectedRange(NSRange::new(end, 0));
         unsafe { self.text.insertText(&NSString::from_str(text)) };
     }
+
+    /// Development aid: the text as it stands.
+    pub fn debug_string(&self) -> String {
+        self.text.string().to_string()
+    }
+
+    /// Development aid: one step of undo in this editor's own undo manager.
+    pub fn debug_undo(&self) -> bool {
+        match self.text.undoManager() {
+            Some(um) if um.canUndo() => {
+                um.undo();
+                true
+            }
+            _ => false,
+        }
+    }
 }
 
 /// Posts the notes now (the key they were typed under).
@@ -1630,6 +1646,20 @@ impl AnyEditor {
         match self {
             Self::Native(e) => e.debug_type(text),
             Self::Web(e) => e.debug_type(text),
+        }
+    }
+
+    pub fn debug_string(&self) -> String {
+        match self {
+            Self::Native(e) => e.debug_string(),
+            Self::Web(_) => String::new(),
+        }
+    }
+
+    pub fn debug_undo(&self) -> bool {
+        match self {
+            Self::Native(e) => e.debug_undo(),
+            Self::Web(_) => false,
         }
     }
 }

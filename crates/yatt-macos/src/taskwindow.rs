@@ -122,6 +122,32 @@ impl TaskWindow {
         self.window.setContentView(Some(blank));
     }
 
+    /// One of several windows: its own frame, not the shared autosaved one, and a
+    /// title the Window menu and Mission Control can tell it by.
+    pub fn make_extra(&self, title: &str) {
+        self.window.setFrameAutosaveName(ns_string!(""));
+        self.window.setTitle(&NSString::from_str(title));
+    }
+
+    pub fn set_title(&self, title: &str) {
+        self.window.setTitle(&NSString::from_str(title));
+    }
+
+    /// Steps the window down and right of the last one; returns the point for the next.
+    pub fn cascade(&self, from: NSPoint) -> NSPoint {
+        self.window.cascadeTopLeftFromPoint(from)
+    }
+
+    /// Brings the window forward.
+    pub fn focus(&self) {
+        self.window.makeKeyAndOrderFront(None);
+    }
+
+    /// Closes the window.
+    pub fn close(&self) {
+        self.window.close();
+    }
+
     /// Development aid: saves the task window as a PNG.
     pub fn capture_png(&self, path: &str) -> bool {
         let Some(content) = self.window.contentView() else {

@@ -21,6 +21,8 @@ const MAX_PASTED: usize = 50;
 pub struct Workspace {
     pub engine: Engine,
     pub expanded: Option<TaskId>,
+    /// Tasks open in windows of their own besides the inspector's.
+    pub windows: Vec<TaskId>,
     /// Last second the clock was redrawn for.
     pub shown_second: i64,
 }
@@ -30,6 +32,7 @@ impl Workspace {
         Self {
             engine,
             expanded: None,
+            windows: Vec::new(),
             shown_second: 0,
         }
     }
@@ -94,11 +97,18 @@ impl Workspace {
             }
             // Handled by the window itself.
             UiEvent::OpenSettings(_) => {}
-            UiEvent::OpenTask(id) | UiEvent::OpenInWindow(id) => {
-                if e.board.get(id).is_some() {
+            UiEvent::OpenTask(id) => {
+                if e.board.get(id).is_some() && !self.windows.contains(&id) {
                     self.expanded = Some(id);
                 }
             }
+            // Another task in a window of its own, the inspector's left as it is.
+            UiEvent::OpenInWindow(id) => {
+                if e.board.get(id).is_some() && self.expanded != Some(id) && !self.windows.contains(&id) {
+                    self.windows.push(id);
+                }
+            }
+            UiEvent::CloseWindow(id) => self.windows.retain(|w| *w != id),
             UiEvent::ToggleExpand(id) => {
                 self.expanded = if self.expanded == Some(id) {
                     None
@@ -144,12 +154,18 @@ impl Workspace {
                 {
                     self.expanded = None;
                 }
+                for c in &cmds {
+                    if let Command::Delete { id } = c {
+                        self.windows.retain(|w| w != id);
+                    }
+                }
                 if !cmds.is_empty() {
                     e.execute(Command::Batch(cmds));
                 }
             }
             UiEvent::Delete(id) => {
                 e.delete_task(id);
+                self.windows.retain(|w| *w != id);
                 if self.expanded == Some(id) {
                     self.expanded = None;
                 }
@@ -219,7 +235,7 @@ impl Workspace {
                 .into_iter()
                 .map(|t| {
                     let time = e.times.get(&t.id).copied().unwrap_or_default();
-                    let expanded = self.expanded == Some(t.id);
+                    let expanded = self.expanded == Some(t.id) || self.windows.contains(&t.id);
                     CardSnap {
                         id: t.id,
                         title: t.title.clone(),
@@ -264,6 +280,7 @@ impl Workspace {
             columns,
             timer: self.timer_snap(now),
             expanded: self.expanded,
+            windows: self.windows.clone(),
         }
     }
 

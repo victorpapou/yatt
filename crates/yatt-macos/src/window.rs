@@ -118,6 +118,12 @@ pub struct MainWindow {
     ui: Rc<Ui>,
 }
 
+/// A task in a window of its own: its pane (editor, title, tags, time) and the window.
+struct ExtraWin {
+    modal: Rc<Modal>,
+    win: Rc<crate::taskwindow::TaskWindow>,
+}
+
 struct Ui {
     mtm: MainThreadMarker,
     window: Retained<NSWindow>,
@@ -166,6 +172,10 @@ struct Ui {
     in_window: Cell<bool>,
     /// The open task goes to its own window whatever the setting (a double click).
     force_window: Rc<Cell<bool>>,
+    /// More tasks open in windows of their own, one window per task.
+    extra: RefCell<std::collections::HashMap<TaskId, Rc<ExtraWin>>>,
+    /// Where the next such window cascades from.
+    cascade: Cell<NSPoint>,
     new_color: Cell<usize>,
     /// The capsule's height now: one line, or taller while the text wraps.
     capsule_h: Cell<f64>,
@@ -237,9 +247,26 @@ impl MainWindow {
             let (real, flag, slot) = (sink, force_window.clone(), ui_slot.clone());
             Rc::new(move |e| {
                 match e {
+                    UiEvent::OpenInWindow(id) | UiEvent::OpenTask(id)
+                        if slot
+                            .borrow()
+                            .as_ref()
+                            .and_then(|w| w.upgrade())
+                            .is_some_and(|ui| ui.focus_extra(id)) => {}
                     UiEvent::OpenInWindow(id) => {
-                        flag.set(true);
-                        real(UiEvent::OpenTask(id));
+                        let other_open = slot
+                            .borrow()
+                            .as_ref()
+                            .and_then(|w| w.upgrade())
+                            .and_then(|ui| ui.modal.open_task())
+                            .is_some_and(|open| open != id);
+                        if other_open {
+                            // The inspector keeps its task; this one gets a window.
+                            real(UiEvent::OpenInWindow(id));
+                        } else {
+                            flag.set(true);
+                            real(UiEvent::OpenTask(id));
+                        }
                     }
                     UiEvent::OpenSettings(tab) => {
                         if let Some(ui) = slot.borrow().as_ref().and_then(|w| w.upgrade()) {
@@ -874,6 +901,8 @@ impl MainWindow {
             inspector_vc,
             in_window: Cell::new(false),
             force_window,
+            extra: RefCell::default(),
+            cascade: Cell::new(NSPoint::ZERO),
             new_color: Cell::new(crate::settings::default_color()),
             capsule_h: Cell::new(CAPSULE_H),
             strip_shown: Cell::new(0.0),
@@ -964,7 +993,11 @@ impl MainWindow {
 
     /// cmd-Z while typing undoes the typing, not the board. Returns true when it did.
     pub fn text_undo(&self, redo: bool) -> bool {
-        if !editing_text(&self.ui.window) {
+        // The key window's editor: the board's, the inspector's or any task window's.
+        let key = NSApplication::sharedApplication(self.ui.mtm)
+            .keyWindow()
+            .unwrap_or_else(|| self.ui.window.clone());
+        if !editing_text(&key) {
             return false;
         }
         // The notes editor keeps its own history.
@@ -1147,6 +1180,34 @@ impl MainWindow {
 
     /// Development aid: types into the open task's title and notes, as a user
     /// still in the middle of both.
+    /// Development aid: how many task windows besides the inspector are open, and
+    /// each one's task and editor text.
+    pub fn demo_extra_report(&self) -> Vec<(TaskId, String)> {
+        self.ui
+            .extra
+            .borrow()
+            .iter()
+            .map(|(id, ex)| (*id, ex.modal.debug_notes()))
+            .collect()
+    }
+
+    /// Development aid: types into the task window of `id` (title and notes).
+    pub fn demo_extra_type(&self, id: TaskId, title: &str, notes: &str) {
+        let ex = self.ui.extra.borrow().get(&id).cloned();
+        if let Some(ex) = ex {
+            ex.modal.debug_type(title, notes);
+        }
+    }
+
+    /// Development aid: undoes in the editor of the task window of `id`, as ⌘Z
+    /// with that window key would.
+    pub fn demo_extra_undo(&self, id: TaskId) -> bool {
+        let ex = self.ui.extra.borrow().get(&id).cloned();
+        let Some(ex) = ex else { return false };
+        ex.win.focus();
+        ex.modal.editor_undo_native()
+    }
+
     pub fn demo_type(&self, title: &str, notes: &str) {
         self.ui.modal.debug_type(title, notes);
     }
@@ -1887,6 +1948,9 @@ impl Ui {
         style::set_recolor_by_tag(crate::settings::recolor_by_tag());
         style::set_tag_colors(crate::settings::tag_colors());
         self.modal.refresh_tag_colors();
+        for ex in self.extra.borrow().values() {
+            ex.modal.refresh_tag_colors();
+        }
         self.cards.restyle();
         if let Some(snap) = self.last.borrow().clone() {
             self.sync_modal(&snap);
@@ -2208,6 +2272,7 @@ impl Ui {
             self.cards.render(&snap.columns);
         }
         self.sync_modal(snap);
+        self.sync_extra(snap);
         self.settings.show_timer(&snap.timer);
         *self.last.borrow_mut() = Some(snap.clone());
     }
@@ -2230,6 +2295,119 @@ impl Ui {
         self.modal.restyle();
         if let Some(snap) = self.last.borrow().clone() {
             self.sync_modal(&snap);
+        }
+    }
+
+    /// A task already in a window of its own: that window comes forward.
+    fn focus_extra(&self, id: TaskId) -> bool {
+        let win = self.extra.borrow().get(&id).map(|e| e.win.clone());
+        if let Some(win) = win {
+            win.focus();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Makes the window and pane for a task of its own.
+    fn open_extra(self: &Rc<Self>, id: TaskId) -> Rc<ExtraWin> {
+        let mtm = self.mtm;
+        // The pane's own close (esc) closes its window, not the inspector.
+        let sink: Sink = {
+            let real = self.sink.clone();
+            Rc::new(move |e| match e {
+                UiEvent::ToggleExpand(i) => real(UiEvent::CloseWindow(i)),
+                e => real(e),
+            })
+        };
+        let modal = Rc::new(Modal::new(mtm, &sink));
+        let wm = Rc::downgrade(&modal);
+        let (look, trash) = (wm.clone(), wm.clone());
+        let close = {
+            let real = self.sink.clone();
+            move || real(UiEvent::CloseWindow(id))
+        };
+        let win = Rc::new(crate::taskwindow::TaskWindow::new(
+            mtm,
+            Rc::new(move || {
+                if let Some(m) = look.upgrade() {
+                    m.toggle_picker()
+                }
+            }),
+            Rc::new(move || {
+                if let Some(m) = trash.upgrade() {
+                    m.delete_open()
+                }
+            }),
+            Rc::new(close.clone()),
+            close,
+        ));
+        win.make_extra("");
+        win.attach(&modal.panel);
+        modal.layout(win.top_inset());
+        {
+            let (wm, ww) = (Rc::downgrade(&modal), Rc::downgrade(&win));
+            *modal.panel.ivars().on_layout.borrow_mut() = Some(Box::new(move || {
+                if let (Some(m), Some(w)) = (wm.upgrade(), ww.upgrade()) {
+                    m.layout(w.top_inset());
+                }
+            }));
+            let (wm, ww) = (Rc::downgrade(&modal), Rc::downgrade(&win));
+            modal.on_subtasks_resize(move || {
+                if let (Some(m), Some(w)) = (wm.upgrade(), ww.upgrade()) {
+                    m.layout(w.top_inset());
+                }
+            });
+        }
+        self.cascade.set(win.cascade(self.cascade.get()));
+        let extra = Rc::new(ExtraWin { modal, win });
+        self.extra.borrow_mut().insert(id, extra.clone());
+        extra
+    }
+
+    /// The tasks in windows of their own follow the snapshot: a window for each,
+    /// its pane synced, and none for a task that left.
+    fn sync_extra(self: &Rc<Self>, snap: &Snapshot) {
+        let find = |id: TaskId| {
+            snap.columns.iter().find_map(|c| {
+                c.cards
+                    .iter()
+                    .find(|card| card.id == id)
+                    .map(|card| (card.clone(), c.status))
+            })
+        };
+        let gone: Vec<TaskId> = self
+            .extra
+            .borrow()
+            .keys()
+            .filter(|id| !snap.windows.contains(id))
+            .copied()
+            .collect();
+        for id in gone {
+            let removed = self.extra.borrow_mut().remove(&id);
+            if let Some(ex) = removed {
+                // Saves the typed title and notes, then the window goes.
+                ex.modal.close();
+                ex.win.close();
+            }
+        }
+        for id in &snap.windows {
+            let Some((card, status)) = find(*id) else {
+                (self.sink)(UiEvent::CloseWindow(*id));
+                continue;
+            };
+            let existing = self.extra.borrow().get(id).cloned();
+            let ex = match existing {
+                Some(ex) => ex,
+                None => self.open_extra(*id),
+            };
+            ex.win.set_title(&card.title);
+            if ex.modal.open_task() == Some(*id) {
+                ex.modal.update(&card, status);
+            } else {
+                ex.modal.open(&card, status);
+                ex.win.focus();
+            }
         }
     }
 
