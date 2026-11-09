@@ -55,6 +55,12 @@ pub fn start(cx: &mut App, dir: String, ws: Entity<Workspace>, window: Rc<MainWi
         };
 
         wait(600).await;
+        if std::env::var_os("YATT_DEMO_PALETTE").is_some() {
+            for sel in [5usize, 3, 0] {
+                eprintln!("demo: palette {sel}: {}", window.demo_palette_png(sel, &format!("{dir}/palette-{sel}.png")));
+            }
+            return;
+        }
         if std::env::var_os("YATT_DEMO_EDGE").is_some() {
             window.demo_dump_toolbar_edge();
             return;

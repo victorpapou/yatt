@@ -70,24 +70,44 @@ impl SwatchView {
             dot.setCornerRadius((D - 6.0) / 2.0);
             dot.setBackgroundColor(Some(&style::swatch(hue).CGColor()));
             layer.addSublayer(&dot);
-            // ...and the chosen one carries a tick, no ring or border round any.
-            let ring = objc2_quartz_core::CAShapeLayer::new();
-            ring.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(D, D)));
-            ring.setFillColor(None);
-            ring.setStrokeColor(Some(&NSColor::whiteColor().CGColor()));
-            ring.setLineWidth(2.2);
-            unsafe { ring.setLineCap(objc2_quartz_core::kCALineCapRound) };
-            ring.setLineJoin(unsafe { objc2_quartz_core::kCALineJoinRound });
-            let path = objc2_core_graphics::CGMutablePath::new();
-            unsafe {
-                objc2_core_graphics::CGMutablePath::move_to_point(Some(&path), std::ptr::null(), D * 0.32, D * 0.50);
-                objc2_core_graphics::CGMutablePath::add_line_to_point(Some(&path), std::ptr::null(), D * 0.44, D * 0.38);
-                objc2_core_graphics::CGMutablePath::add_line_to_point(Some(&path), std::ptr::null(), D * 0.69, D * 0.64);
+            // ...and the chosen one carries the SF Symbol checkmark (semibold), dark on
+            // a light colour and white on a dark one, by the colour's luminance.
+            let (r, g, b) = style::swatch_rgb(hue);
+            let luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            let ink = if luminance > 0.6 {
+                NSColor::colorWithSRGBRed_green_blue_alpha(0.08, 0.08, 0.09, 1.0)
+            } else {
+                NSColor::whiteColor()
+            };
+            let tick = CALayer::new();
+            tick.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(D, D)));
+            tick.setContentsGravity(unsafe { objc2_quartz_core::kCAGravityCenter });
+            tick.setContentsScale(2.0);
+            if let Some(image) = objc2_app_kit::NSImage::imageWithSystemSymbolName_accessibilityDescription(
+                objc2_foundation::ns_string!("checkmark"),
+                None,
+            ) {
+                let weight = objc2_app_kit::NSImageSymbolConfiguration::configurationWithPointSize_weight(
+                    9.0,
+                    unsafe { objc2_app_kit::NSFontWeightSemibold },
+                );
+                let colour = objc2_app_kit::NSImageSymbolConfiguration::configurationWithPaletteColors(
+                    &objc2_foundation::NSArray::from_retained_slice(&[ink]),
+                );
+                let config = weight.configurationByApplyingConfiguration(&colour);
+                if let Some(img) = image.imageWithSymbolConfiguration(&config) {
+                    let size = img.size();
+                    let mut proposed = NSRect::new(NSPoint::ZERO, NSSize::new(size.width * 2.0, size.height * 2.0));
+                    if let Some(cg) = unsafe {
+                        img.CGImageForProposedRect_context_hints(&mut proposed, None, None)
+                    } {
+                        unsafe { tick.setContents(Some(&*(&*cg as *const _ as *const objc2::runtime::AnyObject))) };
+                    }
+                }
             }
-            ring.setPath(Some(&path));
-            ring.setHidden(true);
-            layer.addSublayer(&ring);
-            *this.ivars().ring.borrow_mut() = Some(Retained::into_super(ring));
+            tick.setHidden(true);
+            layer.addSublayer(&tick);
+            *this.ivars().ring.borrow_mut() = Some(tick);
         }
         this
     }
@@ -195,6 +215,33 @@ impl Palette {
             swatches,
             _retained: retained,
         }
+    }
+
+    /// Development aid: the grid with `selected` ticked, as a PNG.
+    pub fn debug_png(&self, mtm: MainThreadMarker, selected: usize, path: &str) -> bool {
+        self.show_state(selected);
+        let Some(vc) = self.popover.contentViewController() else { return false };
+        let view = vc.view();
+        let b = view.bounds();
+        let win = unsafe {
+            objc2_app_kit::NSWindow::initWithContentRect_styleMask_backing_defer(
+                objc2_app_kit::NSWindow::alloc(mtm),
+                b,
+                objc2_app_kit::NSWindowStyleMask::Borderless,
+                objc2_app_kit::NSBackingStoreType::Buffered,
+                false,
+            )
+        };
+        win.setContentView(Some(&view));
+        let Some(rep) = view.bitmapImageRepForCachingDisplayInRect(b) else { return false };
+        view.cacheDisplayInRect_toBitmapImageRep(b, &rep);
+        let props = objc2_foundation::NSDictionary::new();
+        let Some(data) = (unsafe {
+            rep.representationUsingType_properties(objc2_app_kit::NSBitmapImageFileType::PNG, &props)
+        }) else {
+            return false;
+        };
+        data.writeToFile_atomically(&objc2_foundation::NSString::from_str(path), true)
     }
 
     /// Ticks the chosen colour.

@@ -78,6 +78,7 @@ const HUES_DARK: [(Rgb, Rgb); 15] = [
     ((0x75, 0x4E, 0x9C), (0xF0, 0xE2, 0xFF)),
 ];
 
+#[allow(dead_code)]
 const NEUTRAL_HUE: usize = 5;
 /// A task with no colour of its own takes one of the original six from its id,
 /// so the colours added later never repaint old cards.
@@ -308,15 +309,8 @@ pub fn fill(hue: usize) -> Retained<NSColor> {
     // Dense enough that text behind is only a soft patch under the light blur.
     // Over the system's glass the tint is lighter, so less of the frost shows
     // through as colour mud; over the plain blur it is denser.
-    let white = hue % HUES.len() == NEUTRAL_HUE;
-    // The grey card is denser than the colours: a pale, thin grey over other
-    // cards reads as a white halo round the card in front, not as a card.
-    let alpha = match (real_glass(), white) {
-        (true, true) => 0.75,
-        (true, false) => 0.45,
-        (false, true) => 0.85,
-        (false, false) => 0.55,
-    };
+    // The same for every card, the grey one too: only the hue differs.
+    let alpha = if real_glass() { 0.45 } else { 0.55 };
     let alpha: f64 = if dark() {
         (alpha + 0.2_f64).min(0.9)
     } else {
@@ -332,26 +326,25 @@ pub fn fill(hue: usize) -> Retained<NSColor> {
 /// neutral card has no tint at all: plain system glass.
 pub fn tint_glass(view: &NSView, hue: usize) {
     if let Some(glass) = view.downcast_ref::<NSGlassEffectView>() {
-        if hue % HUES.len() == NEUTRAL_HUE {
-            // The grey card is tinted too, softly, so it frosts like the coloured
-            // ones (in an inactive window as well) instead of being bare glass.
-            // The palette's grey follows the appearance; lighter in the dark, so
-            // the card is no white patch there.
-            let strength = if dark() { 0.5 } else { 0.8 };
-            glass.setTintColor(Some(&deep_swatch(hue).colorWithAlphaComponent(strength)));
-        } else {
-            // The reference palette, a touch softened toward white.
-            let soft = deep_swatch(hue)
-                .blendedColorWithFraction_ofColor(0.15, &NSColor::whiteColor())
-                .unwrap_or_else(|| deep_swatch(hue));
-            glass.setTintColor(Some(&soft));
-        }
+        // Every card, the grey one included, is tinted the same way: the palette's
+        // colour, a touch softened toward white, solid; how strongly it shows is
+        // the glass's own call. Same transparency for all, only the hue differs.
+        let soft = deep_swatch(hue)
+            .blendedColorWithFraction_ofColor(0.15, &NSColor::whiteColor())
+            .unwrap_or_else(|| deep_swatch(hue));
+        glass.setTintColor(Some(&soft));
     }
 }
 
 /// A card colour as it stands on a picker or in text: the vivid one, the same in
 /// both appearances (so a swatch always shows the colour it picks, and the grey
 /// card's is a light grey, not the dark one of the deep dark-mode tints).
+/// A swatch's colour as 0..1 components.
+pub fn swatch_rgb(hue: usize) -> (f64, f64, f64) {
+    let (r, g, b) = HUES[hue % HUES.len()].0;
+    (r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0)
+}
+
 pub fn swatch(hue: usize) -> Retained<NSColor> {
     rgb(HUES[hue % HUES.len()].0, 1.0)
 }

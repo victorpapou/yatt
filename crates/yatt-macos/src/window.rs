@@ -742,9 +742,8 @@ impl MainWindow {
         );
         let palette_button = {
             let b = NSButton::new(mtm);
-            b.setBordered(true);
-            b.setBezelStyle(objc2_app_kit::NSBezelStyle::Circular);
-            b.setShowsBorderOnlyWhileMouseInside(true);
+            // No border or hover disc round the colour circle.
+            b.setBordered(false);
             b.setImage(symbol("circle.fill", "Цвет новой задачи").as_deref());
             b.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageOnly);
             b.setToolTip(Some(ns_string!("Цвет новой задачи")));
@@ -1335,6 +1334,11 @@ impl MainWindow {
         }
         let mut n = 0;
         walk(&frame_view, &frame_view, edge_y, 0, &mut n);
+    }
+
+    /// Development aid: the colour popover with `selected` ticked, as a PNG.
+    pub fn demo_palette_png(&self, selected: usize, path: &str) -> bool {
+        self.ui.palette.debug_png(self.ui.mtm, selected, path)
     }
 
     pub fn demo_editor_self_test(&self) -> String {
